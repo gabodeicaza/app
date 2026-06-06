@@ -63,6 +63,14 @@ export const api = {
     request<{ text: string }>('POST', '/ai/improve-text', { title, comments, area }),
   dailySummary: (reports: any[]) =>
     request<{ summary: string }>('POST', '/ai/daily-summary', { reports }),
+  periodSummary: (period: 'daily' | 'weekly' | 'monthly', area?: string | null) =>
+    request<{ summary: string }>('POST', '/ai/period-summary', { period, area: area ?? null }),
+
+  // Activities (Noticias / FYP)
+  listActivities: () => request<any[]>('GET', '/activities'),
+  createActivity: (body: { title: string; description?: string; priority: 1 | 2 | 3; area?: string | null }) =>
+    request<any>('POST', '/activities', body),
+  deleteActivity: (id: string) => request<{ ok: boolean }>('DELETE', `/activities/${id}`),
 };
 
 export { BASE };
