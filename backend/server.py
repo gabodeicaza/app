@@ -298,7 +298,11 @@ async def create_report(body: ReportIn, user: dict = Depends(get_current_user)):
 async def list_reports(user: dict = Depends(get_current_user)):
     query: dict = {}
     if user["role"] == "especialista":
-        query["createdBy"] = user["id"]
+        # Especialistas see all reports of their own area (own + colleagues).
+        if user.get("area"):
+            query["area"] = user["area"]
+        else:
+            query["createdBy"] = user["id"]
     cursor = db.reports.find(query, {"_id": 0}).sort("createdAt", -1).limit(200)
     out: List[ReportOut] = []
     async for r in cursor:
