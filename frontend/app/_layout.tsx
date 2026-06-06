@@ -34,7 +34,6 @@ export default function RootLayout() {
               <Stack.Screen name="(auth)" />
               <Stack.Screen name="(coordinador)" />
               <Stack.Screen name="(especialista)" />
-              <Stack.Screen name="camera" options={{ presentation: 'fullScreenModal', animation: 'slide_from_bottom' }} />
             </Stack>
           </SyncProvider>
         </AuthProvider>
