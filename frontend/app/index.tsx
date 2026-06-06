@@ -1,30 +1,32 @@
-import { Text, View, StyleSheet, Image } from "react-native";
-
-const EXPO_PUBLIC_BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
+import React from 'react';
+import { View, ActivityIndicator, StyleSheet, Image } from 'react-native';
+import { Redirect } from 'expo-router';
+import { useAuth } from '@/src/auth-context';
+import { colors } from '@/src/theme';
 
 export default function Index() {
-  console.log(EXPO_PUBLIC_BACKEND_URL, "EXPO_PUBLIC_BACKEND_URL");
+  const { user, loading } = useAuth();
 
-  return (
-    <View style={styles.container}>
-      <Image
-        source={require("../assets/images/app-image.png")}
-        style={styles.image}
-      />
-    </View>
-  );
+  if (loading) {
+    return (
+      <View style={styles.container}>
+        <Image source={require('../assets/images/dirac-logo.png')} style={styles.logo} resizeMode="contain" />
+        <ActivityIndicator color={colors.primary} size="large" style={{ marginTop: 24 }} />
+      </View>
+    );
+  }
+
+  if (!user) return <Redirect href="/(auth)/login" />;
+  if (user.role === 'coordinador') return <Redirect href="/(coordinador)" />;
+  return <Redirect href="/(especialista)" />;
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#0c0c0c",
-    alignItems: "center",
-    justifyContent: "center",
+    backgroundColor: colors.bg,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  image: {
-    width: "100%",
-    height: "100%",
-    resizeMode: "contain",
-  },
+  logo: { width: 140, height: 140 },
 });
