@@ -17,8 +17,8 @@ export default function Index() {
   }
 
   if (!user) return <Redirect href="/(auth)/login" />;
-  if (user.role === 'coordinador') return <Redirect href="/(coordinador)" />;
-  return <Redirect href="/(especialista)" />;
+  if (user.role === 'coordinador') return <Redirect href="/(coordinador)/noticias" />;
+  return <Redirect href="/(especialista)/noticias" />;
 }
 
 const styles = StyleSheet.create({

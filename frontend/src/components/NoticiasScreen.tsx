@@ -45,6 +45,10 @@ interface Area {
 
 type Period = 'daily' | 'weekly' | 'monthly';
 
+type SectionItem =
+  | { type: 'header'; priority: 1 | 2 | 3; count: number }
+  | { type: 'item'; activity: Activity };
+
 // -- Priority styling --------------------------------------------------------
 const PRIORITY = {
   1: { label: 'Informativo', color: '#0EA5E9', bg: '#E0F2FE', icon: 'information-circle' as const },
@@ -140,13 +144,20 @@ export function NoticiasScreen() {
     [isCoordinador, user?.id]
   );
 
-  const grouped = useMemo(() => {
+  const sections = useMemo<SectionItem[]>(() => {
     const g: Record<1 | 2 | 3, Activity[]> = { 3: [], 2: [], 1: [] };
     for (const a of activities) {
       const p = (a.priority as 1 | 2 | 3) || 1;
       g[p].push(a);
     }
-    return g;
+    const out: SectionItem[] = [];
+    ([3, 2, 1] as const).forEach((p) => {
+      if (g[p].length > 0) {
+        out.push({ type: 'header', priority: p, count: g[p].length });
+        g[p].forEach((act) => out.push({ type: 'item', activity: act }));
+      }
+    });
+    return out;
   }, [activities]);
 
   const subtitle = isCoordinador
@@ -222,22 +233,31 @@ export function NoticiasScreen() {
         </View>
       ) : (
         <FlatList
-          data={[3, 2, 1].flatMap((p) => grouped[p as 1 | 2 | 3]) as Activity[]}
-          keyExtractor={(item) => item.id}
+          data={sections as SectionItem[]}
+          keyExtractor={(item) =>
+            item.type === 'header' ? `h-${item.priority}` : item.activity.id
+          }
           ListHeaderComponent={ListHeader}
-          renderItem={({ item }) => (
-            <ActivityCard
-              activity={item}
-              canDelete={canDelete(item)}
-              onDelete={() => onDelete(item)}
-            />
-          )}
+          renderItem={({ item }) => {
+            if (item.type === 'header') {
+              return <PrioritySectionHeader priority={item.priority} count={item.count} />;
+            }
+            return (
+              <ActivityCard
+                activity={item.activity}
+                canDelete={canDelete(item.activity)}
+                onDelete={() => onDelete(item.activity)}
+              />
+            );
+          }}
           contentContainerStyle={{
             padding: spacing.md,
             paddingBottom: insets.bottom + 100,
             gap: spacing.sm,
           }}
-          ItemSeparatorComponent={() => <View style={{ height: spacing.sm }} />}
+          ItemSeparatorComponent={({ leadingItem }: any) => (
+            <View style={{ height: leadingItem?.type === 'header' ? 4 : spacing.sm }} />
+          )}
           ListEmptyComponent={
             <View style={styles.empty}>
               <Ionicons name="newspaper-outline" size={36} color={colors.textMuted} />
@@ -285,6 +305,25 @@ export function NoticiasScreen() {
   );
 }
 
+// -- Priority Section Header -------------------------------------------------
+function PrioritySectionHeader({
+  priority, count,
+}: { priority: 1 | 2 | 3; count: number }) {
+  const p = PRIORITY[priority];
+  return (
+    <View style={[styles.sectionHeader, { backgroundColor: p.bg, borderColor: p.color + '55' }]}>
+      <View style={[styles.sectionHeaderDot, { backgroundColor: p.color }]} />
+      <Ionicons name={p.icon} size={16} color={p.color} />
+      <Text style={[styles.sectionHeaderTitle, { color: p.color }]}>
+        Nivel {priority} · {p.label}
+      </Text>
+      <View style={[styles.sectionHeaderCount, { backgroundColor: p.color }]}>
+        <Text style={styles.sectionHeaderCountText}>{count}</Text>
+      </View>
+    </View>
+  );
+}
+
 // -- Activity Card -----------------------------------------------------------
 function ActivityCard({
   activity, canDelete, onDelete,
@@ -295,9 +334,9 @@ function ActivityCard({
 }) {
   const p = PRIORITY[activity.priority] || PRIORITY[1];
   return (
-    <View style={[styles.card, { borderLeftColor: p.color }]}>
+    <View style={[styles.card, { borderLeftColor: p.color, backgroundColor: p.bg + '55' }]}>
       <View style={styles.cardTop}>
-        <View style={[styles.badge, { backgroundColor: p.bg }]}>
+        <View style={[styles.badge, { backgroundColor: p.bg, borderColor: p.color + '55', borderWidth: 1 }]}>
           <Ionicons name={p.icon} size={13} color={p.color} />
           <Text style={[styles.badgeText, { color: p.color }]}>
             Nivel {activity.priority} · {p.label}
@@ -589,6 +628,25 @@ const styles = StyleSheet.create({
   // Sections
   row: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   bigSection: { fontSize: 18, fontWeight: '900', color: colors.text, letterSpacing: -0.3 },
+
+  // Priority section header (color hierarchy)
+  sectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    marginTop: spacing.sm,
+  },
+  sectionHeaderDot: { width: 8, height: 8, borderRadius: 4 },
+  sectionHeaderTitle: { flex: 1, fontSize: 13, fontWeight: '900', letterSpacing: -0.2 },
+  sectionHeaderCount: {
+    minWidth: 22, height: 22, paddingHorizontal: 6,
+    borderRadius: 11, alignItems: 'center', justifyContent: 'center',
+  },
+  sectionHeaderCountText: { color: '#fff', fontSize: 11, fontWeight: '900' },
 
   // Activity card
   card: {

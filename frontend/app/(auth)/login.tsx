@@ -35,8 +35,8 @@ export default function LoginScreen() {
     setError(null);
     try {
       const user = await login(email.trim().toLowerCase(), password);
-      if (user.role === 'coordinador') router.replace('/(coordinador)');
-      else router.replace('/(especialista)');
+      if (user.role === 'coordinador') router.replace('/(coordinador)/noticias');
+      else router.replace('/(especialista)/noticias');
     } catch (e: any) {
       setError(e?.message || 'No se pudo iniciar sesión');
     } finally {

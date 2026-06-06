@@ -6,6 +6,7 @@ import { colors } from '@/src/theme';
 export default function CoordLayout() {
   return (
     <Tabs
+      initialRouteName="noticias"
       screenOptions={{
         headerShown: false,
         tabBarActiveTintColor: colors.primary,
@@ -20,6 +21,13 @@ export default function CoordLayout() {
         tabBarLabelStyle: { fontSize: 11, fontWeight: '700' },
       }}
     >
+      <Tabs.Screen
+        name="noticias"
+        options={{
+          title: 'Noticias',
+          tabBarIcon: ({ color, size }) => <Ionicons name="newspaper" color={color} size={size} />,
+        }}
+      />
       <Tabs.Screen
         name="index"
         options={{

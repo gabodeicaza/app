@@ -15,6 +15,7 @@ export default function EspLayout() {
 
   return (
     <Tabs
+      initialRouteName="noticias"
       screenOptions={{
         headerShown: false,
         tabBarActiveTintColor: colors.primary,
@@ -29,6 +30,13 @@ export default function EspLayout() {
         tabBarLabelStyle: { fontSize: 11, fontWeight: '700' },
       }}
     >
+      <Tabs.Screen
+        name="noticias"
+        options={{
+          title: 'Noticias',
+          tabBarIcon: ({ color, size }) => <Ionicons name="newspaper" color={color} size={size} />,
+        }}
+      />
       <Tabs.Screen
         name="index"
         options={{
