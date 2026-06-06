@@ -126,6 +126,31 @@ class SummaryOut(BaseModel):
     summary: str
 
 
+class ActivityIn(BaseModel):
+    title: str
+    description: str = ""
+    priority: Literal[1, 2, 3] = 1  # 1=Informativo, 2=Importante, 3=Urgente
+    area: Optional[str] = None  # None = global (only coordinadores)
+
+
+class ActivityOut(BaseModel):
+    id: str
+    title: str
+    description: str
+    priority: int
+    area: Optional[str] = None
+    areaName: Optional[str] = None
+    createdBy: str
+    createdByName: str
+    createdByRole: str
+    createdAt: str
+
+
+class PeriodSummaryIn(BaseModel):
+    period: Literal["daily", "weekly", "monthly"]
+    area: Optional[str] = None  # None = all areas (coordinador only)
+
+
 # --- Helpers ----------------------------------------------------------------
 def slugify(s: str) -> str:
     s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode().lower()
@@ -403,6 +428,144 @@ async def ai_summary(body: SummaryIn, user: dict = Depends(get_current_user)):
         return SummaryOut(summary=text.strip())
     except Exception as e:
         log.exception("AI summary failed")
+        raise HTTPException(status_code=502, detail=f"IA no disponible: {e}")
+
+
+# --- Routes: Activities (Noticias / FYP) ------------------------------------
+@api.get("/activities", response_model=List[ActivityOut])
+async def list_activities(user: dict = Depends(get_current_user)):
+    """Returns activities filtered by role:
+    - Especialista: only own area + global (area=None) activities.
+    - Coordinador: sees everything across areas.
+    """
+    query: dict = {}
+    if user["role"] == "especialista":
+        # FYP: only area-specific + global
+        query["$or"] = [{"area": user.get("area")}, {"area": None}]
+    cursor = db.activities.find(query, {"_id": 0}).sort("createdAt", -1).limit(200)
+    out: List[ActivityOut] = []
+    async for a in cursor:
+        if a.get("area"):
+            a["areaName"] = await get_area_name(a["area"])
+        else:
+            a["areaName"] = "Global"
+        out.append(ActivityOut(**a))
+    # Sort by priority desc, then date desc
+    out.sort(key=lambda x: (-x.priority, x.createdAt), reverse=False)
+    out.sort(key=lambda x: x.priority, reverse=True)
+    return out
+
+
+@api.post("/activities", response_model=ActivityOut)
+async def create_activity(body: ActivityIn, user: dict = Depends(get_current_user)):
+    if not body.title.strip():
+        raise HTTPException(status_code=400, detail="Título requerido")
+    # Resolve area
+    target_area = body.area
+    if user["role"] == "especialista":
+        # Especialista can only post to their own area, never global
+        if not user.get("area"):
+            raise HTTPException(status_code=400, detail="Sin área asignada")
+        target_area = user["area"]
+    else:
+        # Coordinador can post global (None) or to a specific existing area
+        if target_area and not await area_exists(target_area):
+            raise HTTPException(status_code=400, detail="Área inválida")
+
+    aid = str(uuid.uuid4())
+    doc = {
+        "id": aid,
+        "title": body.title.strip(),
+        "description": body.description.strip(),
+        "priority": int(body.priority),
+        "area": target_area,
+        "createdBy": user["id"],
+        "createdByName": user["name"],
+        "createdByRole": user["role"],
+        "createdAt": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.activities.insert_one(doc)
+    doc.pop("_id", None)
+    doc["areaName"] = await get_area_name(target_area) if target_area else "Global"
+    return ActivityOut(**doc)
+
+
+@api.delete("/activities/{activity_id}")
+async def delete_activity(activity_id: str, user: dict = Depends(get_current_user)):
+    a = await db.activities.find_one({"id": activity_id}, {"_id": 0})
+    if not a:
+        raise HTTPException(status_code=404, detail="Noticia no encontrada")
+    if a["createdBy"] != user["id"] and user["role"] != "coordinador":
+        raise HTTPException(status_code=403, detail="Sin permiso")
+    await db.activities.delete_one({"id": activity_id})
+    return {"ok": True}
+
+
+# --- Routes: Period-based AI Summary (Daily/Weekly/Monthly) -----------------
+@api.post("/ai/period-summary", response_model=SummaryOut)
+async def ai_period_summary(body: PeriodSummaryIn, user: dict = Depends(get_current_user)):
+    """Generates AI summary of REPORTS for a given period (daily/weekly/monthly)
+    and optional area filter. Triggered manually by a button to save tokens.
+    """
+    now = datetime.now(timezone.utc)
+    if body.period == "daily":
+        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        label = "del día de hoy"
+    elif body.period == "weekly":
+        start = (now - timedelta(days=7)).replace(hour=0, minute=0, second=0, microsecond=0)
+        label = "de los últimos 7 días"
+    else:
+        start = (now - timedelta(days=30)).replace(hour=0, minute=0, second=0, microsecond=0)
+        label = "de los últimos 30 días"
+
+    # Build query
+    query: dict = {"createdAt": {"$gte": start.isoformat()}}
+    # Especialista: force area
+    if user["role"] == "especialista":
+        if not user.get("area"):
+            raise HTTPException(status_code=400, detail="Sin área asignada")
+        query["area"] = user["area"]
+    elif body.area:
+        query["area"] = body.area
+
+    reports = []
+    async for r in db.reports.find(query, {"_id": 0}).sort("createdAt", -1).limit(300):
+        r.setdefault("areaName", await get_area_name(r.get("area", "")))
+        reports.append(r)
+
+    if not reports:
+        return SummaryOut(
+            summary=f"No hay reportes registrados {label}. "
+            "Crea reportes para que el resumen ejecutivo pueda generarse."
+        )
+
+    system = (
+        "Eres el Director del Proyecto. Generas resúmenes ejecutivos claros y accionables "
+        "a partir de reportes de campo, en español."
+    )
+    compact = [
+        {
+            "area": r.get("areaName") or r.get("area"),
+            "titulo": r.get("title"),
+            "comentarios": r.get("comments"),
+            "autor": r.get("createdByName"),
+            "fecha": r.get("createdAt", "")[:10],
+        }
+        for r in reports
+    ]
+    period_text = {"daily": "del día", "weekly": "semanal", "monthly": "mensual"}[body.period]
+    prompt = (
+        f"Analiza los siguientes reportes de obra y genera un resumen ejecutivo {period_text}. "
+        f"Agrupa por área, resalta problemas urgentes o de seguridad, identifica tendencias y "
+        f"da una conclusión sobre el progreso. Sé claro y accionable.\n\n"
+        f"Reportes ({len(reports)}): {compact}\n\n"
+        f"Formato: párrafos claros, máximo 280 palabras. Sin viñetas ni emojis."
+    )
+    try:
+        text = await _gemini_chat(system, prompt)
+        return SummaryOut(summary=text.strip())
+    except Exception as e:
+        log.exception("AI period summary failed")
         raise HTTPException(status_code=502, detail=f"IA no disponible: {e}")
 
 
