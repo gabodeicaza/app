@@ -46,6 +46,8 @@ export const api = {
   register: (body: any) =>
     request<{ token: string; user: any }>('POST', '/auth/register', body),
   me: () => request<any>('GET', '/auth/me'),
+  updateMe: (body: { name?: string; puesto?: string | null }) =>
+    request<any>('PUT', '/auth/me', body),
 
   // Areas
   listAreas: () => request<any[]>('GET', '/areas'),
@@ -71,6 +73,35 @@ export const api = {
   createActivity: (body: { title: string; description?: string; priority: 1 | 2 | 3; area?: string | null }) =>
     request<any>('POST', '/activities', body),
   deleteActivity: (id: string) => request<{ ok: boolean }>('DELETE', `/activities/${id}`),
+
+  // Reference Points (Postes)
+  listReferencePoints: () => request<any[]>('GET', '/reference-points'),
+  createReferencePoint: (body: {
+    name: string;
+    location?: string | null;
+    coordinates?: string | null;
+    area?: string | null;
+  }) => request<any>('POST', '/reference-points', body),
+  deleteReferencePoint: (id: string) => request<{ ok: boolean }>('DELETE', `/reference-points/${id}`),
+
+  // Site Config (Contract / Contractor)
+  getSiteConfig: () =>
+    request<{ contract: string; contractor: string; updatedAt?: string | null; updatedBy?: string | null }>(
+      'GET',
+      '/site-config',
+    ),
+  updateSiteConfig: (body: { contract?: string; contractor?: string }) =>
+    request<{ contract: string; contractor: string; updatedAt?: string | null; updatedBy?: string | null }>(
+      'PUT',
+      '/site-config',
+    body),
+
+  // Smart report autocomplete history (per area)
+  reportHistory: () =>
+    request<{ personnel: string[]; equipment: string[]; activities: string[]; area?: string | null }>(
+      'GET',
+      '/report-history',
+    ),
 };
 
 export { BASE };

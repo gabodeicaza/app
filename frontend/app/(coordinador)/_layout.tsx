@@ -43,6 +43,13 @@ export default function CoordLayout() {
         }}
       />
       <Tabs.Screen
+        name="settings"
+        options={{
+          title: 'Proyecto',
+          tabBarIcon: ({ color, size }) => <Ionicons name="construct" color={color} size={size} />,
+        }}
+      />
+      <Tabs.Screen
         name="summary"
         options={{
           title: 'Resumen IA',

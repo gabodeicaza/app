@@ -4,16 +4,26 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import { AppHeader } from '@/src/components/AppHeader';
+import { EditProfileModal } from '@/src/components/EditProfileModal';
 import { useAuth } from '@/src/auth-context';
 import { useSync } from '@/src/sync-context';
 import { api } from '@/src/api';
 import { colors, radius, spacing } from '@/src/theme';
+
+const PUESTO_SUGGESTIONS_BY_AREA: Record<string, string[]> = {
+  geotecnia: ['Ingeniero(a) Geotécnico', 'Laboratorista', 'Asistente Geotécnico'],
+  topografia: ['Topógrafo Senior', 'Cadenero', 'Asistente Topográfico'],
+  obracivil: ['Residente de Obra', 'Maestro de Obra', 'Auxiliar de Obra'],
+  seguridad: ['Supervisor HSE', 'Inspector de Seguridad', 'Brigadista'],
+  calidad: ['Inspector(a) de Calidad', 'Aseguramiento de Calidad', 'Laboratorista QA/QC'],
+};
 
 export default function EspProfile() {
   const insets = useSafeAreaInsets();
   const { user, logout } = useAuth();
   const { pendingCount, online } = useSync();
   const [areaName, setAreaName] = useState<string>('');
+  const [editOpen, setEditOpen] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -53,7 +63,14 @@ export default function EspProfile() {
             <Ionicons name="hammer" size={12} color={colors.primary} />
             <Text style={styles.roleText}>Especialista</Text>
           </View>
+          {user?.puesto ? (
+            <Text style={styles.puestoLine}>{user.puesto}</Text>
+          ) : null}
           <Text style={styles.email}>{user?.email}</Text>
+          <Pressable onPress={() => setEditOpen(true)} style={styles.editBtn}>
+            <Ionicons name="create-outline" size={14} color={colors.primary} />
+            <Text style={styles.editBtnText}>Editar perfil</Text>
+          </Pressable>
         </View>
 
         <View style={styles.card}>
@@ -62,6 +79,7 @@ export default function EspProfile() {
           <Row icon="mail-outline" label="Email" value={user?.email} />
           <Row icon="shield-checkmark-outline" label="Rol" value="Especialista" />
           <Row icon="hammer-outline" label="Área" value={areaName || '—'} />
+          <Row icon="briefcase-outline" label="Puesto" value={user?.puesto || '—'} />
         </View>
 
         <View style={styles.card}>
@@ -79,6 +97,11 @@ export default function EspProfile() {
           <Text style={styles.logoutText}>Cerrar sesión</Text>
         </Pressable>
       </ScrollView>
+      <EditProfileModal
+        visible={editOpen}
+        onClose={() => setEditOpen(false)}
+        suggestions={(user?.area && PUESTO_SUGGESTIONS_BY_AREA[user.area]) || []}
+      />
     </View>
   );
 }
@@ -111,7 +134,19 @@ const styles = StyleSheet.create({
     borderRadius: 999, marginTop: 6,
   },
   roleText: { fontSize: 12, fontWeight: '800', color: colors.primary },
+  puestoLine: { fontSize: 13, fontWeight: '700', color: colors.textBody, marginTop: 6 },
   email: { fontSize: 13, color: colors.textMuted, marginTop: 4 },
+  editBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: colors.primaryLight,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 999,
+    marginTop: spacing.sm,
+  },
+  editBtnText: { fontSize: 12, fontWeight: '800', color: colors.primary },
   card: {
     backgroundColor: colors.surface,
     borderRadius: radius.lg,

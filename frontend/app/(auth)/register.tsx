@@ -28,6 +28,7 @@ export default function RegisterScreen() {
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [puesto, setPuesto] = useState('');
   const [role, setRole] = useState<Role>('especialista');
   const [areaId, setAreaId] = useState<string | null>(null);
   const [areas, setAreas] = useState<AreaItem[]>([]);
@@ -55,6 +56,20 @@ export default function RegisterScreen() {
   ];
   const displayAreas = areas.length ? areas : SEED;
 
+  // Sugerencias de puesto según el rol seleccionado
+  const PUESTO_SUGGESTIONS_ESP: Record<string, string[]> = {
+    geotecnia: ['Ingeniero(a) Geotécnico', 'Laboratorista', 'Asistente Geotécnico'],
+    topografia: ['Topógrafo Senior', 'Cadenero', 'Asistente Topográfico'],
+    obracivil: ['Residente de Obra', 'Maestro de Obra', 'Auxiliar de Obra'],
+    seguridad: ['Supervisor HSE', 'Inspector de Seguridad', 'Brigadista'],
+    calidad: ['Inspector(a) de Calidad', 'Aseguramiento de Calidad', 'Laboratorista QA/QC'],
+  };
+  const PUESTO_SUGGESTIONS_COORD = ['Director de Proyecto', 'Coordinador General', 'Gerente de Obra'];
+  const puestoSuggestions =
+    role === 'coordinador'
+      ? PUESTO_SUGGESTIONS_COORD
+      : (areaId && PUESTO_SUGGESTIONS_ESP[areaId]) || [];
+
   async function onSubmit() {
     if (!name.trim() || !email.trim() || password.length < 6) {
       setError('Completa todos los campos. Mínimo 6 caracteres.');
@@ -73,6 +88,7 @@ export default function RegisterScreen() {
         name: name.trim(),
         role,
         area: role === 'especialista' ? areaId : null,
+        puesto: puesto.trim() || null,
       });
       // Auto-login after register
       const user = await login(email.trim().toLowerCase(), password);
@@ -217,6 +233,41 @@ export default function RegisterScreen() {
             </>
           ) : null}
 
+          <Text style={[styles.label, { marginTop: spacing.md }]}>
+            Puesto / Cargo <Text style={styles.optional}>(opcional)</Text>
+          </Text>
+          <View style={styles.inputWrap}>
+            <Ionicons name="briefcase-outline" size={18} color={colors.textMuted} />
+            <TextInput
+              value={puesto}
+              onChangeText={setPuesto}
+              placeholder="Ej. Ingeniero(a) Geotécnico"
+              placeholderTextColor={colors.textMuted}
+              style={styles.input}
+              autoCapitalize="words"
+            />
+          </View>
+          {puestoSuggestions.length > 0 ? (
+            <View style={styles.suggestRow}>
+              {puestoSuggestions.map((s) => (
+                <Pressable
+                  key={s}
+                  onPress={() => setPuesto(s)}
+                  style={[styles.suggestPill, puesto === s && styles.suggestPillActive]}
+                >
+                  <Text
+                    style={[
+                      styles.suggestText,
+                      puesto === s && { color: colors.textInverse },
+                    ]}
+                  >
+                    {s}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+          ) : null}
+
           {error ? (
             <View style={styles.errorBox}>
               <Ionicons name="alert-circle" size={16} color={colors.error} />
@@ -289,6 +340,18 @@ const styles = StyleSheet.create({
   },
   areaDot: { width: 8, height: 8, borderRadius: 4 },
   areaPillText: { fontSize: 13, fontWeight: '700', color: colors.text },
+  optional: { color: colors.textMuted, fontWeight: '500' },
+  suggestRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 },
+  suggestPill: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
+    backgroundColor: colors.surface,
+  },
+  suggestPillActive: { backgroundColor: colors.primary, borderColor: colors.primary },
+  suggestText: { fontSize: 12, fontWeight: '700', color: colors.textBody },
   errorBox: {
     flexDirection: 'row',
     alignItems: 'center',

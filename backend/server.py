@@ -52,6 +52,7 @@ class RegisterIn(BaseModel):
     name: str
     role: Literal["coordinador", "especialista"]
     area: Optional[str] = None
+    puesto: Optional[str] = None
 
 
 class LoginIn(BaseModel):
@@ -65,6 +66,12 @@ class UserOut(BaseModel):
     name: str
     role: str
     area: Optional[str] = None
+    puesto: Optional[str] = None
+
+
+class UserUpdateIn(BaseModel):
+    name: Optional[str] = None
+    puesto: Optional[str] = None
 
 
 class AuthResponse(BaseModel):
@@ -85,12 +92,26 @@ class AreaOut(BaseModel):
     icon: str
 
 
+UnitLiteral = Literal["m3", "m", "cm", "mm", "km", "none"]
+
+
 class ReportIn(BaseModel):
     title: str
     comments: str = ""
     area: str
     images: List[str] = Field(default_factory=list)  # base64 data URLs
     location: Optional[str] = None
+    priority: Literal[1, 2, 3] = 1  # 1=Informativo, 2=Importante, 3=Urgente
+    # --- Intelligent report fields ---
+    reference_point_id: Optional[str] = None
+    reference_point_name: Optional[str] = None
+    coordinates: Optional[str] = None
+    first_reading: Optional[float] = None
+    last_reading: Optional[float] = None
+    unit: Optional[UnitLiteral] = None
+    activities: Optional[str] = None
+    personnel: List[str] = Field(default_factory=list)
+    equipment: List[str] = Field(default_factory=list)
 
 
 class ReportOut(BaseModel):
@@ -104,8 +125,56 @@ class ReportOut(BaseModel):
     createdBy: str
     createdByName: str
     createdByRole: str
+    createdByPuesto: Optional[str] = None
     createdAt: str
     status: str = "synced"
+    priority: int = 1
+    # --- Intelligent report fields ---
+    reference_point_id: Optional[str] = None
+    reference_point_name: Optional[str] = None
+    coordinates: Optional[str] = None
+    first_reading: Optional[float] = None
+    last_reading: Optional[float] = None
+    unit: Optional[str] = None
+    progress: Optional[float] = None  # auto-calculated Última - Primera
+    activities: Optional[str] = None
+    personnel: List[str] = Field(default_factory=list)
+    equipment: List[str] = Field(default_factory=list)
+    contract: Optional[str] = None
+    contractor: Optional[str] = None
+
+
+# --- Reference Points (Postes) -----------------------
+class ReferencePointIn(BaseModel):
+    name: str
+    location: Optional[str] = None
+    coordinates: Optional[str] = None
+    area: Optional[str] = None  # None = available to all areas
+
+
+class ReferencePointOut(BaseModel):
+    id: str
+    name: str
+    location: Optional[str] = None
+    coordinates: Optional[str] = None
+    area: Optional[str] = None
+    areaName: Optional[str] = None
+    createdBy: str
+    createdByName: str
+    createdAt: str
+
+
+# --- Site Config (project-wide singleton) ------------
+class SiteConfigIn(BaseModel):
+    contract: Optional[str] = None
+    contractor: Optional[str] = None
+
+
+class SiteConfigOut(BaseModel):
+    contract: str = ""
+    contractor: str = ""
+    updatedAt: Optional[str] = None
+    updatedBy: Optional[str] = None
 
 
 class AITextIn(BaseModel):
@@ -198,6 +267,7 @@ def user_doc_to_out(doc: dict) -> UserOut:
     return UserOut(
         id=doc["id"], email=doc["email"], name=doc["name"],
         role=doc["role"], area=doc.get("area"),
+        puesto=doc.get("puesto"),
     )
 
 
@@ -227,6 +297,7 @@ async def register(body: RegisterIn):
         "password": hash_password(body.password),
         "role": body.role,
         "area": body.area if body.role == "especialista" else None,
+        "puesto": (body.puesto or "").strip() or None,
         "createdAt": datetime.now(timezone.utc).isoformat(),
     }
     await db.users.insert_one(doc)
@@ -244,6 +315,24 @@ async def login(body: LoginIn):
 @api.get("/auth/me", response_model=UserOut)
 async def me(user: dict = Depends(get_current_user)):
     return user_doc_to_out(user)
+
+
+@api.put("/auth/me", response_model=UserOut)
+async def update_me(body: UserUpdateIn, user: dict = Depends(get_current_user)):
+    """Allows the user to update their own profile (name / puesto)."""
+    updates: dict = {}
+    if body.name is not None:
+        n = body.name.strip()
+        if not n:
+            raise HTTPException(status_code=400, detail="Nombre inválido")
+        updates["name"] = n
+    if body.puesto is not None:
+        updates["puesto"] = body.puesto.strip() or None
+    if not updates:
+        raise HTTPException(status_code=400, detail="Nada para actualizar")
+    await db.users.update_one({"id": user["id"]}, {"$set": updates})
+    fresh = await db.users.find_one({"id": user["id"]}, {"_id": 0, "password": 0})
+    return user_doc_to_out(fresh)
 
 
 # --- Routes: Areas ----------------------------------------------------------
@@ -290,6 +379,155 @@ async def delete_area(area_id: str, user: dict = Depends(get_current_user)):
     return {"ok": True}
 
 
+# --- Routes: Reference Points (Postes) -------------------------------------
+@api.get("/reference-points", response_model=List[ReferencePointOut])
+async def list_reference_points(user: dict = Depends(get_current_user)):
+    """Lista los puntos de referencia visibles para el usuario:
+    - Coordinador: ve todos.
+    - Especialista: ve los globales (area=None) + los de su área.
+    """
+    query: dict = {}
+    if user["role"] == "especialista":
+        query["$or"] = [{"area": user.get("area")}, {"area": None}]
+    cursor = db.reference_points.find(query, {"_id": 0}).sort("name", 1)
+    out: List[ReferencePointOut] = []
+    async for p in cursor:
+        if p.get("area"):
+            p["areaName"] = await get_area_name(p["area"])
+        else:
+            p["areaName"] = "Global"
+        out.append(ReferencePointOut(**p))
+    return out
+
+
+@api.post("/reference-points", response_model=ReferencePointOut)
+async def create_reference_point(body: ReferencePointIn, user: dict = Depends(get_current_user)):
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Nombre requerido")
+    # Determine target area:
+    # - Especialista: forced to their own area (cannot create global)
+    # - Coordinador: can pass area=None (global) or any existing area
+    target_area: Optional[str] = body.area
+    if user["role"] == "especialista":
+        if not user.get("area"):
+            raise HTTPException(status_code=400, detail="Sin área asignada")
+        target_area = user["area"]
+    else:
+        if target_area and not await area_exists(target_area):
+            raise HTTPException(status_code=400, detail="Área inválida")
+
+    # Prevent duplicates inside same scope (area or global)
+    dup_query: dict = {"name": name, "area": target_area}
+    if await db.reference_points.find_one(dup_query):
+        raise HTTPException(status_code=400, detail="Ya existe un punto con ese nombre")
+
+    pid = str(uuid.uuid4())
+    doc = {
+        "id": pid,
+        "name": name,
+        "location": (body.location or "").strip() or None,
+        "coordinates": (body.coordinates or "").strip() or None,
+        "area": target_area,
+        "createdBy": user["id"],
+        "createdByName": user["name"],
+        "createdAt": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.reference_points.insert_one(doc)
+    doc.pop("_id", None)
+    doc["areaName"] = await get_area_name(target_area) if target_area else "Global"
+    return ReferencePointOut(**doc)
+
+
+@api.delete("/reference-points/{point_id}")
+async def delete_reference_point(point_id: str, user: dict = Depends(get_current_user)):
+    p = await db.reference_points.find_one({"id": point_id}, {"_id": 0})
+    if not p:
+        raise HTTPException(status_code=404, detail="Punto no encontrado")
+    # Coordinador can delete any; especialistas can delete only their own.
+    if user["role"] != "coordinador" and p["createdBy"] != user["id"]:
+        raise HTTPException(status_code=403, detail="Sin permiso")
+    await db.reference_points.delete_one({"id": point_id})
+    return {"ok": True}
+
+
+# --- Routes: Site Config (Contract / Contractor) ---------------------------
+@api.get("/site-config", response_model=SiteConfigOut)
+async def get_site_config(_: dict = Depends(get_current_user)):
+    cfg = await db.site_config.find_one({"id": "default"}, {"_id": 0}) or {}
+    return SiteConfigOut(
+        contract=cfg.get("contract") or "",
+        contractor=cfg.get("contractor") or "",
+        updatedAt=cfg.get("updatedAt"),
+        updatedBy=cfg.get("updatedByName"),
+    )
+
+
+@api.put("/site-config", response_model=SiteConfigOut)
+async def update_site_config(body: SiteConfigIn, user: dict = Depends(get_current_user)):
+    if user["role"] != "coordinador":
+        raise HTTPException(status_code=403, detail="Solo coordinadores pueden actualizar la configuración")
+    updates = {
+        "id": "default",
+        "contract": (body.contract or "").strip(),
+        "contractor": (body.contractor or "").strip(),
+        "updatedAt": datetime.now(timezone.utc).isoformat(),
+        "updatedBy": user["id"],
+        "updatedByName": user["name"],
+    }
+    await db.site_config.update_one(
+        {"id": "default"}, {"$set": updates}, upsert=True
+    )
+    return SiteConfigOut(
+        contract=updates["contract"],
+        contractor=updates["contractor"],
+        updatedAt=updates["updatedAt"],
+        updatedBy=updates["updatedByName"],
+    )
+
+
+# --- Routes: Report History (autocomplete data) ----------------------------
+@api.get("/report-history")
+async def report_history(user: dict = Depends(get_current_user)):
+    """Devuelve datos históricos para autocompletado en el formulario.
+    Compartido por área: extrae personal y equipos únicos de los reportes
+    previos del área del usuario (o el área pedida por un coordinador).
+    """
+    target_area: Optional[str] = None
+    if user["role"] == "especialista":
+        target_area = user.get("area")
+    # Coordinator without area filter receives an empty set (no área context)
+    query: dict = {}
+    if target_area:
+        query["area"] = target_area
+
+    personnel_set: set = set()
+    equipment_set: set = set()
+    activities_set: list = []
+    seen_activities: set = set()
+
+    async for r in db.reports.find(
+        query, {"_id": 0, "personnel": 1, "equipment": 1, "activities": 1, "createdAt": 1}
+    ).sort("createdAt", -1).limit(200):
+        for p in (r.get("personnel") or []):
+            if p and p.strip():
+                personnel_set.add(p.strip())
+        for e in (r.get("equipment") or []):
+            if e and e.strip():
+                equipment_set.add(e.strip())
+        act = (r.get("activities") or "").strip()
+        if act and act not in seen_activities:
+            seen_activities.add(act)
+            activities_set.append(act)
+
+    return {
+        "personnel": sorted(personnel_set, key=str.lower),
+        "equipment": sorted(equipment_set, key=str.lower),
+        "activities": activities_set[:25],
+        "area": target_area,
+    }
+
+
 # --- Routes: Reports --------------------------------------------------------
 @api.post("/reports", response_model=ReportOut)
 async def create_report(body: ReportIn, user: dict = Depends(get_current_user)):
@@ -297,6 +535,26 @@ async def create_report(body: ReportIn, user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=400, detail="Área inválida")
     if user["role"] == "especialista" and user.get("area") != body.area:
         raise HTTPException(status_code=403, detail="No puedes reportar en otra área")
+
+    # Snapshot site config (contract / contractor) into the report
+    cfg = await db.site_config.find_one({"id": "default"}, {"_id": 0}) or {}
+
+    # Calculate progress (avance)
+    progress: Optional[float] = None
+    if (
+        body.first_reading is not None
+        and body.last_reading is not None
+        and body.unit
+        and body.unit != "none"
+    ):
+        try:
+            progress = round(float(body.last_reading) - float(body.first_reading), 4)
+        except Exception:
+            progress = None
+
+    # Clean personnel / equipment lists
+    personnel = [p.strip() for p in (body.personnel or []) if p and p.strip()]
+    equipment = [e.strip() for e in (body.equipment or []) if e and e.strip()]
 
     rid = f"REP-{body.area.upper()[:3]}-{str(uuid.uuid4())[:8]}"
     area_name = await get_area_name(body.area)
@@ -311,8 +569,22 @@ async def create_report(body: ReportIn, user: dict = Depends(get_current_user)):
         "createdBy": user["id"],
         "createdByName": user["name"],
         "createdByRole": user["role"],
+        "createdByPuesto": user.get("puesto"),
         "createdAt": datetime.now(timezone.utc).isoformat(),
         "status": "synced",
+        "priority": int(getattr(body, "priority", 1) or 1),
+        "reference_point_id": body.reference_point_id,
+        "reference_point_name": body.reference_point_name,
+        "coordinates": body.coordinates,
+        "first_reading": body.first_reading,
+        "last_reading": body.last_reading,
+        "unit": body.unit,
+        "progress": progress,
+        "activities": body.activities,
+        "personnel": personnel,
+        "equipment": equipment,
+        "contract": cfg.get("contract") or None,
+        "contractor": cfg.get("contractor") or None,
     }
     await db.reports.insert_one(doc)
     doc.pop("_id", None)
@@ -333,6 +605,10 @@ async def list_reports(user: dict = Depends(get_current_user)):
     async for r in cursor:
         r.setdefault("areaName", await get_area_name(r.get("area", "")))
         r.setdefault("location", None)
+        r.setdefault("createdByPuesto", None)
+        r.setdefault("priority", 1)
+        r.setdefault("personnel", [])
+        r.setdefault("equipment", [])
         out.append(ReportOut(**r))
     return out
 
@@ -348,6 +624,10 @@ async def reports_today(user: dict = Depends(get_current_user)):
     async for r in cursor:
         r.setdefault("areaName", await get_area_name(r.get("area", "")))
         r.setdefault("location", None)
+        r.setdefault("createdByPuesto", None)
+        r.setdefault("priority", 1)
+        r.setdefault("personnel", [])
+        r.setdefault("equipment", [])
         reports.append(r)
 
     # Per-area stats based on existing areas
@@ -596,17 +876,17 @@ SEED_AREAS = [
 
 SEED_USERS = [
     {"email": "coordinador@syncsite.com", "name": "Carlos Coordinador",
-     "role": "coordinador", "area": None, "password": "demo1234"},
+     "role": "coordinador", "area": None, "puesto": "Director de Proyecto", "password": "demo1234"},
     {"email": "geotecnia@syncsite.com", "name": "Ana Geotécnica",
-     "role": "especialista", "area": "geotecnia", "password": "demo1234"},
+     "role": "especialista", "area": "geotecnia", "puesto": "Ingeniera Geotécnica", "password": "demo1234"},
     {"email": "topografia@syncsite.com", "name": "Luis Topógrafo",
-     "role": "especialista", "area": "topografia", "password": "demo1234"},
+     "role": "especialista", "area": "topografia", "puesto": "Topógrafo Senior", "password": "demo1234"},
     {"email": "obracivil@syncsite.com", "name": "María Obra Civil",
-     "role": "especialista", "area": "obracivil", "password": "demo1234"},
+     "role": "especialista", "area": "obracivil", "puesto": "Residente de Obra", "password": "demo1234"},
     {"email": "seguridad@syncsite.com", "name": "Pedro Seguridad",
-     "role": "especialista", "area": "seguridad", "password": "demo1234"},
+     "role": "especialista", "area": "seguridad", "puesto": "Supervisor HSE", "password": "demo1234"},
     {"email": "calidad@syncsite.com", "name": "Sofía Calidad",
-     "role": "especialista", "area": "calidad", "password": "demo1234"},
+     "role": "especialista", "area": "calidad", "puesto": "Inspectora de Calidad", "password": "demo1234"},
 ]
 
 
@@ -620,7 +900,8 @@ async def seed():
                 "createdBy": "system",
             })
     for u in SEED_USERS:
-        if not await db.users.find_one({"email": u["email"]}):
+        existing = await db.users.find_one({"email": u["email"]})
+        if not existing:
             await db.users.insert_one({
                 "id": str(uuid.uuid4()),
                 "email": u["email"],
@@ -628,8 +909,15 @@ async def seed():
                 "password": hash_password(u["password"]),
                 "role": u["role"],
                 "area": u["area"],
+                "puesto": u.get("puesto"),
                 "createdAt": datetime.now(timezone.utc).isoformat(),
             })
+        elif not existing.get("puesto") and u.get("puesto"):
+            # Backfill puesto for existing seed users
+            await db.users.update_one(
+                {"email": u["email"]},
+                {"$set": {"puesto": u["puesto"]}},
+            )
     log.info("Seed ready: %d areas, %d users", len(SEED_AREAS), len(SEED_USERS))
 
 

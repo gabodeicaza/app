@@ -11,6 +11,17 @@ export interface QueuedReport {
   areaName?: string;
   images: string[];
   location?: string | null;
+  // Smart-report fields (optional for backward compatibility)
+  reference_point_id?: string | null;
+  reference_point_name?: string | null;
+  coordinates?: string | null;
+  first_reading?: number | null;
+  last_reading?: number | null;
+  unit?: string | null;
+  activities?: string | null;
+  personnel?: string[];
+  equipment?: string[];
+  priority?: 1 | 2 | 3;
   createdAt: string; // ISO
   status: 'pending' | 'syncing' | 'error';
   error?: string;
@@ -90,6 +101,16 @@ export function SyncProvider({ children }: { children: React.ReactNode }) {
             area: item.area,
             images: item.images,
             location: item.location,
+            reference_point_id: item.reference_point_id ?? undefined,
+            reference_point_name: item.reference_point_name ?? undefined,
+            coordinates: item.coordinates ?? undefined,
+            first_reading: item.first_reading ?? undefined,
+            last_reading: item.last_reading ?? undefined,
+            unit: item.unit ?? undefined,
+            activities: item.activities ?? undefined,
+            personnel: item.personnel,
+            equipment: item.equipment,
+            priority: item.priority,
           });
           current = current.filter((q) => q.localId !== item.localId);
           await saveQueue(current);

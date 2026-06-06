@@ -9,6 +9,7 @@ export interface User {
   name: string;
   role: Role;
   area?: string | null;
+  puesto?: string | null;
 }
 
 interface Ctx {

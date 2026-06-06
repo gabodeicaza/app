@@ -1,15 +1,19 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { View, Text, StyleSheet, Pressable, Alert, ScrollView } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import { AppHeader } from '@/src/components/AppHeader';
+import { EditProfileModal } from '@/src/components/EditProfileModal';
 import { useAuth } from '@/src/auth-context';
 import { colors, radius, spacing } from '@/src/theme';
+
+const COORD_PUESTOS = ['Director de Proyecto', 'Coordinador General', 'Gerente de Obra'];
 
 export default function ProfileScreen() {
   const insets = useSafeAreaInsets();
   const { user, logout } = useAuth();
+  const [editOpen, setEditOpen] = useState(false);
 
   function onLogout() {
     Alert.alert('Cerrar sesión', '¿Salir de tu cuenta?', [
@@ -38,7 +42,12 @@ export default function ProfileScreen() {
             <Ionicons name="briefcase" size={12} color={colors.primary} />
             <Text style={styles.roleText}>Coordinador</Text>
           </View>
+          {user?.puesto ? <Text style={styles.puestoLine}>{user.puesto}</Text> : null}
           <Text style={styles.email}>{user?.email}</Text>
+          <Pressable onPress={() => setEditOpen(true)} style={styles.editBtn}>
+            <Ionicons name="create-outline" size={14} color={colors.primary} />
+            <Text style={styles.editBtnText}>Editar perfil</Text>
+          </Pressable>
         </View>
 
         <View style={styles.card}>
@@ -46,6 +55,7 @@ export default function ProfileScreen() {
           <Row icon="id-card-outline" label="ID" value={user?.id?.slice(0, 8)} />
           <Row icon="mail-outline" label="Email" value={user?.email} />
           <Row icon="shield-checkmark-outline" label="Rol" value="Coordinador" />
+          <Row icon="briefcase-outline" label="Puesto" value={user?.puesto || '—'} />
         </View>
 
         <Pressable onPress={onLogout} style={styles.logoutBtn}>
@@ -53,6 +63,11 @@ export default function ProfileScreen() {
           <Text style={styles.logoutText}>Cerrar sesión</Text>
         </Pressable>
       </ScrollView>
+      <EditProfileModal
+        visible={editOpen}
+        onClose={() => setEditOpen(false)}
+        suggestions={COORD_PUESTOS}
+      />
     </View>
   );
 }
