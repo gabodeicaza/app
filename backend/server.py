@@ -769,12 +769,16 @@ async def reports_today(user: dict = Depends(get_current_user)):
 
 
 # --- Routes: AI -------------------------------------------------------------
-async def _gemini_chat(system: str, prompt: str) -> str:
-    chat = LlmChat(
-        api_key=EMERGENT_LLM_KEY,
-        session_id=f"syncsite-{uuid.uuid4()}",
-        system_message=system,
-    ).with_model("gemini", "gemini-2.5-flash")
+async def _gemini_chat(system: str, prompt: str, temperature: float = 0.7) -> str:
+    chat = (
+        LlmChat(
+            api_key=EMERGENT_LLM_KEY,
+            session_id=f"syncsite-{uuid.uuid4()}",
+            system_message=system,
+        )
+        .with_model("gemini", "gemini-2.5-flash")
+        .with_params(temperature=temperature)
+    )
     reply = await chat.send_message(UserMessage(text=prompt))
     return reply if isinstance(reply, str) else str(reply)
 
@@ -784,20 +788,28 @@ async def ai_improve(body: AITextIn, user: dict = Depends(get_current_user)):
     if not body.title and not body.comments:
         raise HTTPException(status_code=400, detail="Sin contenido")
     area_name = await get_area_name(body.area)
+    # Prompt estricto anti-alucinaciones: SOLO limpia ortografía/gramática/claridad.
     system = (
-        "Eres un ingeniero redactor técnico de obra civil. "
-        "Transformas notas informales en reportes profesionales en español."
+        "Actúa como un Ingeniero Civil Supervisor de Obra estricto y profesional. "
+        "Tu única tarea es tomar las notas de campo del usuario y mejorar la ortografía, "
+        "gramática y claridad para que luzcan como un reporte técnico formal. "
+        "ESTÁ ESTRICTAMENTE PROHIBIDO inventar datos, agregar eventos que no se mencionan "
+        "en el texto original, o redactar historias. Solo limpia, estructura y "
+        "profesionaliza el texto ingresado."
     )
     prompt = (
-        f"Toma este breve reporte de campo del área de {area_name} y reescríbelo con un "
-        f"tono técnico, profesional y detallado, ideal para un reporte oficial de obra.\n\n"
-        f"Título original: {body.title}\n"
-        f"Notas originales: {body.comments}\n\n"
-        f"Devuelve SOLO el texto del reporte mejorado, sin encabezados, sin viñetas, "
-        f"sin la palabra 'Título:' ni 'Reporte:'. Mantén entre 60 y 180 palabras."
+        f"Área del reporte (solo contexto, NO la incluyas en la salida): {area_name}\n\n"
+        f"TÍTULO ORIGINAL:\n{body.title or '(sin título)'}\n\n"
+        f"NOTAS ORIGINALES DEL USUARIO:\n{body.comments or '(sin notas)'}\n\n"
+        "Devuelve SOLO el texto profesionalizado (corregido en ortografía, gramática y "
+        "claridad) preservando ÚNICAMENTE la información presente en el original. "
+        "No agregues encabezados, viñetas, ni las palabras 'Título:' o 'Reporte:'. "
+        "Si el texto original es muy breve, devuélvelo igual de breve pero correcto. "
+        "Nunca inventes datos, fechas, cantidades, personal, equipo, ubicaciones ni eventos."
     )
     try:
-        text = await _gemini_chat(system, prompt)
+        # Temperatura muy baja: respuestas deterministas, sin creatividad.
+        text = await _gemini_chat(system, prompt, temperature=0.1)
         return AITextOut(text=text.strip())
     except Exception as e:
         log.exception("AI improve failed")
