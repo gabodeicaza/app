@@ -73,8 +73,10 @@ export function NoticiasScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
-  // Period summary state
+  // Period filter (controla tanto la lista de noticias como el resumen IA)
   const [period, setPeriod] = useState<Period>('daily');
+
+  // Summary state
   const [summary, setSummary] = useState<string>('');
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [summaryError, setSummaryError] = useState<string | null>(null);
@@ -82,10 +84,11 @@ export function NoticiasScreen() {
   // Create modal
   const [modalOpen, setModalOpen] = useState(false);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (p: Period = period) => {
     try {
+      const tzOffset = -new Date().getTimezoneOffset(); // minutos al este de UTC
       const [acts, ars] = await Promise.all([
-        api.listActivities(),
+        api.listActivities({ period: p, tzOffset }),
         api.listAreas().catch(() => [] as Area[]),
       ]);
       setActivities(acts as Activity[]);
@@ -96,14 +99,20 @@ export function NoticiasScreen() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, []);
+  }, [period]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(period); }, [period, load]);
 
   // Reset summary when changing period
   useEffect(() => {
     setSummary('');
     setSummaryError(null);
+  }, [period]);
+
+  const periodLabel = useMemo(() => {
+    if (period === 'daily') return 'Hoy';
+    if (period === 'weekly') return 'Esta semana';
+    return 'Este mes';
   }, [period]);
 
   const onGenerateSummary = useCallback(async () => {
@@ -216,7 +225,7 @@ export function NoticiasScreen() {
 
       {/* Activities header */}
       <View style={styles.row}>
-        <Text style={styles.bigSection}>Para ti</Text>
+        <Text style={styles.bigSection}>Para ti  ·  {periodLabel}</Text>
         <Text style={styles.sectionMuted}>{activities.length} noticias</Text>
       </View>
     </View>
@@ -271,7 +280,7 @@ export function NoticiasScreen() {
             <RefreshControl
               refreshing={refreshing}
               tintColor={colors.primary}
-              onRefresh={() => { setRefreshing(true); load(); }}
+              onRefresh={() => { setRefreshing(true); load(period); }}
             />
           }
         />

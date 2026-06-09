@@ -24,6 +24,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as Haptics from 'expo-haptics';
 import { AppHeader } from '@/src/components/AppHeader';
 import { Button } from '@/src/components/Button';
+import { StampedPhotoModal } from '@/src/components/StampedPhotoModal';
 import { api } from '@/src/api';
 import { useAuth } from '@/src/auth-context';
 import { useSync } from '@/src/sync-context';
@@ -118,6 +119,9 @@ export default function NewReport() {
   const [comments, setComments] = useState('');
   const [priority, setPriority] = useState<1 | 2 | 3>(1);
   const [images, setImages] = useState<string[]>([]);
+
+  // Sello anti-fraude: imagen pendiente de aplicar marca (data URL en RAM)
+  const [pendingStampBase64, setPendingStampBase64] = useState<string | null>(null);
 
   const [submitting, setSubmitting] = useState(false);
   const [aiLoading, setAiLoading] = useState(false);
@@ -267,7 +271,8 @@ export default function NewReport() {
     const item = `data:image/jpeg;base64,${asset.base64}`;
     // Cero Huella Local: borrar copia temporal del picker después de extraer base64.
     void wipeTemp(asset.uri);
-    setImages((prev) => [...prev, item].slice(0, 20));
+    // Sello anti-fraude: abrir modal para incrustar GPS + fecha + hora antes de agregar.
+    setPendingStampBase64(item);
     void Haptics.selectionAsync();
   }
 
@@ -441,6 +446,7 @@ export default function NewReport() {
       setTitle('');
       setComments('');
       setImages([]);
+      setPendingStampBase64(null);
       setActivities('');
       setFirstReading('');
       setLastReading('');
@@ -934,13 +940,20 @@ export default function NewReport() {
           </View>
         </View>
       </Modal>
+      {/* === Sello anti-fraude (cmara) === */}
+      <StampedPhotoModal
+        visible={!!pendingStampBase64}
+        base64={pendingStampBase64}
+        onCancel={() => setPendingStampBase64(null)}
+        onConfirm={(stamped) => {
+          setPendingStampBase64(null);
+          setImages((prev) => [...prev, stamped].slice(0, 20));
+          void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        }}
+      />
     </View>
   );
 }
-
-// ============================================================
-// Sub-components
-// ============================================================
 
 function HeaderRow({
   icon,

@@ -69,7 +69,13 @@ export const api = {
     request<{ summary: string }>('POST', '/ai/period-summary', { period, area: area ?? null }),
 
   // Activities (Noticias / FYP)
-  listActivities: () => request<any[]>('GET', '/activities'),
+  listActivities: (params?: { period?: string; tzOffset?: number }) => {
+    const qs: string[] = [];
+    if (params?.period) qs.push(`period=${encodeURIComponent(params.period)}`);
+    if (typeof params?.tzOffset === 'number') qs.push(`tz_offset=${params.tzOffset}`);
+    const query = qs.length ? `?${qs.join('&')}` : '';
+    return request<any[]>('GET', `/activities${query}`);
+  },
   createActivity: (body: { title: string; description?: string; priority: 1 | 2 | 3; area?: string | null }) =>
     request<any>('POST', '/activities', body),
   deleteActivity: (id: string) => request<{ ok: boolean }>('DELETE', `/activities/${id}`),
@@ -106,6 +112,20 @@ export const api = {
     request<any[]>('GET', `/chat/area/${areaId}/messages`),
   chatAreaSend: (areaId: string, text: string) =>
     request<any>('POST', '/chat/area/send', { area_id: areaId, text }),
+
+  // Calendar / Eventos
+  listEvents: (params?: { from?: string; to?: string }) => {
+    const qs: string[] = [];
+    if (params?.from) qs.push(`from_date=${encodeURIComponent(params.from)}`);
+    if (params?.to) qs.push(`to_date=${encodeURIComponent(params.to)}`);
+    const q = qs.length ? `?${qs.join('&')}` : '';
+    return request<any[]>('GET', `/events${q}`);
+  },
+  createEvent: (body: any) => request<any>('POST', '/events', body),
+  updateEvent: (id: string, body: any) => request<any>('PUT', `/events/${id}`, body),
+  deleteEvent: (id: string) => request<{ ok: boolean }>('DELETE', `/events/${id}`),
+  eventAlerts: () => request<any[]>('GET', '/events/alerts'),
+  dismissAlert: (id: string) => request<{ ok: boolean }>('POST', `/events/${id}/dismiss-alert`),
 
   // Site Config (Contract / Contractor)
   getSiteConfig: () =>

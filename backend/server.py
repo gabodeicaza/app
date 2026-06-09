@@ -112,6 +112,7 @@ class ReportIn(BaseModel):
     activities: Optional[str] = None
     personnel: List[str] = Field(default_factory=list)
     equipment: List[str] = Field(default_factory=list)
+    files: List[dict] = Field(default_factory=list)  # [{name, mimeType, dataUrl}]
 
 
 class ReportOut(BaseModel):
@@ -140,6 +141,7 @@ class ReportOut(BaseModel):
     activities: Optional[str] = None
     personnel: List[str] = Field(default_factory=list)
     equipment: List[str] = Field(default_factory=list)
+    files: List[dict] = Field(default_factory=list)
     contract: Optional[str] = None
     contractor: Optional[str] = None
 
@@ -248,6 +250,38 @@ class ChatUserOut(BaseModel):
     lastMessage: Optional[str] = None
     lastAt: Optional[str] = None
     unread: int = 0
+
+
+# --- Calendar / Eventos ---------------------------------
+class FileAttachment(BaseModel):
+    name: str
+    mimeType: str
+    dataUrl: str  # base64 data URL (e.g. "data:application/pdf;base64,...")
+
+
+class EventIn(BaseModel):
+    title: str
+    description: str = ""
+    date: str  # ISO datetime (event start)
+    location: Optional[str] = None
+    area: Optional[str] = None  # None = global
+    alert_at: Optional[str] = None  # ISO datetime when alert fires
+    notify_all: bool = True  # alert to all users
+
+
+class EventOut(BaseModel):
+    id: str
+    title: str
+    description: str
+    date: str
+    location: Optional[str] = None
+    area: Optional[str] = None
+    areaName: Optional[str] = None
+    alert_at: Optional[str] = None
+    notify_all: bool = True
+    createdBy: str
+    createdByName: str
+    createdAt: str
 
 
 # --- Helpers ----------------------------------------------------------------
@@ -632,9 +666,19 @@ async def create_report(body: ReportIn, user: dict = Depends(get_current_user)):
         except Exception:
             progress = None
 
-    # Clean personnel / equipment lists
+    # Clean personnel / equipment / files lists
     personnel = [p.strip() for p in (body.personnel or []) if p and p.strip()]
     equipment = [e.strip() for e in (body.equipment or []) if e and e.strip()]
+    files = []
+    for f in (body.files or []):
+        if not isinstance(f, dict):
+            continue
+        if f.get("dataUrl") and f.get("name"):
+            files.append({
+                "name": str(f.get("name"))[:200],
+                "mimeType": str(f.get("mimeType") or "application/octet-stream"),
+                "dataUrl": str(f.get("dataUrl")),
+            })
 
     rid = f"REP-{body.area.upper()[:3]}-{str(uuid.uuid4())[:8]}"
     area_name = await get_area_name(body.area)
@@ -663,6 +707,7 @@ async def create_report(body: ReportIn, user: dict = Depends(get_current_user)):
         "activities": body.activities,
         "personnel": personnel,
         "equipment": equipment,
+        "files": files,
         "contract": cfg.get("contract") or None,
         "contractor": cfg.get("contractor") or None,
     }
@@ -689,6 +734,7 @@ async def list_reports(user: dict = Depends(get_current_user)):
         r.setdefault("priority", 1)
         r.setdefault("personnel", [])
         r.setdefault("equipment", [])
+        r.setdefault("files", [])
         out.append(ReportOut(**r))
     return out
 
@@ -792,16 +838,55 @@ async def ai_summary(body: SummaryIn, user: dict = Depends(get_current_user)):
 
 
 # --- Routes: Activities (Noticias / FYP) ------------------------------------
+def _period_window(period: Optional[str], tz_offset_minutes: int = 0):
+    """Returns (start_iso, end_iso) for filtering activities.
+
+    The window is computed relative to NOW shifted by tz_offset_minutes (minutes east of UTC),
+    so a client in UTC-6 sends -360 and gets a window aligned to their local day.
+    """
+    if not period or period == "all":
+        return None, None
+    now_utc = datetime.now(timezone.utc)
+    # convert to "client local" by subtracting offset
+    local = now_utc + timedelta(minutes=tz_offset_minutes)
+    if period == "daily":
+        start_local = local.replace(hour=0, minute=0, second=0, microsecond=0)
+        end_local = start_local + timedelta(days=1)
+    elif period == "weekly":
+        days_back = local.weekday()  # Monday=0
+        start_local = (local - timedelta(days=days_back)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        end_local = start_local + timedelta(days=7)
+    elif period == "monthly":
+        start_local = local.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        # add ~32 days then snap to next month's 1st
+        nxt = (start_local + timedelta(days=32)).replace(day=1)
+        end_local = nxt
+    else:
+        return None, None
+    # back to UTC ISO
+    start_utc = (start_local - timedelta(minutes=tz_offset_minutes)).replace(tzinfo=timezone.utc)
+    end_utc = (end_local - timedelta(minutes=tz_offset_minutes)).replace(tzinfo=timezone.utc)
+    return start_utc.isoformat(), end_utc.isoformat()
+
+
 @api.get("/activities", response_model=List[ActivityOut])
-async def list_activities(user: dict = Depends(get_current_user)):
-    """Returns activities filtered by role:
+async def list_activities(
+    user: dict = Depends(get_current_user),
+    period: Optional[str] = None,  # "daily" | "weekly" | "monthly" | "all"
+    tz_offset: int = 0,  # minutes east of UTC (browser: -getTimezoneOffset())
+):
+    """Returns activities filtered by role and (optional) time window:
     - Especialista: only own area + global (area=None) activities.
     - Coordinador: sees everything across areas.
     """
     query: dict = {}
     if user["role"] == "especialista":
-        # FYP: only area-specific + global
         query["$or"] = [{"area": user.get("area")}, {"area": None}]
+    start_iso, end_iso = _period_window(period, tz_offset)
+    if start_iso and end_iso:
+        query["createdAt"] = {"$gte": start_iso, "$lt": end_iso}
     cursor = db.activities.find(query, {"_id": 0}).sort("createdAt", -1).limit(200)
     out: List[ActivityOut] = []
     async for a in cursor:
@@ -1123,6 +1208,146 @@ async def chat_area_send(body: AreaChatSendIn, user: dict = Depends(get_current_
     await db.chat_area_messages.insert_one(doc)
     doc.pop("_id", None)
     return AreaChatMessageOut(**doc)
+
+
+# --- Routes: Calendar / Eventos ---------------------------------------
+@api.get("/events", response_model=List[EventOut])
+async def list_events(
+    user: dict = Depends(get_current_user),
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+):
+    """Lista de eventos visibles para el usuario.
+    Especialista ve: globales (area=None) + de su área.
+    Supervisor ve: todos.
+    """
+    query: dict = {}
+    if user["role"] == "especialista":
+        query["$or"] = [{"area": user.get("area")}, {"area": None}]
+    if from_date or to_date:
+        date_q: dict = {}
+        if from_date:
+            date_q["$gte"] = from_date
+        if to_date:
+            date_q["$lte"] = to_date
+        query["date"] = date_q
+    cursor = db.events.find(query, {"_id": 0}).sort("date", 1).limit(500)
+    out: List[EventOut] = []
+    async for e in cursor:
+        if e.get("area"):
+            e["areaName"] = await get_area_name(e["area"])
+        else:
+            e["areaName"] = "Global"
+        out.append(EventOut(**e))
+    return out
+
+
+@api.post("/events", response_model=EventOut)
+async def create_event(body: EventIn, user: dict = Depends(get_current_user)):
+    if not body.title.strip():
+        raise HTTPException(status_code=400, detail="Título requerido")
+    if not body.date:
+        raise HTTPException(status_code=400, detail="Fecha requerida")
+    area_id = body.area
+    if area_id and not await area_exists(area_id):
+        raise HTTPException(status_code=400, detail="Área inválida")
+    eid = str(uuid.uuid4())
+    area_name = await get_area_name(area_id) if area_id else "Global"
+    doc = {
+        "id": eid,
+        "title": body.title.strip()[:200],
+        "description": (body.description or "").strip()[:2000],
+        "date": body.date,
+        "location": (body.location or None) and body.location.strip()[:200],
+        "area": area_id,
+        "areaName": area_name,
+        "alert_at": body.alert_at,
+        "notify_all": bool(body.notify_all),
+        "createdBy": user["id"],
+        "createdByName": user["name"],
+        "createdAt": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.events.insert_one(doc)
+    doc.pop("_id", None)
+    return EventOut(**doc)
+
+
+@api.put("/events/{event_id}", response_model=EventOut)
+async def update_event(event_id: str, body: EventIn, user: dict = Depends(get_current_user)):
+    existing = await db.events.find_one({"id": event_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Evento no encontrado")
+    # Author or supervisor only
+    if user["role"] != "coordinador" and existing.get("createdBy") != user["id"]:
+        raise HTTPException(status_code=403, detail="No puedes editar este evento")
+    area_id = body.area
+    if area_id and not await area_exists(area_id):
+        raise HTTPException(status_code=400, detail="Área inválida")
+    area_name = await get_area_name(area_id) if area_id else "Global"
+    update = {
+        "title": body.title.strip()[:200],
+        "description": (body.description or "").strip()[:2000],
+        "date": body.date,
+        "location": (body.location or None) and body.location.strip()[:200],
+        "area": area_id,
+        "areaName": area_name,
+        "alert_at": body.alert_at,
+        "notify_all": bool(body.notify_all),
+    }
+    await db.events.update_one({"id": event_id}, {"$set": update})
+    merged = {**existing, **update}
+    merged.pop("_id", None)
+    return EventOut(**merged)
+
+
+@api.delete("/events/{event_id}")
+async def delete_event(event_id: str, user: dict = Depends(get_current_user)):
+    existing = await db.events.find_one({"id": event_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Evento no encontrado")
+    if user["role"] != "coordinador" and existing.get("createdBy") != user["id"]:
+        raise HTTPException(status_code=403, detail="No puedes eliminar este evento")
+    await db.events.delete_one({"id": event_id})
+    return {"ok": True}
+
+
+@api.get("/events/alerts")
+async def event_alerts(user: dict = Depends(get_current_user)):
+    """Devuelve eventos cuya alert_at ya pasó (próximos 24h) y aún no han sido descartados
+    por este usuario. Usado por el frontend para mostrar notificaciones in-app."""
+    now = datetime.now(timezone.utc)
+    horizon = now + timedelta(hours=24)
+    query: dict = {
+        "alert_at": {"$lte": horizon.isoformat()},
+        "notify_all": True,
+    }
+    if user["role"] == "especialista":
+        query["$or"] = [{"area": user.get("area")}, {"area": None}]
+    cursor = db.events.find(query, {"_id": 0}).sort("alert_at", 1)
+    fired: list = []
+    async for e in cursor:
+        if not e.get("alert_at"):
+            continue
+        # Skip if user already dismissed this alert
+        dismissed = await db.event_alert_dismissals.find_one(
+            {"event_id": e["id"], "user_id": user["id"]}, {"_id": 0}
+        )
+        if dismissed:
+            continue
+        e.pop("_id", None)
+        fired.append(e)
+    return fired
+
+
+@api.post("/events/{event_id}/dismiss-alert")
+async def dismiss_alert(event_id: str, user: dict = Depends(get_current_user)):
+    await db.event_alert_dismissals.update_one(
+        {"event_id": event_id, "user_id": user["id"]},
+        {"$set": {"event_id": event_id, "user_id": user["id"],
+                  "at": datetime.now(timezone.utc).isoformat()}},
+        upsert=True,
+    )
+    return {"ok": True}
 
 
 # --- Health -----------------------------------------------------------------
