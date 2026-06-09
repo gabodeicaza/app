@@ -1,6 +1,3 @@
 import React from 'react';
-import { ChatListScreen } from '@/src/components/ChatList';
-
-export default function EspChat() {
-  return <ChatListScreen basePath="/(especialista)" />;
-}
+import { ChatHub } from '@/src/components/ChatHub';
+export default function EspChatHub() { return <ChatHub basePath="/(especialista)" />; }

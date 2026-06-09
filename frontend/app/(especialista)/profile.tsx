@@ -61,7 +61,7 @@ export default function EspProfile() {
           <Text style={styles.name}>{user?.name}</Text>
           <View style={styles.rolePill}>
             <Ionicons name="hammer" size={12} color={colors.primary} />
-            <Text style={styles.roleText}>Especialista</Text>
+            <Text style={styles.roleText}>{areaName ? areaName : 'Especialista'}</Text>
           </View>
           {user?.puesto ? (
             <Text style={styles.puestoLine}>{user.puesto}</Text>
@@ -77,7 +77,7 @@ export default function EspProfile() {
           <Text style={styles.cardTitle}>Cuenta</Text>
           <Row icon="id-card-outline" label="ID" value={user?.id?.slice(0, 8)} />
           <Row icon="mail-outline" label="Email" value={user?.email} />
-          <Row icon="shield-checkmark-outline" label="Rol" value="Especialista" />
+          <Row icon="shield-checkmark-outline" label="Rol" value={areaName ? `Especialista · ${areaName}` : 'Especialista'} />
           <Row icon="hammer-outline" label="Área" value={areaName || '—'} />
           <Row icon="briefcase-outline" label="Puesto" value={user?.puesto || '—'} />
         </View>

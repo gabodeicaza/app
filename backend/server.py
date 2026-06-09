@@ -1028,6 +1028,103 @@ async def chat_unread_total(user: dict = Depends(get_current_user)):
     return {"unread": n}
 
 
+# --- Chat por Área (broadcast) -------------------------------------
+class AreaChatSendIn(BaseModel):
+    area_id: str  # "general" or one of the area ids
+    text: str
+
+
+class AreaChatMessageOut(BaseModel):
+    id: str
+    area_id: str
+    area_name: str
+    from_user: str
+    from_name: str
+    from_role: str
+    text: str
+    createdAt: str
+
+
+class AreaRoomOut(BaseModel):
+    id: str  # "general" or area id
+    name: str
+    color: Optional[str] = None
+    icon: Optional[str] = None
+    lastMessage: Optional[str] = None
+    lastAt: Optional[str] = None
+    lastFrom: Optional[str] = None
+
+
+async def _area_name(area_id: str) -> str:
+    if area_id == "general":
+        return "General (todos)"
+    return (await get_area_name(area_id)) or area_id
+
+
+@api.get("/chat/areas", response_model=List[AreaRoomOut])
+async def chat_area_rooms(user: dict = Depends(get_current_user)):
+    # Build rooms: General + every area in DB
+    rooms: List[AreaRoomOut] = []
+    general_last = await db.chat_area_messages.find_one(
+        {"area_id": "general"}, {"_id": 0}, sort=[("createdAt", -1)]
+    )
+    rooms.append(AreaRoomOut(
+        id="general", name="General (todos)", color="#2563EB", icon="globe",
+        lastMessage=(general_last or {}).get("text"),
+        lastAt=(general_last or {}).get("createdAt"),
+        lastFrom=(general_last or {}).get("from_name"),
+    ))
+    async for a in db.areas.find({}, {"_id": 0}):
+        last = await db.chat_area_messages.find_one(
+            {"area_id": a["id"]}, {"_id": 0}, sort=[("createdAt", -1)]
+        )
+        rooms.append(AreaRoomOut(
+            id=a["id"], name=a["name"], color=a.get("color"), icon=a.get("icon"),
+            lastMessage=(last or {}).get("text"),
+            lastAt=(last or {}).get("createdAt"),
+            lastFrom=(last or {}).get("from_name"),
+        ))
+    return rooms
+
+
+@api.get("/chat/area/{area_id}/messages", response_model=List[AreaChatMessageOut])
+async def chat_area_messages(area_id: str, user: dict = Depends(get_current_user)):
+    cursor = db.chat_area_messages.find(
+        {"area_id": area_id}, {"_id": 0}
+    ).sort("createdAt", 1).limit(500)
+    return [AreaChatMessageOut(**m) async for m in cursor]
+
+
+@api.post("/chat/area/send", response_model=AreaChatMessageOut)
+async def chat_area_send(body: AreaChatSendIn, user: dict = Depends(get_current_user)):
+    text = body.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Mensaje vacío")
+    if len(text) > 2000:
+        raise HTTPException(status_code=400, detail="Mensaje demasiado largo")
+    area_id = body.area_id.strip()
+    if area_id != "general":
+        # Validate area exists
+        exists = await db.areas.find_one({"id": area_id}, {"_id": 0})
+        if not exists:
+            raise HTTPException(status_code=404, detail="Área no encontrada")
+    area_name = await _area_name(area_id)
+    mid = str(uuid.uuid4())
+    doc = {
+        "id": mid,
+        "area_id": area_id,
+        "area_name": area_name,
+        "from_user": user["id"],
+        "from_name": user["name"],
+        "from_role": user["role"],
+        "text": text,
+        "createdAt": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.chat_area_messages.insert_one(doc)
+    doc.pop("_id", None)
+    return AreaChatMessageOut(**doc)
+
+
 # --- Health -----------------------------------------------------------------
 @api.get("/")
 async def health():

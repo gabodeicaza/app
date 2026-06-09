@@ -1,6 +1,3 @@
 import React from 'react';
-import { ChatListScreen } from '@/src/components/ChatList';
-
-export default function CoordChat() {
-  return <ChatListScreen basePath="/(coordinador)" />;
-}
+import { ChatHub } from '@/src/components/ChatHub';
+export default function CoordChatHub() { return <ChatHub basePath="/(coordinador)" />; }

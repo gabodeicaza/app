@@ -71,8 +71,8 @@ export default function LoginScreen() {
             style={styles.logo}
             resizeMode="contain"
           />
-          <Text style={styles.brandName}>SyncSite</Text>
-          <Text style={styles.brandTagline}>Reporte de obra inteligente, también sin red.</Text>
+          <Text style={styles.brandName}>SynCo</Text>
+          <Text style={styles.brandTagline}>Reporte de obra inteligente, sin huella local.</Text>
         </View>
 
         <View style={styles.card}>
@@ -135,7 +135,7 @@ export default function LoginScreen() {
           <View style={styles.demoRow}>
             <Pressable onPress={() => useDemo('coord')} style={styles.demoBtn}>
               <Ionicons name="briefcase-outline" size={14} color={colors.primary} />
-              <Text style={styles.demoText}>Coordinador</Text>
+              <Text style={styles.demoText}>Supervisor de Obra</Text>
             </Pressable>
             <Pressable onPress={() => useDemo('esp')} style={styles.demoBtn}>
               <Ionicons name="hammer-outline" size={14} color={colors.primary} />

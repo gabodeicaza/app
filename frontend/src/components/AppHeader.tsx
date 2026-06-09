@@ -5,16 +5,27 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { colors, spacing } from '@/src/theme';
 import { ConnectionPill } from './StatusBadge';
+import { useAuth } from '@/src/auth-context';
 
 interface Props {
   title: string;
   subtitle?: string;
   back?: boolean;
   right?: React.ReactNode;
+  /** Si es false, no muestra el atajo a Perfil (p.ej. en la propia pantalla Perfil) */
+  showProfile?: boolean;
 }
 
-export function AppHeader({ title, subtitle, back, right }: Props) {
+export function AppHeader({ title, subtitle, back, right, showProfile = true }: Props) {
   const insets = useSafeAreaInsets();
+  const { user } = useAuth();
+
+  function goProfile() {
+    if (!user) return;
+    const path = user.role === 'coordinador' ? '/(coordinador)/profile' : '/(especialista)/profile';
+    router.push(path as any);
+  }
+
   return (
     <View style={[styles.wrap, { paddingTop: insets.top + 8 }]}>
       <View style={styles.row}>
@@ -32,6 +43,16 @@ export function AppHeader({ title, subtitle, back, right }: Props) {
         <View style={styles.rightRow}>
           {right}
           <ConnectionPill />
+          {showProfile && user ? (
+            <Pressable
+              onPress={goProfile}
+              hitSlop={8}
+              style={styles.avatarBtn}
+              accessibilityLabel="Abrir perfil"
+            >
+              <Text style={styles.avatarTxt}>{(user.name?.[0] || '?').toUpperCase()}</Text>
+            </Pressable>
+          ) : null}
         </View>
       </View>
     </View>
@@ -52,4 +73,13 @@ const styles = StyleSheet.create({
   backBtn: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center', marginLeft: -6 },
   title: { fontSize: 18, fontWeight: '800', color: colors.text, letterSpacing: -0.3 },
   subtitle: { fontSize: 12, color: colors.textMuted, marginTop: 2 },
+  avatarBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  avatarTxt: { color: '#fff', fontWeight: '900', fontSize: 13 },
 });

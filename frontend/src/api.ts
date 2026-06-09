@@ -100,6 +100,13 @@ export const api = {
     request<any>('POST', '/chat/send', { to_user: toUser, text }),
   chatUnreadTotal: () => request<{ unread: number }>('GET', '/chat/unread-total'),
 
+  // Chat por Área (broadcast)
+  chatAreaRooms: () => request<any[]>('GET', '/chat/areas'),
+  chatAreaMessages: (areaId: string) =>
+    request<any[]>('GET', `/chat/area/${areaId}/messages`),
+  chatAreaSend: (areaId: string, text: string) =>
+    request<any>('POST', '/chat/area/send', { area_id: areaId, text }),
+
   // Site Config (Contract / Contractor)
   getSiteConfig: () =>
     request<{ contract: string; contractor: string; updatedAt?: string | null; updatedBy?: string | null }>(

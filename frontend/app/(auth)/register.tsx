@@ -193,7 +193,7 @@ export default function RegisterScreen() {
                     color={active ? colors.textInverse : colors.text}
                   />
                   <Text style={[styles.roleText, active && { color: colors.textInverse }]}>
-                    {r === 'coordinador' ? 'Coordinador' : 'Especialista'}
+                    {r === 'coordinador' ? 'Supervisor de Obra' : 'Especialista'}
                   </Text>
                 </Pressable>
               );

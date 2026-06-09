@@ -354,7 +354,7 @@ function ActivityCard({
         <View style={styles.cardFooterRow}>
           <Ionicons name="person-outline" size={13} color={colors.textMuted} />
           <Text style={styles.cardFooterText}>
-            {activity.createdByName} · {activity.createdByRole === 'coordinador' ? 'Coordinador' : 'Especialista'}
+            {activity.createdByName} · {activity.createdByRole === 'coordinador' ? 'Supervisor de Obra' : 'Especialista'}
           </Text>
         </View>
         <View style={styles.cardFooterRow}>

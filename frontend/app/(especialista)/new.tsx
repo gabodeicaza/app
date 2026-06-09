@@ -20,6 +20,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
+import * as FileSystem from 'expo-file-system/legacy';
 import * as Haptics from 'expo-haptics';
 import { AppHeader } from '@/src/components/AppHeader';
 import { Button } from '@/src/components/Button';
@@ -96,6 +97,7 @@ export default function NewReport() {
   const [firstReading, setFirstReading] = useState('');
   const [lastReading, setLastReading] = useState('');
   const [unit, setUnit] = useState<Unit>('m');
+  const [noAplicaLecturas, setNoAplicaLecturas] = useState(false);
 
   // ----- Activities -----
   const [activities, setActivities] = useState('');
@@ -186,7 +188,16 @@ export default function NewReport() {
       .slice(0, 6);
   }, [equipmentDraft, histEquipment, equipment]);
 
-  // --------- Image handling ---------
+  // --------- Image handling (Cero Huella Local: solo RAM) ---------
+  async function wipeTemp(uri?: string | null) {
+    if (!uri || !uri.startsWith('file:')) return;
+    try {
+      await FileSystem.deleteAsync(uri, { idempotent: true });
+    } catch {
+      // best effort
+    }
+  }
+
   async function pickFromGallery() {
     const perm = await ImagePicker.getMediaLibraryPermissionsAsync();
     let canAsk = perm.canAskAgain;
@@ -215,9 +226,12 @@ export default function NewReport() {
       base64: true,
     });
     if (result.canceled) return;
-    const items = result.assets
-      .map((a) => (a.base64 ? `data:image/jpeg;base64,${a.base64}` : a.uri))
-      .filter(Boolean);
+    const items: string[] = [];
+    for (const a of result.assets) {
+      if (a.base64) items.push(`data:image/jpeg;base64,${a.base64}`);
+      // Cero Huella Local: borrar copia temporal del picker, conservar solo base64 en RAM.
+      void wipeTemp(a.uri);
+    }
     setImages((prev) => [...prev, ...items].slice(0, 20));
     void Haptics.selectionAsync();
   }
@@ -249,7 +263,10 @@ export default function NewReport() {
     });
     if (result.canceled) return;
     const asset = result.assets[0];
-    const item = asset.base64 ? `data:image/jpeg;base64,${asset.base64}` : asset.uri;
+    if (!asset?.base64) return;
+    const item = `data:image/jpeg;base64,${asset.base64}`;
+    // Cero Huella Local: borrar copia temporal del picker después de extraer base64.
+    void wipeTemp(asset.uri);
     setImages((prev) => [...prev, item].slice(0, 20));
     void Haptics.selectionAsync();
   }
@@ -365,8 +382,16 @@ export default function NewReport() {
       return;
     }
     setSubmitting(true);
-    const firstNum = firstReading.trim() ? parseFloat(firstReading.replace(',', '.')) : null;
-    const lastNum = lastReading.trim() ? parseFloat(lastReading.replace(',', '.')) : null;
+    const firstNum = noAplicaLecturas
+      ? null
+      : firstReading.trim()
+        ? parseFloat(firstReading.replace(',', '.'))
+        : null;
+    const lastNum = noAplicaLecturas
+      ? null
+      : lastReading.trim()
+        ? parseFloat(lastReading.replace(',', '.'))
+        : null;
     const payload: any = {
       title: title.trim(),
       comments: comments.trim(),
@@ -379,7 +404,7 @@ export default function NewReport() {
       coordinates: coordinates.trim() || null,
       first_reading: Number.isFinite(firstNum as number) ? firstNum : null,
       last_reading: Number.isFinite(lastNum as number) ? lastNum : null,
-      unit,
+      unit: noAplicaLecturas ? 'none' : unit,
       activities: activities.trim() || null,
       personnel,
       equipment,
@@ -412,13 +437,14 @@ export default function NewReport() {
         online ? 'Reporte enviado' : 'Guardado localmente',
         online ? 'Tu reporte se sincronizó.' : 'Se enviará automáticamente al recuperar conexión.',
       );
-      // Reset
+      // Reset (Cero Huella Local: limpieza inmediata de evidencias en memoria)
       setTitle('');
       setComments('');
       setImages([]);
       setActivities('');
       setFirstReading('');
       setLastReading('');
+      setNoAplicaLecturas(false);
       setPersonnel([]);
       setEquipment([]);
       setSelectedPoint(null);
@@ -516,59 +542,88 @@ export default function NewReport() {
 
           {/* === READINGS & PROGRESS === */}
           <View style={styles.card}>
-            <Text style={styles.label}>Lecturas y avance</Text>
-
-            <View style={styles.rowGap}>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.subLabel}>Primera lectura</Text>
-                <TextInput
-                  value={firstReading}
-                  onChangeText={setFirstReading}
-                  placeholder="0.00"
-                  placeholderTextColor={colors.textMuted}
-                  style={styles.input}
-                  keyboardType="decimal-pad"
+            <View style={styles.commentsHeader}>
+              <Text style={styles.label}>Lecturas y avance</Text>
+              <Pressable
+                onPress={() => {
+                  setNoAplicaLecturas((v) => !v);
+                  void Haptics.selectionAsync();
+                }}
+                style={[styles.naToggle, noAplicaLecturas && styles.naToggleActive]}
+              >
+                <Ionicons
+                  name={noAplicaLecturas ? 'checkbox' : 'square-outline'}
+                  size={16}
+                  color={noAplicaLecturas ? '#fff' : colors.textBody}
                 />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.subLabel}>Última lectura</Text>
-                <TextInput
-                  value={lastReading}
-                  onChangeText={setLastReading}
-                  placeholder="0.00"
-                  placeholderTextColor={colors.textMuted}
-                  style={styles.input}
-                  keyboardType="decimal-pad"
-                />
-              </View>
+                <Text style={[styles.naToggleTxt, noAplicaLecturas && { color: '#fff' }]}>
+                  No aplica
+                </Text>
+              </Pressable>
             </View>
 
-            <Text style={[styles.subLabel, { marginTop: 8 }]}>Unidad</Text>
-            <View style={styles.unitRow}>
-              {UNITS.map((u) => (
-                <Pressable
-                  key={u.value}
-                  onPress={() => setUnit(u.value)}
-                  style={[styles.unitChip, unit === u.value && styles.unitChipActive]}
-                >
-                  <Text style={[styles.unitChipTxt, unit === u.value && styles.unitChipTxtActive]}>
-                    {u.label}
-                  </Text>
-                </Pressable>
-              ))}
-            </View>
-
-            <View style={styles.progressBox}>
-              <Ionicons name="trending-up" size={18} color={colors.primary} />
-              <View style={{ flex: 1 }}>
-                <Text style={styles.progressLabel}>Avance calculado</Text>
-                <Text style={styles.progressValue}>
-                  {progress !== null
-                    ? `${progress} ${unit !== 'none' ? UNITS.find((x) => x.value === unit)?.label : ''}`.trim()
-                    : '—'}
+            {noAplicaLecturas ? (
+              <View style={styles.naHint}>
+                <Ionicons name="information-circle-outline" size={16} color={colors.textMuted} />
+                <Text style={styles.naHintTxt}>
+                  Esta sección no se incluirá en el reporte.
                 </Text>
               </View>
-            </View>
+            ) : (
+              <>
+                <View style={styles.rowGap}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.subLabel}>Primera lectura</Text>
+                    <TextInput
+                      value={firstReading}
+                      onChangeText={setFirstReading}
+                      placeholder="0.00"
+                      placeholderTextColor={colors.textMuted}
+                      style={styles.input}
+                      keyboardType="decimal-pad"
+                    />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.subLabel}>Última lectura</Text>
+                    <TextInput
+                      value={lastReading}
+                      onChangeText={setLastReading}
+                      placeholder="0.00"
+                      placeholderTextColor={colors.textMuted}
+                      style={styles.input}
+                      keyboardType="decimal-pad"
+                    />
+                  </View>
+                </View>
+
+                <Text style={[styles.subLabel, { marginTop: 8 }]}>Unidad</Text>
+                <View style={styles.unitRow}>
+                  {UNITS.map((u) => (
+                    <Pressable
+                      key={u.value}
+                      onPress={() => setUnit(u.value)}
+                      style={[styles.unitChip, unit === u.value && styles.unitChipActive]}
+                    >
+                      <Text style={[styles.unitChipTxt, unit === u.value && styles.unitChipTxtActive]}>
+                        {u.label}
+                      </Text>
+                    </Pressable>
+                  ))}
+                </View>
+
+                <View style={styles.progressBox}>
+                  <Ionicons name="trending-up" size={18} color={colors.primary} />
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.progressLabel}>Avance calculado</Text>
+                    <Text style={styles.progressValue}>
+                      {progress !== null
+                        ? `${progress} ${unit !== 'none' ? UNITS.find((x) => x.value === unit)?.label : ''}`.trim()
+                        : '—'}
+                    </Text>
+                  </View>
+                </View>
+              </>
+            )}
           </View>
 
           {/* === ACTIVITIES === */}
@@ -1059,6 +1114,20 @@ const styles = StyleSheet.create({
   pickerTxt: { flex: 1, fontSize: 15, color: colors.text, fontWeight: '600' },
 
   // Units & priority chips
+  naToggle: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    paddingHorizontal: 10, paddingVertical: 6,
+    borderRadius: 999, borderWidth: 1, borderColor: colors.borderStrong,
+    backgroundColor: colors.bg,
+  },
+  naToggleActive: { backgroundColor: colors.primary, borderColor: colors.primary },
+  naToggleTxt: { fontSize: 12, fontWeight: '800', color: colors.textBody },
+  naHint: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.border,
+    borderRadius: radius.md, padding: 10, marginTop: 4,
+  },
+  naHintTxt: { color: colors.textMuted, fontSize: 12, fontStyle: 'italic', flex: 1 },
   unitRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 6 },
   unitChip: {
     paddingHorizontal: 12,

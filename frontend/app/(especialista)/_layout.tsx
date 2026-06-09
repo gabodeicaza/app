@@ -15,7 +15,7 @@ export default function EspLayout() {
 
   return (
     <Tabs
-      initialRouteName="noticias"
+      initialRouteName="index"
       screenOptions={{
         headerShown: false,
         tabBarActiveTintColor: colors.primary,
@@ -52,13 +52,20 @@ export default function EspLayout() {
         }}
       />
       <Tabs.Screen
-        name="profile"
+        name="chat"
         options={{
-          title: 'Perfil',
-          tabBarIcon: ({ color, size }) => <Ionicons name="person-circle" color={color} size={size} />,
+          title: 'Mensajes',
+          tabBarIcon: ({ color, size }) => <Ionicons name="chatbubbles" color={color} size={size} />,
         }}
       />
+
+      {/* Pantallas sin pestaña */}
+      <Tabs.Screen name="profile" options={{ href: null }} />
       <Tabs.Screen name="report/[id]" options={{ href: null }} />
+      <Tabs.Screen name="chat/directos" options={{ href: null }} />
+      <Tabs.Screen name="chat/areas" options={{ href: null }} />
+      <Tabs.Screen name="chat/[peerId]" options={{ href: null }} />
+      <Tabs.Screen name="chat/area/[areaId]" options={{ href: null }} />
     </Tabs>
   );
 }

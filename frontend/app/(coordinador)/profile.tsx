@@ -40,7 +40,7 @@ export default function ProfileScreen() {
           <Text style={styles.name}>{user?.name}</Text>
           <View style={styles.rolePill}>
             <Ionicons name="briefcase" size={12} color={colors.primary} />
-            <Text style={styles.roleText}>Coordinador</Text>
+            <Text style={styles.roleText}>Supervisor de Obra</Text>
           </View>
           {user?.puesto ? <Text style={styles.puestoLine}>{user.puesto}</Text> : null}
           <Text style={styles.email}>{user?.email}</Text>
@@ -54,7 +54,7 @@ export default function ProfileScreen() {
           <Text style={styles.cardTitle}>Cuenta</Text>
           <Row icon="id-card-outline" label="ID" value={user?.id?.slice(0, 8)} />
           <Row icon="mail-outline" label="Email" value={user?.email} />
-          <Row icon="shield-checkmark-outline" label="Rol" value="Coordinador" />
+          <Row icon="shield-checkmark-outline" label="Rol" value="Supervisor de Obra" />
           <Row icon="briefcase-outline" label="Puesto" value={user?.puesto || '—'} />
         </View>
 

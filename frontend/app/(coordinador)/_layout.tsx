@@ -1,12 +1,21 @@
-import React from 'react';
-import { Tabs } from 'expo-router';
+import React, { useEffect } from 'react';
+import { Tabs, router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '@/src/theme';
+import { useAuth } from '@/src/auth-context';
 
 export default function CoordLayout() {
+  const { user, loading } = useAuth();
+
+  useEffect(() => {
+    if (loading) return;
+    if (!user) router.replace('/(auth)/login');
+    else if (user.role !== 'coordinador') router.replace('/(especialista)');
+  }, [user, loading]);
+
   return (
     <Tabs
-      initialRouteName="noticias"
+      initialRouteName="index"
       screenOptions={{
         headerShown: false,
         tabBarActiveTintColor: colors.primary,
@@ -36,20 +45,6 @@ export default function CoordLayout() {
         }}
       />
       <Tabs.Screen
-        name="areas"
-        options={{
-          title: 'Áreas',
-          tabBarIcon: ({ color, size }) => <Ionicons name="grid" color={color} size={size} />,
-        }}
-      />
-      <Tabs.Screen
-        name="settings"
-        options={{
-          title: 'Proyecto',
-          tabBarIcon: ({ color, size }) => <Ionicons name="construct" color={color} size={size} />,
-        }}
-      />
-      <Tabs.Screen
         name="summary"
         options={{
           title: 'Resumen IA',
@@ -57,13 +52,30 @@ export default function CoordLayout() {
         }}
       />
       <Tabs.Screen
-        name="profile"
+        name="chat"
         options={{
-          title: 'Perfil',
-          tabBarIcon: ({ color, size }) => <Ionicons name="person-circle" color={color} size={size} />,
+          title: 'Mensajes',
+          tabBarIcon: ({ color, size }) => <Ionicons name="chatbubbles" color={color} size={size} />,
         }}
       />
+      <Tabs.Screen
+        name="settings"
+        options={{
+          title: 'Configuración',
+          tabBarIcon: ({ color, size }) => <Ionicons name="settings" color={color} size={size} />,
+        }}
+      />
+
+      {/* Pantallas accesibles pero sin pestaña */}
+      <Tabs.Screen name="profile" options={{ href: null }} />
+      <Tabs.Screen name="areas" options={{ href: null }} />
       <Tabs.Screen name="report/[id]" options={{ href: null }} />
+      <Tabs.Screen name="settings/proyecto" options={{ href: null }} />
+      <Tabs.Screen name="settings/puntos" options={{ href: null }} />
+      <Tabs.Screen name="chat/directos" options={{ href: null }} />
+      <Tabs.Screen name="chat/areas" options={{ href: null }} />
+      <Tabs.Screen name="chat/[peerId]" options={{ href: null }} />
+      <Tabs.Screen name="chat/area/[areaId]" options={{ href: null }} />
     </Tabs>
   );
 }
