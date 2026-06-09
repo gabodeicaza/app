@@ -1,19 +1,18 @@
 {
   "expo": {
-    "name": "SyncSite",
-    "slug": "syncsite",
+    "name": "SynCo",
+    "slug": "synco",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "syncsite",
+    "scheme": "synco",
     "userInterfaceStyle": "light",
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
       "infoPlist": {
-        "NSCameraUsageDescription": "Tomar fotografías de evidencia para reportes de obra.",
-        "NSLocationWhenInUseUsageDescription": "Adjuntar ubicación a la evidencia fotográfica.",
-        "NSPhotoLibraryUsageDescription": "Guardar evidencias fotográficas de los reportes."
+        "NSCameraUsageDescription": "Capturar evidencia de obra en memoria, sin guardarla en tu dispositivo.",
+        "NSPhotoLibraryUsageDescription": "Adjuntar fotos al reporte sin guardarlas en tu dispositivo."
       }
     },
     "android": {
@@ -23,9 +22,7 @@
       },
       "edgeToEdgeEnabled": true,
       "permissions": [
-        "CAMERA",
-        "ACCESS_COARSE_LOCATION",
-        "ACCESS_FINE_LOCATION"
+        "CAMERA"
       ]
     },
     "web": {

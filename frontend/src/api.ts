@@ -82,7 +82,23 @@ export const api = {
     coordinates?: string | null;
     area?: string | null;
   }) => request<any>('POST', '/reference-points', body),
+  updateReferencePoint: (
+    id: string,
+    body: {
+      name: string;
+      location?: string | null;
+      coordinates?: string | null;
+      area?: string | null;
+    },
+  ) => request<any>('PUT', `/reference-points/${id}`, body),
   deleteReferencePoint: (id: string) => request<{ ok: boolean }>('DELETE', `/reference-points/${id}`),
+
+  // Chat (direct messaging)
+  chatUsers: () => request<any[]>('GET', '/chat/users'),
+  chatMessages: (peerId: string) => request<any[]>('GET', `/chat/messages/${peerId}`),
+  chatSend: (toUser: string, text: string) =>
+    request<any>('POST', '/chat/send', { to_user: toUser, text }),
+  chatUnreadTotal: () => request<{ unread: number }>('GET', '/chat/unread-total'),
 
   // Site Config (Contract / Contractor)
   getSiteConfig: () =>

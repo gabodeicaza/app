@@ -220,6 +220,36 @@ class PeriodSummaryIn(BaseModel):
     area: Optional[str] = None  # None = all areas (coordinador only)
 
 
+# --- Chat (direct messaging) -----------------------------
+class ChatSendIn(BaseModel):
+    to_user: str
+    text: str
+
+
+class ChatMessageOut(BaseModel):
+    id: str
+    from_user: str
+    from_name: str
+    to_user: str
+    to_name: str
+    text: str
+    createdAt: str
+    read: bool = False
+
+
+class ChatUserOut(BaseModel):
+    id: str
+    name: str
+    email: str
+    role: str
+    area: Optional[str] = None
+    areaName: Optional[str] = None
+    puesto: Optional[str] = None
+    lastMessage: Optional[str] = None
+    lastAt: Optional[str] = None
+    unread: int = 0
+
+
 # --- Helpers ----------------------------------------------------------------
 def slugify(s: str) -> str:
     s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode().lower()
@@ -437,6 +467,56 @@ async def create_reference_point(body: ReferencePointIn, user: dict = Depends(ge
     doc.pop("_id", None)
     doc["areaName"] = await get_area_name(target_area) if target_area else "Global"
     return ReferencePointOut(**doc)
+
+
+@api.put("/reference-points/{point_id}", response_model=ReferencePointOut)
+async def update_reference_point(
+    point_id: str,
+    body: ReferencePointIn,
+    user: dict = Depends(get_current_user),
+):
+    """Edita un punto de referencia existente.
+    - Coordinador puede editar cualquiera y mover entre global/área.
+    - Especialista solo puede editar los suyos y dentro de su propia área.
+    """
+    p = await db.reference_points.find_one({"id": point_id}, {"_id": 0})
+    if not p:
+        raise HTTPException(status_code=404, detail="Punto no encontrado")
+    if user["role"] != "coordinador" and p["createdBy"] != user["id"]:
+        raise HTTPException(status_code=403, detail="Sin permiso")
+
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Nombre requerido")
+
+    target_area: Optional[str] = body.area
+    if user["role"] == "especialista":
+        # Especialistas no pueden cambiar el área (ni hacer global).
+        target_area = user.get("area")
+    else:
+        if target_area and not await area_exists(target_area):
+            raise HTTPException(status_code=400, detail="Área inválida")
+
+    # Evitar duplicados (mismo nombre + mismo scope) excluyendo este punto.
+    dup = await db.reference_points.find_one({
+        "name": name,
+        "area": target_area,
+        "id": {"$ne": point_id},
+    })
+    if dup:
+        raise HTTPException(status_code=400, detail="Ya existe un punto con ese nombre")
+
+    updates = {
+        "name": name,
+        "location": (body.location or "").strip() or None,
+        "coordinates": (body.coordinates or "").strip() or None,
+        "area": target_area,
+    }
+    await db.reference_points.update_one({"id": point_id}, {"$set": updates})
+
+    p.update(updates)
+    p["areaName"] = await get_area_name(target_area) if target_area else "Global"
+    return ReferencePointOut(**p)
 
 
 @api.delete("/reference-points/{point_id}")
@@ -847,6 +927,105 @@ async def ai_period_summary(body: PeriodSummaryIn, user: dict = Depends(get_curr
     except Exception as e:
         log.exception("AI period summary failed")
         raise HTTPException(status_code=502, detail=f"IA no disponible: {e}")
+
+
+# --- Routes: Chat (Direct Messaging) ----------------------------------------
+def _chat_key(a: str, b: str) -> List[str]:
+    return sorted([a, b])
+
+
+@api.get("/chat/users", response_model=List[ChatUserOut])
+async def chat_users(user: dict = Depends(get_current_user)):
+    """Lista de usuarios para iniciar conversación, con último mensaje y no leídos."""
+    uid = user["id"]
+    users_cursor = db.users.find(
+        {"id": {"$ne": uid}}, {"_id": 0, "password": 0}
+    )
+    out: List[ChatUserOut] = []
+    async for u in users_cursor:
+        # Last message (in either direction)
+        last = await db.chat_messages.find_one(
+            {"$or": [
+                {"from_user": uid, "to_user": u["id"]},
+                {"from_user": u["id"], "to_user": uid},
+            ]},
+            {"_id": 0},
+            sort=[("createdAt", -1)],
+        )
+        unread = await db.chat_messages.count_documents(
+            {"from_user": u["id"], "to_user": uid, "read": False}
+        )
+        area_name: Optional[str] = None
+        if u.get("area"):
+            area_name = await get_area_name(u["area"])
+        out.append(ChatUserOut(
+            id=u["id"], name=u["name"], email=u["email"], role=u["role"],
+            area=u.get("area"), areaName=area_name, puesto=u.get("puesto"),
+            lastMessage=(last or {}).get("text"),
+            lastAt=(last or {}).get("createdAt"),
+            unread=unread,
+        ))
+    # Sort by lastAt desc, fallback name asc
+    out.sort(key=lambda x: (x.lastAt or "0", x.name), reverse=True)
+    return out
+
+
+@api.get("/chat/messages/{peer_id}", response_model=List[ChatMessageOut])
+async def chat_messages(peer_id: str, user: dict = Depends(get_current_user)):
+    uid = user["id"]
+    peer = await db.users.find_one({"id": peer_id}, {"_id": 0, "password": 0})
+    if not peer:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+    cursor = db.chat_messages.find(
+        {"$or": [
+            {"from_user": uid, "to_user": peer_id},
+            {"from_user": peer_id, "to_user": uid},
+        ]},
+        {"_id": 0},
+    ).sort("createdAt", 1).limit(500)
+    msgs = [ChatMessageOut(**m) async for m in cursor]
+    # Mark incoming as read
+    await db.chat_messages.update_many(
+        {"from_user": peer_id, "to_user": uid, "read": False},
+        {"$set": {"read": True}},
+    )
+    return msgs
+
+
+@api.post("/chat/send", response_model=ChatMessageOut)
+async def chat_send(body: ChatSendIn, user: dict = Depends(get_current_user)):
+    text = body.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Mensaje vacío")
+    if len(text) > 2000:
+        raise HTTPException(status_code=400, detail="Mensaje demasiado largo")
+    if body.to_user == user["id"]:
+        raise HTTPException(status_code=400, detail="No puedes enviarte mensajes a ti mismo")
+    peer = await db.users.find_one({"id": body.to_user}, {"_id": 0, "password": 0})
+    if not peer:
+        raise HTTPException(status_code=404, detail="Destinatario no encontrado")
+    mid = str(uuid.uuid4())
+    doc = {
+        "id": mid,
+        "from_user": user["id"],
+        "from_name": user["name"],
+        "to_user": peer["id"],
+        "to_name": peer["name"],
+        "text": text,
+        "createdAt": datetime.now(timezone.utc).isoformat(),
+        "read": False,
+    }
+    await db.chat_messages.insert_one(doc)
+    doc.pop("_id", None)
+    return ChatMessageOut(**doc)
+
+
+@api.get("/chat/unread-total")
+async def chat_unread_total(user: dict = Depends(get_current_user)):
+    n = await db.chat_messages.count_documents(
+        {"to_user": user["id"], "read": False}
+    )
+    return {"unread": n}
 
 
 # --- Health -----------------------------------------------------------------
