@@ -3,6 +3,7 @@ import { Tabs, router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '@/src/theme';
 import { useAuth } from '@/src/auth-context';
+import { isSupervisorView } from '@/src/utils/roles';
 
 export default function CoordLayout() {
   const { user, loading } = useAuth();
@@ -10,7 +11,7 @@ export default function CoordLayout() {
   useEffect(() => {
     if (loading) return;
     if (!user) router.replace('/(auth)/login');
-    else if (user.role !== 'coordinador') router.replace('/(especialista)');
+    else if (!isSupervisorView(user.role)) router.replace('/(especialista)');
   }, [user, loading]);
 
   return (

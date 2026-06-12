@@ -21,6 +21,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system/legacy';
+import * as DocumentPicker from 'expo-document-picker';
 import * as Haptics from 'expo-haptics';
 import { AppHeader } from '@/src/components/AppHeader';
 import { Button } from '@/src/components/Button';
@@ -127,6 +128,9 @@ export default function NewReport() {
 
   // Sello anti-fraude: imagen pendiente de aplicar marca (data URL en RAM)
   const [pendingStampBase64, setPendingStampBase64] = useState<string | null>(null);
+
+  // Archivos adjuntos (Cero Huella Local: base64 en RAM, no se guardan a galería)
+  const [files, setFiles] = useState<Array<{ name: string; mimeType: string; dataUrl: string; size?: number }>>([]);
 
   const [submitting, setSubmitting] = useState(false);
   const [aiLoading, setAiLoading] = useState(false);
@@ -285,6 +289,115 @@ export default function NewReport() {
     setImages((prev) => prev.filter((_, idx) => idx !== i));
   }
 
+  // ---------- Archivos adjuntos (Cero Huella Local) ----------
+  const MAX_FILE_BYTES = 8 * 1024 * 1024; // 8 MB por archivo
+
+  async function pickDocument() {
+    if (files.length >= 5) {
+      Alert.alert('Lmite alcanzado', 'Mximo 5 archivos por reporte.');
+      return;
+    }
+    try {
+      const res = await DocumentPicker.getDocumentAsync({
+        type: ['application/pdf', 'application/vnd.ms-excel',
+               'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+               'application/msword',
+               'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+               'text/csv', 'image/*'],
+        multiple: false,
+        copyToCacheDirectory: true,
+      });
+      if (res.canceled) return;
+      const asset = res.assets[0];
+      if (!asset?.uri) return;
+      if (asset.size && asset.size > MAX_FILE_BYTES) {
+        Alert.alert('Archivo muy grande', 'Mximo 8 MB por archivo.');
+        void wipeTemp(asset.uri);
+        return;
+      }
+      const b64 = await FileSystem.readAsStringAsync(asset.uri, { encoding: 'base64' });
+      const mime = asset.mimeType || 'application/octet-stream';
+      const dataUrl = `data:${mime};base64,${b64}`;
+      setFiles((prev) => [...prev, {
+        name: asset.name || 'archivo',
+        mimeType: mime,
+        dataUrl,
+        size: asset.size,
+      }]);
+      // Cero Huella Local: borra la copia temporal del picker.
+      void wipeTemp(asset.uri);
+      void Haptics.selectionAsync();
+    } catch (e: any) {
+      Alert.alert('No se pudo adjuntar', e?.message || 'Intenta de nuevo.');
+    }
+  }
+
+  async function scanDocument() {
+    if (files.length >= 5) {
+      Alert.alert('Lmite alcanzado', 'Mximo 5 archivos por reporte.');
+      return;
+    }
+    const perm = await ImagePicker.getCameraPermissionsAsync();
+    let granted = perm.status === 'granted';
+    if (!granted && perm.canAskAgain) {
+      const ask = await ImagePicker.requestCameraPermissionsAsync();
+      granted = ask.status === 'granted';
+    }
+    if (!granted) {
+      Alert.alert(
+        'Permiso de cmara denegado',
+        'Habilita la cmara en Ajustes para escanear documentos.',
+        [{ text: 'Cancelar' }, { text: 'Abrir Ajustes', onPress: () => Linking.openSettings() }],
+      );
+      return;
+    }
+    try {
+      const result = await ImagePicker.launchCameraAsync({
+        quality: 0.7,
+        base64: true,
+        allowsEditing: true,           // permite recortar para "escanear"
+        aspect: [3, 4],
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      });
+      if (result.canceled) return;
+      const asset = result.assets[0];
+      if (!asset?.base64) return;
+      const ts = new Date();
+      const pad = (n: number) => (n < 10 ? '0' + n : String(n));
+      const name = `escaneo-${ts.getFullYear()}${pad(ts.getMonth() + 1)}${pad(ts.getDate())}-${pad(ts.getHours())}${pad(ts.getMinutes())}${pad(ts.getSeconds())}.jpg`;
+      setFiles((prev) => [...prev, {
+        name,
+        mimeType: 'image/jpeg',
+        dataUrl: `data:image/jpeg;base64,${asset.base64}`,
+        size: asset.base64.length,
+      }]);
+      // Cero Huella Local: borrar archivo temporal del picker.
+      void wipeTemp(asset.uri);
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch (e: any) {
+      Alert.alert('No se pudo escanear', e?.message || 'Intenta de nuevo.');
+    }
+  }
+
+  function removeFile(i: number) {
+    setFiles((prev) => prev.filter((_, idx) => idx !== i));
+  }
+
+  function fileKindIcon(mime: string): string {
+    if (mime.includes('pdf')) return 'document-text';
+    if (mime.includes('sheet') || mime.includes('excel') || mime.includes('csv')) return 'grid';
+    if (mime.includes('word')) return 'document';
+    if (mime.startsWith('image/')) return 'image';
+    return 'attach';
+  }
+
+  function fmtBytes(n?: number): string {
+    if (!n) return '';
+    if (n < 1024) return `${n} B`;
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+    return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  }
+
   // --------- Reference point handlers ---------
   function selectPoint(p: RefPoint) {
     setSelectedPoint(p);
@@ -428,6 +541,7 @@ export default function NewReport() {
       activities: activities.trim() || null,
       personnel,
       equipment,
+      files,
     };
     try {
       if (online) {
@@ -449,6 +563,10 @@ export default function NewReport() {
           activities: payload.activities,
           personnel: payload.personnel,
           equipment: payload.equipment,
+          files: payload.files,
+          tramo: payload.tramo,
+          estacion: payload.estacion,
+          poste: payload.poste,
           priority: payload.priority,
         } as any);
       }
@@ -461,6 +579,7 @@ export default function NewReport() {
       setTitle('');
       setComments('');
       setImages([]);
+      setFiles([]);
       setPendingStampBase64(null);
       setActivities('');
       setFirstReading('');
@@ -894,6 +1013,49 @@ export default function NewReport() {
             )}
           </View>
 
+          {/* === ARCHIVOS ADJUNTOS === */}
+          <View style={styles.card}>
+            <View style={styles.photosHeader}>
+              <Text style={styles.label}>Archivos adjuntos</Text>
+              <Text style={styles.muted}>{files.length}/5</Text>
+            </View>
+            <Text style={[styles.muted, { marginBottom: 6 }]}>
+              PDF, Excel, Word, CSV o escaneo de cmara. Mximo 8 MB c/u.
+            </Text>
+            <View style={styles.photoActions}>
+              <Pressable onPress={pickDocument} style={styles.actionBtn}>
+                <Ionicons name="folder-open" size={20} color={colors.primary} />
+                <Text style={styles.actionTxt}>Subir archivo</Text>
+              </Pressable>
+              <Pressable onPress={scanDocument} style={styles.actionBtn}>
+                <Ionicons name="scan" size={20} color={colors.primary} />
+                <Text style={styles.actionTxt}>Escanear</Text>
+              </Pressable>
+            </View>
+            {files.length > 0 ? (
+              <View style={{ gap: 6, marginTop: 8 }}>
+                {files.map((f, i) => (
+                  <View key={i} style={styles.fileRow}>
+                    <Ionicons
+                      name={fileKindIcon(f.mimeType) as any}
+                      size={20}
+                      color={colors.primary}
+                    />
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.fileName} numberOfLines={1}>{f.name}</Text>
+                      <Text style={styles.fileMeta} numberOfLines={1}>
+                        {f.mimeType}{f.size ? `  ${fmtBytes(f.size)}` : ''}
+                      </Text>
+                    </View>
+                    <Pressable onPress={() => removeFile(i)} hitSlop={8} style={styles.fileRemove}>
+                      <Ionicons name="trash" size={16} color="#B91C1C" />
+                    </Pressable>
+                  </View>
+                ))}
+              </View>
+            ) : null}
+          </View>
+
           {!online ? (
             <View style={styles.offlineHint}>
               <Ionicons name="cloud-offline" size={16} color="#92400E" />
@@ -1195,6 +1357,18 @@ const styles = StyleSheet.create({
   posteChipActive: { backgroundColor: colors.primary, borderColor: colors.primary },
   posteChipTxt: { fontSize: 12, fontWeight: '800', color: colors.textBody },
   posteChipTxtActive: { color: '#fff' },
+  fileRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    paddingHorizontal: 10, paddingVertical: 9,
+    borderWidth: 1, borderColor: colors.border, borderRadius: radius.md,
+    backgroundColor: colors.surface,
+  },
+  fileName: { fontSize: 13, fontWeight: '700', color: colors.text },
+  fileMeta: { fontSize: 11, color: colors.textMuted, marginTop: 1 },
+  fileRemove: {
+    width: 30, height: 30, alignItems: 'center', justifyContent: 'center',
+    borderRadius: 6, backgroundColor: '#FEE2E2',
+  },
   locSummary: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
     marginTop: 10, padding: 8, borderRadius: 6,
