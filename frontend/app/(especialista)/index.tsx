@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View,
   Text,
@@ -8,10 +8,12 @@ import {
   Pressable,
   ActivityIndicator,
   Image,
+  Platform,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { router, useFocusEffect } from 'expo-router';
+import DateTimePicker from '@react-native-community/datetimepicker';
 import { AppHeader } from '@/src/components/AppHeader';
 import { AreaChip } from '@/src/components/AreaChip';
 import { Button } from '@/src/components/Button';
@@ -20,6 +22,8 @@ import { useAuth } from '@/src/auth-context';
 import { useSync } from '@/src/sync-context';
 import { colors, radius, shadow, spacing } from '@/src/theme';
 import { fmtFullDate, fmtTime } from '@/src/utils/format';
+
+type TimeFilter = 'today' | 'yesterday' | 'week' | 'custom' | 'all';
 
 interface Report {
   id: string;
@@ -34,6 +38,9 @@ interface Report {
   createdAt: string;
 }
 
+function startOfDay(d: Date) { const x = new Date(d); x.setHours(0,0,0,0); return x; }
+function endOfDay(d: Date) { const x = new Date(d); x.setHours(23,59,59,999); return x; }
+
 export default function EspHome() {
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
@@ -42,6 +49,11 @@ export default function EspHome() {
   const [areaName, setAreaName] = useState<string>('');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+
+  // Filtros temporales
+  const [timeFilter, setTimeFilter] = useState<TimeFilter>('today');
+  const [customDate, setCustomDate] = useState<Date | null>(null);
+  const [showPicker, setShowPicker] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -71,8 +83,52 @@ export default function EspHome() {
     load();
   }, [load]);
 
-  const myReports = reports.filter((r) => r.createdBy === user?.id);
-  const teamReports = reports.filter((r) => r.createdBy !== user?.id);
+  // Aplicar filtro temporal
+  const filteredReports = useMemo(() => {
+    if (timeFilter === 'all') return reports;
+    const now = new Date();
+    let from: Date, to: Date;
+    if (timeFilter === 'today') {
+      from = startOfDay(now); to = endOfDay(now);
+    } else if (timeFilter === 'yesterday') {
+      const y = new Date(now); y.setDate(y.getDate() - 1);
+      from = startOfDay(y); to = endOfDay(y);
+    } else if (timeFilter === 'week') {
+      const w = new Date(now); w.setDate(w.getDate() - 6);
+      from = startOfDay(w); to = endOfDay(now);
+    } else { // custom
+      if (!customDate) return reports;
+      from = startOfDay(customDate); to = endOfDay(customDate);
+    }
+    return reports.filter((r) => {
+      const t = new Date(r.createdAt).getTime();
+      return t >= from.getTime() && t <= to.getTime();
+    });
+  }, [reports, timeFilter, customDate]);
+
+  const myReports = filteredReports.filter((r) => r.createdBy === user?.id);
+  const teamReports = filteredReports.filter((r) => r.createdBy !== user?.id);
+
+  const filterLabel = useMemo(() => {
+    if (timeFilter === 'today') return 'Hoy';
+    if (timeFilter === 'yesterday') return 'Ayer';
+    if (timeFilter === 'week') return 'Esta semana';
+    if (timeFilter === 'all') return 'Todos';
+    if (timeFilter === 'custom' && customDate) {
+      return customDate.toLocaleDateString('es-MX', { day: '2-digit', month: 'short' });
+    }
+    return 'Fecha';
+  }, [timeFilter, customDate]);
+
+  const onPickDate = (event: any, date?: Date) => {
+    // Android: el picker se cierra automáticamente al seleccionar
+    if (Platform.OS !== 'ios') setShowPicker(false);
+    if (event?.type === 'dismissed') return;
+    if (date) {
+      setCustomDate(date);
+      setTimeFilter('custom');
+    }
+  };
 
   return (
     <View style={styles.flex}>
@@ -128,20 +184,58 @@ export default function EspHome() {
 
         {/* Stats */}
         <View style={styles.stats}>
-          <Stat icon="document-text" label="Reportes en mi área" value={reports.length} />
+          <Stat icon="document-text" label={`Reportes ${filterLabel.toLowerCase()}`} value={filteredReports.length} />
           <Stat icon="person" label="Míos" value={myReports.length} />
           <Stat icon="people" label="De compañeros" value={teamReports.length} />
         </View>
 
+        {/* Time filter pills */}
+        <View style={styles.pillsRow}>
+          <Pill label="Hoy" active={timeFilter === 'today'} onPress={() => { setTimeFilter('today'); setCustomDate(null); }} />
+          <Pill label="Ayer" active={timeFilter === 'yesterday'} onPress={() => { setTimeFilter('yesterday'); setCustomDate(null); }} />
+          <Pill label="Esta semana" active={timeFilter === 'week'} onPress={() => { setTimeFilter('week'); setCustomDate(null); }} />
+          <Pill label="Todos" active={timeFilter === 'all'} onPress={() => { setTimeFilter('all'); setCustomDate(null); }} />
+          <Pressable
+            onPress={() => setShowPicker(true)}
+            style={[styles.pill, timeFilter === 'custom' && styles.pillActive]}
+          >
+            <Ionicons
+              name="calendar"
+              size={14}
+              color={timeFilter === 'custom' ? '#fff' : colors.primary}
+            />
+            {timeFilter === 'custom' && customDate ? (
+              <Text style={[styles.pillText, styles.pillTextActive]}>{filterLabel}</Text>
+            ) : null}
+          </Pressable>
+        </View>
+
+        {showPicker ? (
+          <DateTimePicker
+            value={customDate || new Date()}
+            mode="date"
+            maximumDate={new Date()}
+            display={Platform.OS === 'ios' ? 'inline' : 'default'}
+            onChange={onPickDate}
+          />
+        ) : null}
+
         {/* List */}
-        <Text style={styles.section}>Actividad reciente en {areaName || 'tu área'}</Text>
+        <Text style={styles.section}>
+          {timeFilter === 'today' ? 'Actividad de hoy' :
+           timeFilter === 'yesterday' ? 'Actividad de ayer' :
+           timeFilter === 'week' ? 'Actividad de la semana' :
+           timeFilter === 'custom' && customDate ?
+             `Actividad del ${customDate.toLocaleDateString('es-MX', { day: '2-digit', month: 'long', year: 'numeric' })}` :
+           `Actividad reciente en ${areaName || 'tu área'}`}
+        </Text>
         {loading ? (
           <View style={styles.center}><ActivityIndicator color={colors.primary} /></View>
-        ) : reports.length === 0 ? (
+        ) : filteredReports.length === 0 ? (
           <View style={styles.empty}>
             <Ionicons name="file-tray-outline" size={42} color={colors.textMuted} />
-            <Text style={styles.emptyTitle}>Sin reportes aún</Text>
-            <Text style={styles.emptySub}>Crea el primer reporte de tu área.</Text>
+            <Text style={styles.emptyTitle}>Sin reportes en este periodo</Text>
+            <Text style={styles.emptySub}>Cambia el filtro o crea uno nuevo.</Text>
             <View style={{ height: spacing.md }} />
             <Button
               label="Crear reporte"
@@ -150,7 +244,7 @@ export default function EspHome() {
             />
           </View>
         ) : (
-          reports.map((r) => <ReportCard key={r.id} r={r} mine={r.createdBy === user?.id} />)
+          filteredReports.map((r) => <ReportCard key={r.id} r={r} mine={r.createdBy === user?.id} />)
         )}
       </ScrollView>
     </View>
@@ -164,6 +258,18 @@ function Stat({ icon, label, value }: { icon: any; label: string; value: number 
       <Text style={styles.statVal}>{value}</Text>
       <Text style={styles.statLbl}>{label}</Text>
     </View>
+  );
+}
+
+function Pill({ label, active, onPress }: { label: string; active: boolean; onPress: () => void }) {
+  return (
+    <Pressable
+      onPress={onPress}
+      style={[styles.pill, active && styles.pillActive]}
+      hitSlop={6}
+    >
+      <Text style={[styles.pillText, active && styles.pillTextActive]}>{label}</Text>
+    </Pressable>
   );
 }
 
@@ -276,4 +382,19 @@ const styles = StyleSheet.create({
   cardFoot: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 6 },
   byRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   by: { fontSize: 11, color: colors.textMuted, fontWeight: '700' },
+
+  pillsRow: {
+    flexDirection: 'row', gap: 6, flexWrap: 'wrap',
+    marginTop: spacing.sm,
+  },
+  pill: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    paddingHorizontal: 12, paddingVertical: 7,
+    borderRadius: 999,
+    backgroundColor: colors.surface,
+    borderWidth: 1, borderColor: colors.border,
+  },
+  pillActive: { backgroundColor: colors.primary, borderColor: colors.primary },
+  pillText: { fontSize: 12, fontWeight: '800', color: colors.textBody },
+  pillTextActive: { color: '#fff' },
 });

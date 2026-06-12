@@ -120,6 +120,11 @@ export default function NewReport() {
   const [priority, setPriority] = useState<1 | 2 | 3>(1);
   const [images, setImages] = useState<string[]>([]);
 
+  // --- Jerarquía de Ubicación (obligatoria) ---
+  const [tramo, setTramo] = useState<1 | 2 | null>(null);
+  const [estacion, setEstacion] = useState<number | null>(null);
+  const [poste, setPoste] = useState<number | null>(null);
+
   // Sello anti-fraude: imagen pendiente de aplicar marca (data URL en RAM)
   const [pendingStampBase64, setPendingStampBase64] = useState<string | null>(null);
 
@@ -386,6 +391,13 @@ export default function NewReport() {
       Alert.alert('Sin área', 'Tu cuenta no tiene un área asignada.');
       return;
     }
+    if (!tramo || !estacion || !poste) {
+      Alert.alert(
+        'Ubicación incompleta',
+        'Selecciona Tramo, Estación y Poste antes de enviar el reporte.',
+      );
+      return;
+    }
     setSubmitting(true);
     const firstNum = noAplicaLecturas
       ? null
@@ -403,6 +415,9 @@ export default function NewReport() {
       area: user.area,
       images,
       priority,
+      tramo,
+      estacion,
+      poste,
       reference_point_id: selectedPoint?.id || null,
       reference_point_name: selectedPoint?.name || null,
       location: locationName.trim() || null,
@@ -457,6 +472,9 @@ export default function NewReport() {
       setCoordinates('');
       setLocationName('');
       setPriority(1);
+      setTramo(null);
+      setEstacion(null);
+      setPoste(null);
       router.replace('/(especialista)');
       if (online) void syncNow();
     } catch (e: any) {
@@ -489,6 +507,83 @@ export default function NewReport() {
             <HeaderRow icon="briefcase-outline" label="Puesto" value={user?.puesto || '—'} />
             <HeaderRow icon="document-attach-outline" label="Contrato" value={siteCfg.contract || (loadingMeta ? '…' : 'No configurado')} muted={!siteCfg.contract} />
             <HeaderRow icon="business-outline" label="Contratista" value={siteCfg.contractor || (loadingMeta ? '…' : 'No configurado')} muted={!siteCfg.contractor} />
+          </View>
+
+          {/* === UBICACIN CABLEBS (Tramo / Estacin / Poste) === */}
+          <View style={styles.card}>
+            <Text style={styles.headerTitle}>Ubicacin Cablebs</Text>
+            <Text style={[styles.subLabel, { marginBottom: 8 }]}>
+              Obligatorio  define el contexto fsico del reporte
+            </Text>
+
+            <Text style={styles.subLabel}>Tramo</Text>
+            <View style={styles.locRow}>
+              {[1, 2].map((t) => (
+                <Pressable
+                  key={t}
+                  onPress={() => {
+                    setTramo(t as 1 | 2);
+                    // Reset cascada si cambia
+                    setEstacion(null);
+                    setPoste(null);
+                  }}
+                  style={[styles.locChip, tramo === t && styles.locChipActive]}
+                >
+                  <Text style={[styles.locChipTxt, tramo === t && styles.locChipTxtActive]}>
+                    Tramo {t}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+
+            {tramo ? (
+              <>
+                <Text style={[styles.subLabel, { marginTop: 10 }]}>Estacin</Text>
+                <View style={styles.locRow}>
+                  {(tramo === 1 ? [1, 2, 3, 4, 5] : [6, 7, 8, 9]).map((e) => (
+                    <Pressable
+                      key={e}
+                      onPress={() => setEstacion(e)}
+                      style={[styles.locChip, estacion === e && styles.locChipActive]}
+                    >
+                      <Text style={[styles.locChipTxt, estacion === e && styles.locChipTxtActive]}>
+                        E{e}
+                      </Text>
+                    </Pressable>
+                  ))}
+                </View>
+              </>
+            ) : null}
+
+            {tramo && estacion ? (
+              <>
+                <Text style={[styles.subLabel, { marginTop: 10 }]}>
+                  Poste (1 - 35)
+                </Text>
+                <View style={styles.posteWrap}>
+                  {Array.from({ length: 35 }, (_, i) => i + 1).map((p) => (
+                    <Pressable
+                      key={p}
+                      onPress={() => setPoste(p)}
+                      style={[styles.posteChip, poste === p && styles.posteChipActive]}
+                    >
+                      <Text style={[styles.posteChipTxt, poste === p && styles.posteChipTxtActive]}>
+                        {p}
+                      </Text>
+                    </Pressable>
+                  ))}
+                </View>
+              </>
+            ) : null}
+
+            {tramo && estacion && poste ? (
+              <View style={styles.locSummary}>
+                <Ionicons name="checkmark-circle" size={14} color={colors.success || '#16a34a'} />
+                <Text style={styles.locSummaryTxt}>
+                  Tramo {tramo}  Estacin {estacion}  Poste {poste}
+                </Text>
+              </View>
+            ) : null}
           </View>
 
           {/* === REFERENCE POINT === */}
@@ -1080,6 +1175,32 @@ const styles = StyleSheet.create({
   headerCard: { backgroundColor: '#F1F5FF', borderColor: '#C7D2FE' },
   headerTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 10 },
   headerTitle: { fontSize: 13, fontWeight: '800', color: colors.primary, textTransform: 'uppercase', letterSpacing: 0.4 },
+  locRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 6 },
+  locChip: {
+    paddingHorizontal: 14, paddingVertical: 9,
+    borderRadius: radius.md,
+    backgroundColor: colors.surface,
+    borderWidth: 1, borderColor: colors.border,
+  },
+  locChipActive: { backgroundColor: colors.primary, borderColor: colors.primary },
+  locChipTxt: { fontSize: 13, fontWeight: '800', color: colors.textBody },
+  locChipTxtActive: { color: '#fff' },
+  posteWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 5, marginTop: 6 },
+  posteChip: {
+    minWidth: 38, height: 36, alignItems: 'center', justifyContent: 'center',
+    paddingHorizontal: 8, borderRadius: 8,
+    backgroundColor: colors.surface,
+    borderWidth: 1, borderColor: colors.border,
+  },
+  posteChipActive: { backgroundColor: colors.primary, borderColor: colors.primary },
+  posteChipTxt: { fontSize: 12, fontWeight: '800', color: colors.textBody },
+  posteChipTxtActive: { color: '#fff' },
+  locSummary: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    marginTop: 10, padding: 8, borderRadius: 6,
+    backgroundColor: '#ECFDF5', borderWidth: 1, borderColor: '#A7F3D0',
+  },
+  locSummaryTxt: { fontSize: 12, fontWeight: '700', color: '#065F46' },
   headerRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 5 },
   headerRowLabel: { fontSize: 12, color: colors.textMuted, fontWeight: '700', width: 90 },
   headerRowValue: { fontSize: 13, color: colors.text, fontWeight: '600', flex: 1 },

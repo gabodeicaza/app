@@ -3,6 +3,7 @@ import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import * as FileSystem from 'expo-file-system/legacy';
 import { api } from '@/src/api';
+import { DIRAC_LOGO_DATAURL } from '@/src/utils/dirac-logo';
 
 function esc(s?: string | null): string {
   if (!s) return '';
@@ -56,55 +57,106 @@ export async function exportSupervisorReport(opts: ExportOptions = {}): Promise<
   const contract = esc(cfg?.contract) || 'Sin contrato';
   const contractor = esc(cfg?.contractor) || 'Sin contratista';
 
-  const reportsHtml = reports.length === 0
-    ? `<p class="empty">Sin reportes registrados para el periodo seleccionado.</p>`
-    : reports.map((r: any, i: number) => {
-        const imgs = (r.images || []).slice(0, 6).map((src: string) =>
-          `<img class="ev" src="${src}" />`,
-        ).join('');
-        const personnel = (r.personnel || []).join(', ');
-        const equipment = (r.equipment || []).join(', ');
-        const files = (r.files || []).map((f: any) =>
-          `<li>${esc(f.name)} <span class="muted">(${esc(f.mimeType)})</span></li>`,
-        ).join('');
-        const areaName = esc(r.areaName) || '&Aacute;rea';
-        return `
-          <section class="rep ${i > 0 ? 'page-break' : ''}">
-            <div class="rep-head">
-              <span class="pill">${areaName}</span>
-              <span class="by">${esc(r.createdByName)} &middot; ${esc(fmtDate(r.createdAt))}</span>
-            </div>
-            <h2>${esc(r.title)}</h2>
-            ${r.location ? `<p class="loc"><b>Ubicaci&oacute;n:</b> ${esc(r.location)}${r.coordinates ? ` (${esc(r.coordinates)})` : ''}</p>` : ''}
-            ${r.comments ? `<p>${esc(r.comments)}</p>` : ''}
-            ${r.activities ? `<p><b>Actividades:</b> ${esc(r.activities)}</p>` : ''}
-            ${personnel ? `<p><b>Personal:</b> ${esc(personnel)}</p>` : ''}
-            ${equipment ? `<p><b>Equipo:</b> ${esc(equipment)}</p>` : ''}
-            ${(r.first_reading !== null && r.first_reading !== undefined) ? `<p><b>Lectura inicial:</b> ${esc(String(r.first_reading))} ${esc(r.unit || '')}</p>` : ''}
-            ${(r.last_reading !== null && r.last_reading !== undefined) ? `<p><b>Lectura final:</b> ${esc(String(r.last_reading))} ${esc(r.unit || '')}</p>` : ''}
-            ${imgs ? `<div class="grid">${imgs}</div>` : ''}
-            ${files ? `<p><b>Archivos adjuntos:</b></p><ul>${files}</ul>` : ''}
-          </section>`;
-      }).join('');
+  // --- Agrupación jerárquica Tramo > Estación > Poste -----------------------
+  const renderReport = (r: any) => {
+    const imgs = (r.images || []).slice(0, 6).map((src: string) =>
+      `<img class="ev" src="${src}" />`,
+    ).join('');
+    const personnel = (r.personnel || []).join(', ');
+    const equipment = (r.equipment || []).join(', ');
+    const files = (r.files || []).map((f: any) =>
+      `<li>${esc(f.name)} <span class="muted">(${esc(f.mimeType)})</span></li>`,
+    ).join('');
+    const areaName = esc(r.areaName) || '&Aacute;rea';
+    return `
+      <article class="rep">
+        <div class="rep-head">
+          <span class="pill">${areaName}</span>
+          <span class="by">${esc(r.createdByName)} &middot; ${esc(fmtDate(r.createdAt))}</span>
+        </div>
+        <h3 class="rep-title">${esc(r.title)}</h3>
+        ${r.location ? `<p class="loc"><b>Ubicaci&oacute;n:</b> ${esc(r.location)}${r.coordinates ? ` (${esc(r.coordinates)})` : ''}</p>` : ''}
+        ${r.comments ? `<p>${esc(r.comments)}</p>` : ''}
+        ${r.activities ? `<p><b>Actividades:</b> ${esc(r.activities)}</p>` : ''}
+        ${personnel ? `<p><b>Personal:</b> ${esc(personnel)}</p>` : ''}
+        ${equipment ? `<p><b>Equipo:</b> ${esc(equipment)}</p>` : ''}
+        ${(r.first_reading !== null && r.first_reading !== undefined) ? `<p><b>Lectura inicial:</b> ${esc(String(r.first_reading))} ${esc(r.unit || '')}</p>` : ''}
+        ${(r.last_reading !== null && r.last_reading !== undefined) ? `<p><b>Lectura final:</b> ${esc(String(r.last_reading))} ${esc(r.unit || '')}</p>` : ''}
+        ${imgs ? `<div class="grid">${imgs}</div>` : ''}
+        ${files ? `<p><b>Archivos adjuntos:</b></p><ul>${files}</ul>` : ''}
+      </article>`;
+  };
+
+  // Agrupar por tramo -> estacion -> poste
+  type Grouped = Record<string, Record<string, Record<string, any[]>>>;
+  const grouped: Grouped = {};
+  const sinUbicacion: any[] = [];
+  for (const r of reports) {
+    if (!r.tramo || !r.estacion || !r.poste) {
+      sinUbicacion.push(r);
+      continue;
+    }
+    const t = String(r.tramo);
+    const e = String(r.estacion);
+    const p = String(r.poste);
+    grouped[t] = grouped[t] || {};
+    grouped[t][e] = grouped[t][e] || {};
+    grouped[t][e][p] = grouped[t][e][p] || [];
+    grouped[t][e][p].push(r);
+  }
+
+  let reportsHtml = '';
+  if (reports.length === 0) {
+    reportsHtml = `<p class="empty">Sin reportes registrados para el periodo seleccionado.</p>`;
+  } else {
+    const tramos = Object.keys(grouped).sort((a, b) => Number(a) - Number(b));
+    let isFirstTramo = true;
+    for (const t of tramos) {
+      reportsHtml += `<h2 class="tramo-h ${isFirstTramo ? '' : 'page-break'}">Tramo ${esc(t)}</h2>`;
+      isFirstTramo = false;
+      const estaciones = Object.keys(grouped[t]).sort((a, b) => Number(a) - Number(b));
+      for (const e of estaciones) {
+        const count = Object.values(grouped[t][e]).reduce((acc: number, arr: any) => acc + arr.length, 0);
+        reportsHtml += `<h3 class="est-h">Estaci&oacute;n ${esc(e)} <span class="est-meta">&middot; ${count} reporte${count === 1 ? '' : 's'}</span></h3>`;
+        const postes = Object.keys(grouped[t][e]).sort((a, b) => Number(a) - Number(b));
+        for (const p of postes) {
+          reportsHtml += `<h4 class="poste-h">Poste ${esc(p)}</h4>`;
+          for (const r of grouped[t][e][p]) {
+            reportsHtml += renderReport(r);
+          }
+        }
+      }
+    }
+    if (sinUbicacion.length > 0) {
+      reportsHtml += `<h2 class="tramo-h page-break">Reportes sin ubicaci&oacute;n jer&aacute;rquica</h2>`;
+      for (const r of sinUbicacion) reportsHtml += renderReport(r);
+    }
+  }
 
   const html = `<!DOCTYPE html>
 <html lang="es"><head><meta charset="utf-8"/><style>
   @page { size: Letter; margin: 18mm 16mm 18mm 16mm; }
   body { font-family: -apple-system, Helvetica, Arial, sans-serif; color:#0F172A; font-size:11pt; line-height:1.45; }
-  .head { display:flex; align-items:center; justify-content:space-between; border-bottom:2px solid #1E3A8A; padding-bottom:10px; margin-bottom:14px; }
+  .head { display:flex; align-items:center; justify-content:space-between; border-bottom:2px solid #0B1B4D; padding-bottom:12px; margin-bottom:14px; }
   .brand { display:flex; align-items:center; gap:14px; }
-  .logo { width:58px; height:58px; border-radius:10px; background:linear-gradient(135deg,#1E3A8A,#2563EB); color:#fff; display:flex; align-items:center; justify-content:center; font-weight:900; font-size:22px; letter-spacing:1px; }
-  .brand-r { width:58px; height:58px; border-radius:10px; background:linear-gradient(135deg,#059669,#10B981); color:#fff; display:flex; align-items:center; justify-content:center; font-weight:900; font-size:10px; text-align:center; padding:0 4px; line-height:12px; }
-  .title { font-size:14pt; font-weight:900; margin:0; color:#0F172A; }
+  .logo { width:120px; height:auto; object-fit:contain; }
+  .brand-r { padding:6px 10px; border-radius:8px; background:linear-gradient(135deg,#059669,#10B981); color:#fff; font-weight:900; font-size:10px; letter-spacing:0.6px; }
+  .title { font-size:14pt; font-weight:900; margin:0; color:#0B1B4D; }
   .sub { font-size:10pt; color:#475569; margin-top:2px; }
   .meta { text-align:right; font-size:9pt; color:#475569; }
   .meta p { margin:1px 0; }
   .meta b { color:#0F172A; }
   h2 { font-size:12pt; margin:6px 0 4px 0; }
+  .tramo-h { font-size:16pt; margin:14px 0 6px 0; color:#0B1B4D; padding:8px 12px; background:#EFF6FF; border-left:5px solid #0B1B4D; border-radius:4px; }
+  .est-h { font-size:13pt; margin:14px 0 4px 0; color:#0F172A; border-bottom:1px solid #CBD5E1; padding-bottom:3px; }
+  .est-meta { font-size:9pt; color:#64748B; font-weight:600; }
+  .poste-h { font-size:11pt; margin:10px 0 2px 0; color:#1E3A8A; }
+  article.rep { padding:8px 0 10px 12px; border-left:2px solid #DBEAFE; margin-bottom:6px; }
+  .rep-title { font-size:11pt; font-weight:800; margin:2px 0 4px 0; color:#0F172A; }
   section.rep { padding:10px 0; border-bottom:1px solid #E2E8F0; }
   .page-break { page-break-before: always; border-top:none; padding-top:10mm; }
   .rep-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:4px; }
-  .pill { padding:3px 10px; border-radius:999px; font-size:9pt; font-weight:800; background:#EFF6FF; color:#1E3A8A; }
+  .pill { padding:3px 10px; border-radius:999px; font-size:9pt; font-weight:800; background:#EFF6FF; color:#0B1B4D; }
   .by { font-size:9pt; color:#475569; }
   p { margin:4px 0; }
   .loc { color:#334155; font-size:10pt; }
@@ -118,11 +170,10 @@ export async function exportSupervisorReport(opts: ExportOptions = {}): Promise<
 </style></head><body>
   <header class="head">
     <div class="brand">
-      <div class="logo">D</div>
-      <div class="brand-r">CABLEB&Uacute;S L4</div>
+      <img class="logo" src="${DIRAC_LOGO_DATAURL}" />
       <div>
-        <p class="title">SynCo &mdash; Reporte Consolidado</p>
-        <p class="sub">Dirac Ingenier&iacute;a &middot; Cableb&uacute;s L&iacute;nea 4 (membrete simulado)</p>
+        <p class="title">Reporte Consolidado de Obra</p>
+        <p class="sub">Dirac Ingenieros Consultores &middot; Cableb&uacute;s L&iacute;nea 4</p>
       </div>
     </div>
     <div class="meta">
@@ -138,7 +189,7 @@ export async function exportSupervisorReport(opts: ExportOptions = {}): Promise<
     <div class="firma">Representante del Contratista</div>
   </div>
   <div class="footer-note">
-    Documento generado autom&aacute;ticamente por SynCo. Las im&aacute;genes incluyen sello anti-fraude (GPS + fecha).
+    Documento generado por SynCo &mdash; Dirac Ingenieros Consultores. Las im&aacute;genes incluyen sello anti-fraude (GPS + fecha + hora).
   </div>
 </body></html>`;
 

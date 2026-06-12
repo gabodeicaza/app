@@ -50,9 +50,18 @@ class RegisterIn(BaseModel):
     email: EmailStr
     password: str
     name: str
-    role: Literal["coordinador", "especialista"]
+    role: Literal[
+        "coordinador",          # alias legacy de supervisor_general
+        "especialista",
+        "supervisor_t1",
+        "supervisor_t2",
+        "supervisor_general",
+        "contratista",
+        "dependencia",
+    ]
     area: Optional[str] = None
     puesto: Optional[str] = None
+    tramo: Optional[int] = None  # solo aplica a supervisores de tramo
 
 
 class LoginIn(BaseModel):
@@ -93,6 +102,15 @@ class AreaOut(BaseModel):
 
 
 UnitLiteral = Literal["m3", "m", "cm", "mm", "km", "none"]
+TramoLiteral = Literal[1, 2]
+
+# Estaciones permitidas por tramo (Cablebús Línea 4)
+TRAMO_ESTACIONES = {
+    1: [1, 2, 3, 4, 5],
+    2: [6, 7, 8, 9],
+}
+# Postes válidos (rango global 1..35)
+POSTE_MIN, POSTE_MAX = 1, 35
 
 
 class ReportIn(BaseModel):
@@ -102,6 +120,10 @@ class ReportIn(BaseModel):
     images: List[str] = Field(default_factory=list)  # base64 data URLs
     location: Optional[str] = None
     priority: Literal[1, 2, 3] = 1  # 1=Informativo, 2=Importante, 3=Urgente
+    # --- Jerarquía de Ubicación (obligatoria) ---
+    tramo: TramoLiteral
+    estacion: int
+    poste: int
     # --- Intelligent report fields ---
     reference_point_id: Optional[str] = None
     reference_point_name: Optional[str] = None
@@ -130,6 +152,10 @@ class ReportOut(BaseModel):
     createdAt: str
     status: str = "synced"
     priority: int = 1
+    # --- Jerarquía de Ubicación ---
+    tramo: Optional[int] = None
+    estacion: Optional[int] = None
+    poste: Optional[int] = None
     # --- Intelligent report fields ---
     reference_point_id: Optional[str] = None
     reference_point_name: Optional[str] = None
@@ -202,6 +228,7 @@ class ActivityIn(BaseModel):
     description: str = ""
     priority: Literal[1, 2, 3] = 1  # 1=Informativo, 2=Importante, 3=Urgente
     area: Optional[str] = None  # None = global (only coordinadores)
+    tramo: Optional[int] = None  # None = ambos tramos; 1 o 2 = noticia específica
 
 
 class ActivityOut(BaseModel):
@@ -211,6 +238,7 @@ class ActivityOut(BaseModel):
     priority: int
     area: Optional[str] = None
     areaName: Optional[str] = None
+    tramo: Optional[int] = None
     createdBy: str
     createdByName: str
     createdByRole: str
@@ -344,6 +372,68 @@ async def get_area_name(area_id: str) -> str:
     return a["name"] if a else area_id
 
 
+# --- Role helpers -----------------------------------------------------------
+# Operativos:
+# - 'especialista'    -> escribe reportes (su área), todo tramo.
+# - 'supervisor_t1'   -> solo lectura, scope Tramo 1.
+# - 'supervisor_t2'   -> solo lectura, scope Tramo 2.
+# - 'supervisor_general' / 'coordinador' (legacy) -> solo lectura, ambos tramos.
+# Invitados (solo lectura, todos los tramos):
+# - 'contratista' / 'dependencia'.
+GUEST_ROLES = {"contratista", "dependencia"}
+TRAMO_SUPERVISOR_ROLES = {"supervisor_t1", "supervisor_t2"}
+GLOBAL_SUPERVISOR_ROLES = {"coordinador", "supervisor_general"}
+SUPERVISOR_VIEW_ROLES = (
+    GLOBAL_SUPERVISOR_ROLES | TRAMO_SUPERVISOR_ROLES | GUEST_ROLES
+)
+# Roles que NO pueden mutar (escribir reportes, postes, noticias, eventos…)
+READ_ONLY_ROLES = (
+    GUEST_ROLES | TRAMO_SUPERVISOR_ROLES | GLOBAL_SUPERVISOR_ROLES
+)
+# Roles que pueden generar / leer Noticias y Resúmenes IA con visión global:
+GENERAL_VIEW_ROLES = GLOBAL_SUPERVISOR_ROLES | GUEST_ROLES
+
+
+def is_guest_ro(role: str) -> bool:
+    return role in GUEST_ROLES
+
+
+def is_supervisor_view(role: str) -> bool:
+    return role in SUPERVISOR_VIEW_ROLES
+
+
+def tramo_scope(user: dict) -> Optional[int]:
+    """Devuelve el tramo al que está limitado el usuario (1 o 2), o None si ve todo."""
+    role = user.get("role", "")
+    if role == "supervisor_t1":
+        return 1
+    if role == "supervisor_t2":
+        return 2
+    # supervisor_t1/t2 explícito o supervisores generales
+    return None
+
+
+def can_emit_news(role: str) -> bool:
+    # Solo los supervisores (global + tramo) pueden emitir noticias para campo.
+    return role in (GLOBAL_SUPERVISOR_ROLES | TRAMO_SUPERVISOR_ROLES)
+
+
+def require_not_guest(user: dict, msg: str = "Acceso de solo lectura: tu perfil no puede modificar datos."):
+    role = user.get("role", "")
+    if role in READ_ONLY_ROLES and role not in (GLOBAL_SUPERVISOR_ROLES | TRAMO_SUPERVISOR_ROLES):
+        raise HTTPException(status_code=403, detail=msg)
+
+
+def require_can_create_report(user: dict):
+    if user.get("role", "") != "especialista":
+        raise HTTPException(status_code=403, detail="Solo el rol Especialista puede crear reportes.")
+
+
+def require_can_emit_news(user: dict):
+    if not can_emit_news(user.get("role", "")):
+        raise HTTPException(status_code=403, detail="Solo los Supervisores pueden emitir noticias.")
+
+
 # --- Routes: Auth -----------------------------------------------------------
 @api.post("/auth/register", response_model=AuthResponse)
 async def register(body: RegisterIn):
@@ -466,6 +556,7 @@ async def list_reference_points(user: dict = Depends(get_current_user)):
 
 @api.post("/reference-points", response_model=ReferencePointOut)
 async def create_reference_point(body: ReferencePointIn, user: dict = Depends(get_current_user)):
+    require_not_guest(user)
     name = body.name.strip()
     if not name:
         raise HTTPException(status_code=400, detail="Nombre requerido")
@@ -645,10 +736,25 @@ async def report_history(user: dict = Depends(get_current_user)):
 # --- Routes: Reports --------------------------------------------------------
 @api.post("/reports", response_model=ReportOut)
 async def create_report(body: ReportIn, user: dict = Depends(get_current_user)):
+    require_can_create_report(user)
     if not await area_exists(body.area):
         raise HTTPException(status_code=400, detail="Área inválida")
     if user["role"] == "especialista" and user.get("area") != body.area:
         raise HTTPException(status_code=403, detail="No puedes reportar en otra área")
+
+    # Validar jerarquía Tramo / Estación / Poste (obligatorios y consistentes).
+    if int(body.tramo) not in TRAMO_ESTACIONES:
+        raise HTTPException(status_code=400, detail="Tramo inválido (1 o 2).")
+    if int(body.estacion) not in TRAMO_ESTACIONES[int(body.tramo)]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Estación {body.estacion} no pertenece al Tramo {body.tramo}.",
+        )
+    if not (POSTE_MIN <= int(body.poste) <= POSTE_MAX):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Poste fuera de rango ({POSTE_MIN}-{POSTE_MAX}).",
+        )
 
     # Snapshot site config (contract / contractor) into the report
     cfg = await db.site_config.find_one({"id": "default"}, {"_id": 0}) or {}
@@ -680,7 +786,7 @@ async def create_report(body: ReportIn, user: dict = Depends(get_current_user)):
                 "dataUrl": str(f.get("dataUrl")),
             })
 
-    rid = f"REP-{body.area.upper()[:3]}-{str(uuid.uuid4())[:8]}"
+    rid = f"REP-T{int(body.tramo)}E{int(body.estacion)}P{int(body.poste)}-{str(uuid.uuid4())[:6]}"
     area_name = await get_area_name(body.area)
     doc = {
         "id": rid,
@@ -697,6 +803,9 @@ async def create_report(body: ReportIn, user: dict = Depends(get_current_user)):
         "createdAt": datetime.now(timezone.utc).isoformat(),
         "status": "synced",
         "priority": int(getattr(body, "priority", 1) or 1),
+        "tramo": int(body.tramo),
+        "estacion": int(body.estacion),
+        "poste": int(body.poste),
         "reference_point_id": body.reference_point_id,
         "reference_point_name": body.reference_point_name,
         "coordinates": body.coordinates,
@@ -720,11 +829,16 @@ async def create_report(body: ReportIn, user: dict = Depends(get_current_user)):
 async def list_reports(user: dict = Depends(get_current_user)):
     query: dict = {}
     if user["role"] == "especialista":
-        # Especialistas see all reports of their own area (own + colleagues).
+        # Especialistas ven todos los reportes de su área (suyos + compañeros).
         if user.get("area"):
             query["area"] = user["area"]
         else:
             query["createdBy"] = user["id"]
+    else:
+        # Supervisores de tramo solo ven SU tramo. Generales / invitados ven todo.
+        scope = tramo_scope(user)
+        if scope is not None:
+            query["tramo"] = scope
     cursor = db.reports.find(query, {"_id": 0}).sort("createdAt", -1).limit(200)
     out: List[ReportOut] = []
     async for r in cursor:
@@ -735,6 +849,9 @@ async def list_reports(user: dict = Depends(get_current_user)):
         r.setdefault("personnel", [])
         r.setdefault("equipment", [])
         r.setdefault("files", [])
+        r.setdefault("tramo", None)
+        r.setdefault("estacion", None)
+        r.setdefault("poste", None)
         out.append(ReportOut(**r))
     return out
 
@@ -820,8 +937,8 @@ async def ai_improve(body: AITextIn, user: dict = Depends(get_current_user)):
 async def ai_summary(body: SummaryIn, user: dict = Depends(get_current_user)):
     if not body.reports:
         raise HTTPException(status_code=400, detail="Sin reportes para analizar")
-    if user["role"] != "coordinador":
-        raise HTTPException(status_code=403, detail="Solo coordinadores")
+    if not is_supervisor_view(user["role"]):
+        raise HTTPException(status_code=403, detail="Solo perfiles de Supervisión / Invitados")
     system = (
         "Eres el Director del Proyecto. Generas resúmenes ejecutivos claros y accionables "
         "a partir de múltiples reportes de campo, en español."
@@ -896,6 +1013,13 @@ async def list_activities(
     query: dict = {}
     if user["role"] == "especialista":
         query["$or"] = [{"area": user.get("area")}, {"area": None}]
+    # Filtro por tramo si el usuario es Supervisor T1/T2.
+    scope = tramo_scope(user)
+    if scope is not None:
+        # Acepta noticias del tramo del usuario O globales (tramo None).
+        query["$and"] = [
+            {"$or": [{"tramo": scope}, {"tramo": None}]},
+        ]
     start_iso, end_iso = _period_window(period, tz_offset)
     if start_iso and end_iso:
         query["createdAt"] = {"$gte": start_iso, "$lt": end_iso}
@@ -915,19 +1039,22 @@ async def list_activities(
 
 @api.post("/activities", response_model=ActivityOut)
 async def create_activity(body: ActivityIn, user: dict = Depends(get_current_user)):
+    require_can_emit_news(user)
     if not body.title.strip():
         raise HTTPException(status_code=400, detail="Título requerido")
-    # Resolve area
+    # Resolve area (los supervisores SI pueden emitir; el especialista no llega aquí).
     target_area = body.area
-    if user["role"] == "especialista":
-        # Especialista can only post to their own area, never global
-        if not user.get("area"):
-            raise HTTPException(status_code=400, detail="Sin área asignada")
-        target_area = user["area"]
+    if target_area and not await area_exists(target_area):
+        raise HTTPException(status_code=400, detail="Área inválida")
+
+    # Resolver tramo de la noticia.
+    #  - Supervisores de tramo: forzar su propio tramo (no pueden emitir para el otro).
+    #  - Supervisor general: puede dirigir a un tramo específico o ambos (None).
+    scope = tramo_scope(user)
+    if scope is not None:
+        tramo_out: Optional[int] = scope
     else:
-        # Coordinador can post global (None) or to a specific existing area
-        if target_area and not await area_exists(target_area):
-            raise HTTPException(status_code=400, detail="Área inválida")
+        tramo_out = int(body.tramo) if body.tramo in (1, 2) else None
 
     aid = str(uuid.uuid4())
     doc = {
@@ -936,6 +1063,7 @@ async def create_activity(body: ActivityIn, user: dict = Depends(get_current_use
         "description": body.description.strip(),
         "priority": int(body.priority),
         "area": target_area,
+        "tramo": tramo_out,
         "createdBy": user["id"],
         "createdByName": user["name"],
         "createdByRole": user["role"],
@@ -952,7 +1080,9 @@ async def delete_activity(activity_id: str, user: dict = Depends(get_current_use
     a = await db.activities.find_one({"id": activity_id}, {"_id": 0})
     if not a:
         raise HTTPException(status_code=404, detail="Noticia no encontrada")
-    if a["createdBy"] != user["id"] and user["role"] != "coordinador":
+    # Permitir borrar al autor o a supervisores generales.
+    is_global_super = user["role"] in GLOBAL_SUPERVISOR_ROLES
+    if a["createdBy"] != user["id"] and not is_global_super:
         raise HTTPException(status_code=403, detail="Sin permiso")
     await db.activities.delete_one({"id": activity_id})
     return {"ok": True}
@@ -1256,6 +1386,7 @@ async def list_events(
 
 @api.post("/events", response_model=EventOut)
 async def create_event(body: EventIn, user: dict = Depends(get_current_user)):
+    require_not_guest(user)
     if not body.title.strip():
         raise HTTPException(status_code=400, detail="Título requerido")
     if not body.date:
@@ -1389,7 +1520,13 @@ SEED_AREAS = [
 
 SEED_USERS = [
     {"email": "coordinador@syncsite.com", "name": "Carlos Coordinador",
-     "role": "coordinador", "area": None, "puesto": "Director de Proyecto", "password": "demo1234"},
+     "role": "supervisor_general", "area": None, "puesto": "Coordinador de Obra", "password": "demo1234"},
+    {"email": "super.tramo1@syncsite.com", "name": "Andrés Tramo 1",
+     "role": "supervisor_t1", "area": None, "puesto": "Supervisor de Tramo 1",
+     "tramo": 1, "password": "demo1234"},
+    {"email": "super.tramo2@syncsite.com", "name": "Miguel Tramo 2",
+     "role": "supervisor_t2", "area": None, "puesto": "Supervisor de Tramo 2",
+     "tramo": 2, "password": "demo1234"},
     {"email": "geotecnia@syncsite.com", "name": "Ana Geotécnica",
      "role": "especialista", "area": "geotecnia", "puesto": "Ingeniera Geotécnica", "password": "demo1234"},
     {"email": "topografia@syncsite.com", "name": "Luis Topógrafo",
@@ -1400,6 +1537,11 @@ SEED_USERS = [
      "role": "especialista", "area": "seguridad", "puesto": "Supervisor HSE", "password": "demo1234"},
     {"email": "calidad@syncsite.com", "name": "Sofía Calidad",
      "role": "especialista", "area": "calidad", "puesto": "Inspectora de Calidad", "password": "demo1234"},
+    # --- Roles INVITADOS (read-only) ---
+    {"email": "contratista@syncsite.com", "name": "Roberto Contratista",
+     "role": "contratista", "area": None, "puesto": "Gerente de Construcción", "password": "demo1234"},
+    {"email": "dependencia@syncsite.com", "name": "Lic. Elena Dependencia",
+     "role": "dependencia", "area": None, "puesto": "Enlace Gobierno CDMX", "password": "demo1234"},
 ]
 
 
@@ -1423,14 +1565,20 @@ async def seed():
                 "role": u["role"],
                 "area": u["area"],
                 "puesto": u.get("puesto"),
+                "tramo": u.get("tramo"),
                 "createdAt": datetime.now(timezone.utc).isoformat(),
             })
-        elif not existing.get("puesto") and u.get("puesto"):
-            # Backfill puesto for existing seed users
-            await db.users.update_one(
-                {"email": u["email"]},
-                {"$set": {"puesto": u["puesto"]}},
-            )
+        else:
+            # Upgrade idempotente: alinear rol/tramo del seed con el usuario existente.
+            patch: dict = {}
+            if existing.get("role") != u["role"]:
+                patch["role"] = u["role"]
+            if existing.get("tramo") != u.get("tramo"):
+                patch["tramo"] = u.get("tramo")
+            if existing.get("puesto") != u.get("puesto"):
+                patch["puesto"] = u.get("puesto")
+            if patch:
+                await db.users.update_one({"email": u["email"]}, {"$set": patch})
     log.info("Seed ready: %d areas, %d users", len(SEED_AREAS), len(SEED_USERS))
 
 

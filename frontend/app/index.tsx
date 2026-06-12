@@ -2,6 +2,7 @@ import React from 'react';
 import { View, ActivityIndicator, StyleSheet, Image } from 'react-native';
 import { Redirect } from 'expo-router';
 import { useAuth } from '@/src/auth-context';
+import { isSupervisorView } from '@/src/utils/roles';
 import { colors } from '@/src/theme';
 
 export default function Index() {
@@ -17,7 +18,8 @@ export default function Index() {
   }
 
   if (!user) return <Redirect href="/(auth)/login" />;
-  if (user.role === 'coordinador') return <Redirect href="/(coordinador)/noticias" />;
+  // Supervisor + Contratista + Dependencia comparten el grupo (coordinador).
+  if (isSupervisorView(user.role)) return <Redirect href="/(coordinador)/noticias" />;
   return <Redirect href="/(especialista)/noticias" />;
 }
 

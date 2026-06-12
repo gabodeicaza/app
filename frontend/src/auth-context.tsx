@@ -2,7 +2,14 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useS
 import { storage } from '@/src/utils/storage';
 import { api } from '@/src/api';
 
-export type Role = 'coordinador' | 'especialista';
+export type Role =
+  | 'coordinador'         // alias legacy de supervisor_general
+  | 'especialista'
+  | 'supervisor_t1'
+  | 'supervisor_t2'
+  | 'supervisor_general'
+  | 'contratista'
+  | 'dependencia';
 export interface User {
   id: string;
   email: string;
