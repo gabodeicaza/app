@@ -13,6 +13,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { router, useFocusEffect } from 'expo-router';
 import { AppHeader } from '@/src/components/AppHeader';
+import { RoleBadge } from '@/src/components/RoleBadge';
 import { api } from '@/src/api';
 import { useAuth } from '@/src/auth-context';
 import { roleLabel } from '@/src/utils/roles';
@@ -153,9 +154,12 @@ export function ChatListScreen({ basePath }: { basePath: string }) {
               </View>
               <View style={{ flex: 1 }}>
                 <View style={styles.rowTop}>
-                  <Text style={[styles.name, item.unread > 0 && { color: colors.text }]} numberOfLines={1}>
-                    {item.name}
-                  </Text>
+                  <View style={styles.nameWrap}>
+                    <Text style={[styles.name, item.unread > 0 && { color: colors.text }]} numberOfLines={1}>
+                      {item.name}
+                    </Text>
+                    <RoleBadge role={item.role} />
+                  </View>
                   <Text style={styles.time}>{fmtRel(item.lastAt)}</Text>
                 </View>
                 <View style={styles.rowBottom}>
@@ -220,7 +224,8 @@ const styles = StyleSheet.create({
   avatarTxt: { color: colors.primary, fontWeight: '900', fontSize: 18 },
   rowTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 6 },
   rowBottom: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2 },
-  name: { fontSize: 15, fontWeight: '700', color: colors.textBody, flex: 1 },
+  nameWrap: { flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1, minWidth: 0 },
+  name: { fontSize: 15, fontWeight: '700', color: colors.textBody, flexShrink: 1 },
   time: { fontSize: 11, color: colors.textMuted, fontWeight: '600' },
   preview: { flex: 1, fontSize: 13, color: colors.textMuted },
   badge: {

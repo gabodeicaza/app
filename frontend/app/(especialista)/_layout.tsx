@@ -61,6 +61,7 @@ export default function EspLayout() {
 
       {/* Pantallas sin pestaña */}
       <Tabs.Screen name="profile" options={{ href: null }} />
+      <Tabs.Screen name="calendar" options={{ href: null }} />
       <Tabs.Screen name="report/[id]" options={{ href: null }} />
       <Tabs.Screen name="chat/directos" options={{ href: null }} />
       <Tabs.Screen name="chat/areas" options={{ href: null }} />

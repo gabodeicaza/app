@@ -51,7 +51,8 @@ class RegisterIn(BaseModel):
     password: str
     name: str
     role: Literal[
-        "coordinador",          # alias legacy de supervisor_general
+        "coordinador_global",   # Super Admin multi-proyecto
+        "coordinador",          # alias legacy de supervisor_general (admin de un proyecto)
         "especialista",
         "supervisor_t1",
         "supervisor_t2",
@@ -62,6 +63,7 @@ class RegisterIn(BaseModel):
     area: Optional[str] = None
     puesto: Optional[str] = None
     tramo: Optional[int] = None  # solo aplica a supervisores de tramo
+    project_id: Optional[str] = None  # se ignora para coordinador_global; default = cablebus-l4
 
 
 class LoginIn(BaseModel):
@@ -189,6 +191,39 @@ class ReferencePointOut(BaseModel):
     areaName: Optional[str] = None
     createdBy: str
     createdByName: str
+    createdAt: str
+
+
+# --- Projects (Multi-Obra) ---------------------------
+class ProjectIn(BaseModel):
+    name: str
+    code: Optional[str] = None  # slug-like identifier; auto-generated if omitted
+    description: Optional[str] = None
+    location: Optional[str] = None
+    client: Optional[str] = None
+    contractor: Optional[str] = None
+    status: Literal["active", "paused", "closed"] = "active"
+
+
+class ProjectUpdate(BaseModel):
+    name: Optional[str] = None
+    code: Optional[str] = None
+    description: Optional[str] = None
+    location: Optional[str] = None
+    client: Optional[str] = None
+    contractor: Optional[str] = None
+    status: Optional[Literal["active", "paused", "closed"]] = None
+
+
+class ProjectOut(BaseModel):
+    id: str
+    name: str
+    code: str
+    description: Optional[str] = None
+    location: Optional[str] = None
+    client: Optional[str] = None
+    contractor: Optional[str] = None
+    status: str = "active"
     createdAt: str
 
 
@@ -733,6 +768,123 @@ async def report_history(user: dict = Depends(get_current_user)):
     }
 
 
+# --- Routes: Projects (Multi-Obra) -------------------
+def _project_code(name: str) -> str:
+    import re
+    base = re.sub(r"[^a-z0-9]+", "-", (name or "").lower()).strip("-")
+    return base[:48] or f"proj-{uuid.uuid4().hex[:6]}"
+
+
+def _project_doc_to_out(d: dict) -> dict:
+    return {
+        "id": d.get("id"),
+        "name": d.get("name", ""),
+        "code": d.get("code", ""),
+        "description": d.get("description"),
+        "location": d.get("location"),
+        "client": d.get("client"),
+        "contractor": d.get("contractor"),
+        "status": d.get("status", "active"),
+        "createdAt": d.get("createdAt", ""),
+    }
+
+
+@api.get("/projects", response_model=List[ProjectOut])
+async def list_projects(user: dict = Depends(get_current_user)):
+    """Lista todos los proyectos visibles para el usuario.
+    - coordinador_global: todos
+    - resto: sólo el proyecto al que están vinculados (user.project_id)
+    """
+    role = user.get("role")
+    query: dict = {}
+    if role != "coordinador_global" and role != "coordinador":
+        # Filtrar por proyecto asignado, si existe
+        pid = user.get("project_id")
+        if pid:
+            query["id"] = pid
+        else:
+            # Sin proyecto asignado: devolver todos los activos (read-only)
+            query["status"] = "active"
+    out: List[dict] = []
+    async for d in db.projects.find(query, {"_id": 0}).sort("createdAt", 1):
+        out.append(_project_doc_to_out(d))
+    return out
+
+
+@api.get("/projects/{project_id}", response_model=ProjectOut)
+async def get_project(project_id: str, user: dict = Depends(get_current_user)):
+    d = await db.projects.find_one({"id": project_id}, {"_id": 0})
+    if not d:
+        raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+    return _project_doc_to_out(d)
+
+
+@api.post("/projects", response_model=ProjectOut)
+async def create_project(body: ProjectIn, user: dict = Depends(get_current_user)):
+    if user.get("role") not in ("coordinador_global", "coordinador"):
+        raise HTTPException(status_code=403, detail="Sólo el Coordinador Global puede crear proyectos")
+    code = (body.code or _project_code(body.name)).lower()
+    # Verificar unicidad del code
+    exists = await db.projects.find_one({"code": code}, {"_id": 1})
+    if exists:
+        code = f"{code}-{uuid.uuid4().hex[:4]}"
+    doc = {
+        "id": str(uuid.uuid4()),
+        "name": body.name.strip(),
+        "code": code,
+        "description": (body.description or "").strip() or None,
+        "location": (body.location or "").strip() or None,
+        "client": (body.client or "").strip() or None,
+        "contractor": (body.contractor or "").strip() or None,
+        "status": body.status,
+        "createdAt": datetime.now(timezone.utc).isoformat(),
+        "createdBy": user["id"],
+    }
+    await db.projects.insert_one(doc)
+    return _project_doc_to_out(doc)
+
+
+@api.put("/projects/{project_id}", response_model=ProjectOut)
+async def update_project(project_id: str, body: ProjectUpdate, user: dict = Depends(get_current_user)):
+    if user.get("role") not in ("coordinador_global", "coordinador"):
+        raise HTTPException(status_code=403, detail="Sólo el Coordinador Global puede editar proyectos")
+    update: dict = {k: v for k, v in body.dict(exclude_unset=True).items() if v is not None}
+    if not update:
+        d = await db.projects.find_one({"id": project_id}, {"_id": 0})
+        if not d:
+            raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+        return _project_doc_to_out(d)
+    if "code" in update:
+        update["code"] = update["code"].lower()
+        clash = await db.projects.find_one(
+            {"code": update["code"], "id": {"$ne": project_id}}, {"_id": 1}
+        )
+        if clash:
+            raise HTTPException(status_code=400, detail="Código de proyecto en uso")
+    res = await db.projects.find_one_and_update(
+        {"id": project_id}, {"$set": update}, return_document=True, projection={"_id": 0}
+    )
+    if not res:
+        raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+    return _project_doc_to_out(res)
+
+
+@api.delete("/projects/{project_id}")
+async def delete_project(project_id: str, user: dict = Depends(get_current_user)):
+    if user.get("role") not in ("coordinador_global", "coordinador"):
+        raise HTTPException(status_code=403, detail="Sólo el Coordinador Global puede eliminar proyectos")
+    # No eliminamos en duro si tiene reportes/usuarios — lo marcamos como 'closed'
+    n_reports = await db.reports.count_documents({"project_id": project_id})
+    n_users = await db.users.count_documents({"project_id": project_id})
+    if n_reports > 0 or n_users > 0:
+        await db.projects.update_one({"id": project_id}, {"$set": {"status": "closed"}})
+        return {"ok": True, "archived": True, "reports": n_reports, "users": n_users}
+    res = await db.projects.delete_one({"id": project_id})
+    if res.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+    return {"ok": True, "archived": False}
+
+
 # --- Routes: Reports --------------------------------------------------------
 @api.post("/reports", response_model=ReportOut)
 async def create_report(body: ReportIn, user: dict = Depends(get_current_user)):
@@ -883,6 +1035,53 @@ async def reports_today(user: dict = Depends(get_current_user)):
         else:
             stats[a] = {"name": r.get("areaName", a), "color": "#64748B", "count": 1}
     return {"reports": reports, "stats": stats, "total": len(reports)}
+
+
+@api.get("/reports/by-period")
+async def reports_by_period(
+    period: Literal["today", "week", "month"] = "today",
+    user: dict = Depends(get_current_user),
+):
+    """Reportes filtrados por rango temporal + stats por área.
+    period: today | week | month (siempre referenciados a UTC ahora).
+    """
+    now = datetime.now(timezone.utc)
+    if period == "today":
+        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    elif period == "week":
+        # Lunes 00:00 UTC de la semana en curso
+        start = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=now.weekday())
+    else:  # month
+        start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+    cursor = db.reports.find(
+        {"createdAt": {"$gte": start.isoformat()}}, {"_id": 0}
+    ).sort("createdAt", -1)
+    reports = []
+    async for r in cursor:
+        r.setdefault("areaName", await get_area_name(r.get("area", "")))
+        r.setdefault("location", None)
+        r.setdefault("createdByPuesto", None)
+        r.setdefault("priority", 1)
+        r.setdefault("personnel", [])
+        r.setdefault("equipment", [])
+        reports.append(r)
+
+    areas = [a async for a in db.areas.find({}, {"_id": 0})]
+    stats = {a["id"]: {"name": a["name"], "color": a["color"], "count": 0} for a in areas}
+    for r in reports:
+        a = r.get("area")
+        if a in stats:
+            stats[a]["count"] += 1
+        elif a:
+            stats[a] = {"name": r.get("areaName", a), "color": "#64748B", "count": 1}
+    return {
+        "reports": reports,
+        "stats": stats,
+        "total": len(reports),
+        "period": period,
+        "since": start.isoformat(),
+    }
 
 
 # --- Routes: AI -------------------------------------------------------------
@@ -1542,11 +1741,50 @@ SEED_USERS = [
      "role": "contratista", "area": None, "puesto": "Gerente de Construcción", "password": "demo1234"},
     {"email": "dependencia@syncsite.com", "name": "Lic. Elena Dependencia",
      "role": "dependencia", "area": None, "puesto": "Enlace Gobierno CDMX", "password": "demo1234"},
+    # --- Coordinador Global (Super Admin Multi-Obra) ---
+    {"email": "admin@synco.com", "name": "Admin SynCo",
+     "role": "coordinador_global", "area": None, "puesto": "Coordinador Global", "password": "demo1234"},
+]
+
+
+SEED_PROJECTS = [
+    {
+        "id": "cablebus-l4",
+        "name": "Cablebús Línea 4",
+        "code": "cablebus-l4",
+        "description": "Construcción de la Línea 4 del Cablebús CDMX",
+        "location": "Ciudad de México",
+        "client": "Gobierno CDMX",
+        "contractor": "Consorcio Cablebús",
+        "status": "active",
+    },
 ]
 
 
 @app.on_event("startup")
 async def seed():
+    # --- Proyectos (Multi-Obra) ---
+    default_pid: Optional[str] = None
+    for p in SEED_PROJECTS:
+        existing = await db.projects.find_one({"id": p["id"]})
+        if not existing:
+            await db.projects.insert_one({
+                **p,
+                "createdAt": datetime.now(timezone.utc).isoformat(),
+                "createdBy": "system",
+            })
+        default_pid = p["id"]
+    # Backfill: vincular usuarios y reportes sin project_id al proyecto default
+    if default_pid:
+        await db.users.update_many(
+            {"$or": [{"project_id": {"$exists": False}}, {"project_id": None}]},
+            {"$set": {"project_id": default_pid}},
+        )
+        await db.reports.update_many(
+            {"$or": [{"project_id": {"$exists": False}}, {"project_id": None}]},
+            {"$set": {"project_id": default_pid}},
+        )
+
     for a in SEED_AREAS:
         if not await db.areas.find_one({"id": a["id"]}):
             await db.areas.insert_one({
@@ -1566,6 +1804,7 @@ async def seed():
                 "area": u["area"],
                 "puesto": u.get("puesto"),
                 "tramo": u.get("tramo"),
+                "project_id": None if u["role"] == "coordinador_global" else default_pid,
                 "createdAt": datetime.now(timezone.utc).isoformat(),
             })
         else:
@@ -1577,9 +1816,14 @@ async def seed():
                 patch["tramo"] = u.get("tramo")
             if existing.get("puesto") != u.get("puesto"):
                 patch["puesto"] = u.get("puesto")
+            # El coordinador_global no debe estar atado a un proyecto
+            if u["role"] == "coordinador_global" and existing.get("project_id"):
+                patch["project_id"] = None
             if patch:
                 await db.users.update_one({"email": u["email"]}, {"$set": patch})
-    log.info("Seed ready: %d areas, %d users", len(SEED_AREAS), len(SEED_USERS))
+    n_projects = await db.projects.count_documents({})
+    log.info("Seed ready: %d projects, %d areas, %d users",
+             n_projects, len(SEED_AREAS), len(SEED_USERS))
 
 
 @app.on_event("shutdown")

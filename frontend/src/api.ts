@@ -59,6 +59,19 @@ export const api = {
   createReport: (body: any) => request<any>('POST', '/reports', body),
   listReports: () => request<any[]>('GET', '/reports'),
   reportsToday: () => request<{ reports: any[]; stats: any; total: number }>('GET', '/reports/today'),
+  reportsByPeriod: (period: 'today' | 'week' | 'month') =>
+    request<{ reports: any[]; stats: any; total: number; period: string; since: string }>(
+      'GET',
+      `/reports/by-period?period=${period}`,
+    ),
+
+  // Projects (Multi-Obra)
+  listProjects: () => request<any[]>('GET', '/projects'),
+  getProject: (id: string) => request<any>('GET', `/projects/${id}`),
+  createProject: (body: { name: string; code?: string; description?: string; location?: string; client?: string; contractor?: string; status?: 'active' | 'paused' | 'closed' }) =>
+    request<any>('POST', '/projects', body),
+  updateProject: (id: string, body: any) => request<any>('PUT', `/projects/${id}`, body),
+  deleteProject: (id: string) => request<{ ok: boolean; archived: boolean }>('DELETE', `/projects/${id}`),
 
   // AI
   improveText: (title: string, comments: string, area: string) =>

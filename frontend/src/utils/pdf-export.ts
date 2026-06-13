@@ -28,6 +28,22 @@ function startOfTodayIso(): string {
 export interface ExportOptions {
   /** Si true, solo incluye reportes del dia en curso. */
   todayOnly?: boolean;
+  /** Rango temporal: 'today' | 'week' | 'month'. Si se especifica, ignora todayOnly. */
+  period?: 'today' | 'week' | 'month';
+}
+
+function startOfPeriodIso(period: 'today' | 'week' | 'month'): string {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  if (period === 'week') {
+    // Lunes 00:00 local
+    const dow = d.getDay(); // 0 dom, 1 lun ...
+    const diff = dow === 0 ? 6 : dow - 1;
+    d.setDate(d.getDate() - diff);
+  } else if (period === 'month') {
+    d.setDate(1);
+  }
+  return d.toISOString();
 }
 
 /**
@@ -45,7 +61,10 @@ export async function exportSupervisorReport(opts: ExportOptions = {}): Promise<
     throw new Error('No se pudieron cargar los reportes: ' + (e?.message || e));
   }
 
-  if (opts.todayOnly) {
+  if (opts.period) {
+    const start = startOfPeriodIso(opts.period);
+    reports = reports.filter((r: any) => (r.createdAt || '') >= start);
+  } else if (opts.todayOnly) {
     const start = startOfTodayIso();
     reports = reports.filter((r: any) => (r.createdAt || '') >= start);
   }

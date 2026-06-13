@@ -44,21 +44,22 @@ export default function CoordHome() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [period, setPeriod] = useState<'today' | 'week' | 'month'>('today');
 
   const onExportPdf = useCallback(async () => {
     setExporting(true);
     try {
-      await exportSupervisorReport({ todayOnly: true });
+      await exportSupervisorReport({ period });
     } catch (e: any) {
       Alert.alert('No se pudo exportar', e?.message || 'Intenta de nuevo.');
     } finally {
       setExporting(false);
     }
-  }, []);
+  }, [period]);
 
   const load = useCallback(async () => {
     try {
-      const data = await api.reportsToday();
+      const data = await api.reportsByPeriod(period);
       setReports(data.reports || []);
       setStats(data.stats || {});
     } catch (e) {
@@ -67,9 +68,10 @@ export default function CoordHome() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, []);
+  }, [period]);
 
   useEffect(() => {
+    setLoading(true);
     load();
   }, [load]);
 
@@ -81,6 +83,9 @@ export default function CoordHome() {
 
   const total = reports.length;
   const statList = useMemo(() => Object.entries(stats).map(([id, s]) => ({ id, ...s })), [stats]);
+
+  const periodLabel = period === 'today' ? 'HOY' : period === 'week' ? 'ESTA SEMANA' : 'ESTE MES';
+  const sectionLabel = period === 'today' ? 'Reportes del día' : period === 'week' ? 'Reportes de la semana' : 'Reportes del mes';
 
   return (
     <View style={styles.flex}>
@@ -94,9 +99,9 @@ export default function CoordHome() {
       >
         <View style={styles.heroCard}>
           <View style={{ flex: 1 }}>
-            <Text style={styles.heroLabel}>REPORTES HOY</Text>
+            <Text style={styles.heroLabel}>REPORTES {periodLabel}</Text>
             <Text style={styles.heroValue}>{total}</Text>
-            <Text style={styles.heroSub}>Consolida y exporta para direccion</Text>
+            <Text style={styles.heroSub}>Consolida y exporta para dirección</Text>
           </View>
           <View style={styles.heroBtnsCol}>
             <Pressable
@@ -121,6 +126,33 @@ export default function CoordHome() {
               )}
             </Pressable>
           </View>
+        </View>
+
+        {/* Filtros temporales */}
+        <View style={styles.filterRow}>
+          {([
+            { key: 'today', label: 'Hoy', icon: 'today-outline' as const },
+            { key: 'week', label: 'Esta semana', icon: 'calendar-outline' as const },
+            { key: 'month', label: 'Este mes', icon: 'calendar-clear-outline' as const },
+          ] as const).map((opt) => {
+            const active = period === opt.key;
+            return (
+              <Pressable
+                key={opt.key}
+                onPress={() => setPeriod(opt.key)}
+                style={[styles.filterChip, active && styles.filterChipActive]}
+              >
+                <Ionicons
+                  name={opt.icon}
+                  size={14}
+                  color={active ? '#fff' : colors.textBody}
+                />
+                <Text style={[styles.filterChipText, active && styles.filterChipTextActive]}>
+                  {opt.label}
+                </Text>
+              </Pressable>
+            );
+          })}
         </View>
 
         <Text style={styles.section}>Por área</Text>

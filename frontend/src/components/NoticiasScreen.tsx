@@ -18,6 +18,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { AppHeader } from '@/src/components/AppHeader';
 import { Button } from '@/src/components/Button';
+import { RoleBadge } from '@/src/components/RoleBadge';
 import { api } from '@/src/api';
 import { useAuth } from '@/src/auth-context';
 import { colors, radius, shadow, spacing } from '@/src/theme';
