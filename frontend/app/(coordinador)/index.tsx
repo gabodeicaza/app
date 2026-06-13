@@ -17,6 +17,7 @@ import { AppHeader } from '@/src/components/AppHeader';
 import { AreaChip } from '@/src/components/AreaChip';
 import { api } from '@/src/api';
 import { useAuth } from '@/src/auth-context';
+import { isGuestReadOnly } from '@/src/utils/roles';
 import { colors, radius, shadow, spacing } from '@/src/theme';
 import { fmtFullDate, fmtTime } from '@/src/utils/format';
 import { exportSupervisorReport } from '@/src/utils/pdf-export';
@@ -39,6 +40,7 @@ interface StatItem { name: string; color: string; count: number }
 export default function CoordHome() {
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
+  const isGuest = isGuestReadOnly(user?.role);
   const [reports, setReports] = useState<Report[]>([]);
   const [stats, setStats] = useState<Record<string, StatItem>>({});
   const [loading, setLoading] = useState(true);
@@ -104,27 +106,31 @@ export default function CoordHome() {
             <Text style={styles.heroSub}>Consolida y exporta para dirección</Text>
           </View>
           <View style={styles.heroBtnsCol}>
-            <Pressable
-              onPress={() => router.push('/(coordinador)/summary')}
-              style={styles.heroBtn}
-            >
-              <Ionicons name="sparkles" color="#fff" size={16} />
-              <Text style={styles.heroBtnText}>Resumen IA</Text>
-            </Pressable>
-            <Pressable
-              onPress={onExportPdf}
-              disabled={exporting}
-              style={[styles.heroBtn, styles.heroBtnAlt, exporting && { opacity: 0.6 }]}
-            >
-              {exporting ? (
-                <ActivityIndicator color="#fff" size="small" />
-              ) : (
-                <>
-                  <Ionicons name="document-text" color="#fff" size={16} />
-                  <Text style={styles.heroBtnText}>Exportar PDF</Text>
-                </>
-              )}
-            </Pressable>
+            {!isGuest && (
+              <>
+                <Pressable
+                  onPress={() => router.push('/(coordinador)/summary')}
+                  style={styles.heroBtn}
+                >
+                  <Ionicons name="sparkles" color="#fff" size={16} />
+                  <Text style={styles.heroBtnText}>Resumen IA</Text>
+                </Pressable>
+                <Pressable
+                  onPress={onExportPdf}
+                  disabled={exporting}
+                  style={[styles.heroBtn, styles.heroBtnAlt, exporting && { opacity: 0.6 }]}
+                >
+                  {exporting ? (
+                    <ActivityIndicator color="#fff" size="small" />
+                  ) : (
+                    <>
+                      <Ionicons name="document-text" color="#fff" size={16} />
+                      <Text style={styles.heroBtnText}>Exportar PDF</Text>
+                    </>
+                  )}
+                </Pressable>
+              </>
+            )}
           </View>
         </View>
 

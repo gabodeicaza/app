@@ -70,7 +70,6 @@ export default function CoordLayout() {
       {/* Pantallas accesibles pero sin pestaña */}
       <Tabs.Screen name="profile" options={{ href: null }} />
       <Tabs.Screen name="areas" options={{ href: null }} />
-      <Tabs.Screen name="calendar" options={{ href: null }} />
       <Tabs.Screen name="report/[id]" options={{ href: null }} />
       <Tabs.Screen name="settings/proyecto" options={{ href: null }} />
       <Tabs.Screen name="settings/puntos" options={{ href: null }} />
