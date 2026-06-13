@@ -83,6 +83,20 @@ export function canEmitNews(role?: string | null): boolean {
   return !!role && SUPERVISOR_ROLES.has(role);
 }
 
+/** Roles autorizados a SUBIR/ELIMINAR documentos clave del repositorio.
+ *  Coordinador Global + Supervisores Generales/Tramos pueden mutar.
+ *  Especialistas, contratistas y dependencias son SOLO LECTURA. */
+const DOC_MANAGER_ROLES = new Set([
+  'coordinador_global',
+  'coordinador',
+  'supervisor_general',
+  'supervisor_t1',
+  'supervisor_t2',
+]);
+export function canManageDocuments(role?: string | null): boolean {
+  return !!role && DOC_MANAGER_ROLES.has(role);
+}
+
 /** Devuelve el tramo asignado a un supervisor (1, 2) o null si ve todos. */
 export function tramoScope(role?: string | null): 1 | 2 | null {
   if (role === 'supervisor_t1') return 1;

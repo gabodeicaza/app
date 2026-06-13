@@ -16,6 +16,8 @@ import { Ionicons } from '@expo/vector-icons';
 import { AppHeader } from '@/src/components/AppHeader';
 import { Button } from '@/src/components/Button';
 import { api } from '@/src/api';
+import { useAuth } from '@/src/auth-context';
+import { isGuestReadOnly } from '@/src/utils/roles';
 import { colors, radius, spacing } from '@/src/theme';
 
 interface Area { id: string; name: string; color: string; icon?: string }

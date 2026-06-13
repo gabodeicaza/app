@@ -158,6 +158,41 @@ export const api = {
       'GET',
       '/report-history',
     ),
+
+  // Documentos Clave (Repositorio Compartido — Cero Huella Local)
+  listDocuments: () =>
+    request<Array<{
+      id: string;
+      title: string;
+      description?: string | null;
+      mime_type: string;
+      filename: string;
+      size_kb: number;
+      project_id: string;
+      uploaded_by: string;
+      uploaded_by_name: string;
+      uploaded_at: string;
+    }>>('GET', '/documents'),
+  getDocument: (id: string) =>
+    request<{
+      id: string;
+      title: string;
+      description?: string | null;
+      mime_type: string;
+      filename: string;
+      data_base64: string;
+      uploaded_by_name: string;
+      uploaded_at: string;
+    }>('GET', `/documents/${id}`),
+  uploadDocument: (body: {
+    title: string;
+    description?: string;
+    mime_type: string;
+    filename: string;
+    data_base64: string;
+  }) => request<any>('POST', '/documents', body),
+  deleteDocument: (id: string) =>
+    request<{ ok: boolean }>('DELETE', `/documents/${id}`),
 };
 
 export { BASE };

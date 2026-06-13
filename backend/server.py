@@ -1692,6 +1692,130 @@ async def dismiss_alert(event_id: str, user: dict = Depends(get_current_user)):
     return {"ok": True}
 
 
+# --- Routes: Documentos Clave (Repositorio Compartido) ---------------------
+# Cero Huella Local: los archivos se guardan SOLO en MongoDB como Base64.
+# El cliente nunca debe persistirlos en disco; se procesan en RAM y se borran
+# al cerrar la sesión / limpiar el formulario.
+class DocumentIn(BaseModel):
+    title: str
+    description: Optional[str] = None
+    mime_type: str
+    filename: str
+    data_base64: str
+    project_id: Optional[str] = None  # default: el del usuario
+
+
+class DocumentOut(BaseModel):
+    id: str
+    title: str
+    description: Optional[str] = None
+    mime_type: str
+    filename: str
+    size_kb: int
+    project_id: str
+    uploaded_by: str
+    uploaded_by_name: str
+    uploaded_at: str
+
+
+def can_manage_documents(role: str) -> bool:
+    """Solo Coordinador Global y Supervisores Generales suben/eliminan docs.
+    Supervisores T1/T2, contratistas y dependencias son SOLO LECTURA."""
+    return role in ({"coordinador_global"} | GLOBAL_SUPERVISOR_ROLES)
+
+
+@api.get("/documents", response_model=List[DocumentOut])
+async def list_documents(user: dict = Depends(get_current_user)):
+    pid = user.get("project_id") or "cablebus-l4"
+    if user.get("role") == "coordinador_global":
+        cursor = db.documents.find({})
+    else:
+        cursor = db.documents.find({"project_id": pid})
+    out: List[DocumentOut] = []
+    async for d in cursor.sort("uploaded_at", -1):
+        out.append(DocumentOut(
+            id=d["id"], title=d["title"], description=d.get("description"),
+            mime_type=d["mime_type"], filename=d["filename"],
+            size_kb=int(d.get("size_kb", 0)),
+            project_id=d.get("project_id", pid),
+            uploaded_by=d["uploaded_by"],
+            uploaded_by_name=d.get("uploaded_by_name", ""),
+            uploaded_at=d["uploaded_at"],
+        ))
+    return out
+
+
+@api.get("/documents/{doc_id}")
+async def get_document_raw(doc_id: str, user: dict = Depends(get_current_user)):
+    pid = user.get("project_id") or "cablebus-l4"
+    d = await db.documents.find_one({"id": doc_id})
+    if not d:
+        raise HTTPException(status_code=404, detail="Documento no encontrado")
+    if user.get("role") != "coordinador_global" and d.get("project_id") != pid:
+        raise HTTPException(status_code=403, detail="Documento fuera de tu proyecto")
+    return {
+        "id": d["id"], "title": d["title"], "description": d.get("description"),
+        "mime_type": d["mime_type"], "filename": d["filename"],
+        "data_base64": d["data_base64"],
+        "uploaded_by_name": d.get("uploaded_by_name", ""),
+        "uploaded_at": d["uploaded_at"],
+    }
+
+
+@api.post("/documents", response_model=DocumentOut)
+async def upload_document(body: DocumentIn, user: dict = Depends(get_current_user)):
+    if not can_manage_documents(user.get("role", "")):
+        raise HTTPException(
+            status_code=403,
+            detail="Solo Coordinadores y Supervisores Generales pueden subir documentos.",
+        )
+    pid = body.project_id or user.get("project_id") or "cablebus-l4"
+    title = (body.title or "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="Título requerido")
+    if not body.data_base64:
+        raise HTTPException(status_code=400, detail="Archivo vacío")
+    size_kb = max(1, int(len(body.data_base64) * 3 / 4 / 1024))
+    if size_kb > 15 * 1024:  # 15 MB
+        raise HTTPException(status_code=413, detail="Archivo demasiado grande (>15 MB)")
+    doc_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    doc = {
+        "id": doc_id,
+        "title": title,
+        "description": (body.description or "").strip(),
+        "mime_type": body.mime_type,
+        "filename": body.filename,
+        "data_base64": body.data_base64,
+        "size_kb": size_kb,
+        "project_id": pid,
+        "uploaded_by": user["id"],
+        "uploaded_by_name": user.get("name", ""),
+        "uploaded_at": now,
+    }
+    await db.documents.insert_one(doc)
+    return DocumentOut(
+        id=doc_id, title=title, description=doc["description"],
+        mime_type=body.mime_type, filename=body.filename, size_kb=size_kb,
+        project_id=pid, uploaded_by=user["id"],
+        uploaded_by_name=user.get("name", ""), uploaded_at=now,
+    )
+
+
+@api.delete("/documents/{doc_id}")
+async def delete_document(doc_id: str, user: dict = Depends(get_current_user)):
+    if not can_manage_documents(user.get("role", "")):
+        raise HTTPException(status_code=403, detail="Sin permisos para eliminar documentos.")
+    d = await db.documents.find_one({"id": doc_id})
+    if not d:
+        raise HTTPException(status_code=404, detail="Documento no encontrado")
+    pid = user.get("project_id") or "cablebus-l4"
+    if user.get("role") != "coordinador_global" and d.get("project_id") != pid:
+        raise HTTPException(status_code=403, detail="Documento fuera de tu proyecto")
+    await db.documents.delete_one({"id": doc_id})
+    return {"ok": True}
+
+
 # --- Health -----------------------------------------------------------------
 @api.get("/")
 async def health():

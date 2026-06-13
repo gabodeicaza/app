@@ -9,6 +9,7 @@ import {
   ActivityIndicator,
   Image,
   Platform,
+  Alert,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -22,8 +23,10 @@ import { useAuth } from '@/src/auth-context';
 import { useSync } from '@/src/sync-context';
 import { colors, radius, shadow, spacing } from '@/src/theme';
 import { fmtFullDate, fmtTime } from '@/src/utils/format';
+import { exportSupervisorReport } from '@/src/utils/pdf-export';
 
 type TimeFilter = 'today' | 'yesterday' | 'week' | 'custom' | 'all';
+type OwnerTab = 'mine' | 'team';
 
 interface Report {
   id: string;

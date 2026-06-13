@@ -5,6 +5,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import { AppHeader } from '@/src/components/AppHeader';
 import { EditProfileModal } from '@/src/components/EditProfileModal';
+import { DocumentsCard } from '@/src/components/DocumentsCard';
 import { useAuth } from '@/src/auth-context';
 import { colors, radius, spacing } from '@/src/theme';
 
@@ -57,6 +58,8 @@ export default function ProfileScreen() {
           <Row icon="shield-checkmark-outline" label="Rol" value="Supervisor de Obra" />
           <Row icon="briefcase-outline" label="Puesto" value={user?.puesto || '—'} />
         </View>
+
+        <DocumentsCard />
 
         <Pressable onPress={onLogout} style={styles.logoutBtn}>
           <Ionicons name="log-out-outline" size={18} color={colors.error} />

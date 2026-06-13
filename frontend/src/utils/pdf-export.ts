@@ -30,6 +30,10 @@ export interface ExportOptions {
   todayOnly?: boolean;
   /** Rango temporal: 'today' | 'week' | 'month'. Si se especifica, ignora todayOnly. */
   period?: 'today' | 'week' | 'month';
+  /** Si se provee, filtra los reportes para incluir solo los creados por este usuario. */
+  mineUserId?: string;
+  /** Texto opcional para mostrar bajo el título principal del PDF. */
+  subtitle?: string;
 }
 
 function startOfPeriodIso(period: 'today' | 'week' | 'month'): string {
@@ -67,6 +71,10 @@ export async function exportSupervisorReport(opts: ExportOptions = {}): Promise<
   } else if (opts.todayOnly) {
     const start = startOfTodayIso();
     reports = reports.filter((r: any) => (r.createdAt || '') >= start);
+  }
+
+  if (opts.mineUserId) {
+    reports = reports.filter((r: any) => r.createdBy === opts.mineUserId);
   }
 
   const today = new Date();
