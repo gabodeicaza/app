@@ -29,6 +29,8 @@ const COLOR_PALETTE = [
 
 export default function AreasScreen() {
   const insets = useSafeAreaInsets();
+  const { user } = useAuth();
+  const readOnly = isGuestReadOnly(user?.role);
   const [areas, setAreas] = useState<Area[]>([]);
   const [loading, setLoading] = useState(true);
   const [adding, setAdding] = useState(false);
@@ -90,35 +92,46 @@ export default function AreasScreen() {
           contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + 24 }]}
           keyboardShouldPersistTaps="handled"
         >
-          <View style={styles.card}>
-            <Text style={styles.cardTitle}>Nueva área</Text>
-            <Text style={styles.label}>Nombre</Text>
-            <View style={styles.inputWrap}>
-              <Ionicons name="hammer-outline" size={18} color={colors.textMuted} />
-              <TextInput
-                value={name}
-                onChangeText={setName}
-                placeholder="Ej. Estructuras, Pavimentos…"
-                placeholderTextColor={colors.textMuted}
-                style={styles.input}
-              />
-            </View>
-            <Text style={[styles.label, { marginTop: spacing.md }]}>Color</Text>
-            <View style={styles.palette}>
-              {COLOR_PALETTE.map((c) => (
-                <Pressable
-                  key={c}
-                  onPress={() => setColor(c)}
-                  style={[
-                    styles.swatch,
-                    { backgroundColor: c, borderWidth: color === c ? 3 : 1, borderColor: color === c ? colors.text : colors.border },
-                  ]}
+          {!readOnly && (
+            <View style={styles.card}>
+              <Text style={styles.cardTitle}>Nueva área</Text>
+              <Text style={styles.label}>Nombre</Text>
+              <View style={styles.inputWrap}>
+                <Ionicons name="hammer-outline" size={18} color={colors.textMuted} />
+                <TextInput
+                  value={name}
+                  onChangeText={setName}
+                  placeholder="Ej. Estructuras, Pavimentos…"
+                  placeholderTextColor={colors.textMuted}
+                  style={styles.input}
                 />
-              ))}
+              </View>
+              <Text style={[styles.label, { marginTop: spacing.md }]}>Color</Text>
+              <View style={styles.palette}>
+                {COLOR_PALETTE.map((c) => (
+                  <Pressable
+                    key={c}
+                    onPress={() => setColor(c)}
+                    style={[
+                      styles.swatch,
+                      { backgroundColor: c, borderWidth: color === c ? 3 : 1, borderColor: color === c ? colors.text : colors.border },
+                    ]}
+                  />
+                ))}
+              </View>
+              <View style={{ height: spacing.md }} />
+              <Button label="Agregar área" onPress={onAdd} loading={adding} fullWidth />
             </View>
-            <View style={{ height: spacing.md }} />
-            <Button label="Agregar área" onPress={onAdd} loading={adding} fullWidth />
-          </View>
+          )}
+
+          {readOnly && (
+            <View style={styles.readOnlyBanner}>
+              <Ionicons name="lock-closed" size={16} color={colors.textBody} />
+              <Text style={styles.readOnlyText}>
+                Vista de solo lectura. No puedes modificar áreas.
+              </Text>
+            </View>
+          )}
 
           <Text style={styles.section}>Áreas existentes</Text>
           {loading ? (
@@ -133,7 +146,12 @@ export default function AreasScreen() {
                   <Text style={styles.rowTitle}>{a.name}</Text>
                   <Text style={styles.rowSub}>{a.id}</Text>
                 </View>
-                <Pressable onPress={() => confirmDelete(a)} hitSlop={8} style={styles.delBtn}>
+                <Pressable
+                  onPress={() => confirmDelete(a)}
+                  hitSlop={8}
+                  style={[styles.delBtn, readOnly && { opacity: 0.25 }]}
+                  disabled={readOnly}
+                >
                   <Ionicons name="trash-outline" size={18} color={colors.error} />
                 </Pressable>
               </View>
@@ -186,4 +204,15 @@ const styles = StyleSheet.create({
   rowTitle: { fontSize: 15, fontWeight: '800', color: colors.text },
   rowSub: { fontSize: 11, color: colors.textMuted, marginTop: 2 },
   delBtn: { padding: 6 },
+  readOnlyBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: colors.surface,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: spacing.md,
+  },
+  readOnlyText: { flex: 1, fontSize: 13, color: colors.textBody, fontWeight: '600' },
 });

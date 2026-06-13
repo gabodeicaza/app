@@ -4,38 +4,46 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import { AppHeader } from '@/src/components/AppHeader';
+import { useAuth } from '@/src/auth-context';
+import { isGuestReadOnly } from '@/src/utils/roles';
 import { colors, radius, shadow, spacing } from '@/src/theme';
 
 export default function CoordSettingsHub() {
   const insets = useSafeAreaInsets();
+  const { user } = useAuth();
+  const readOnly = isGuestReadOnly(user?.role);
   return (
     <View style={styles.flex}>
       <AppHeader title="Configuración" subtitle="Gestión del proyecto SynCo" />
       <ScrollView contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + 24 }]}>
-        <Text style={styles.section}>Proyecto</Text>
-        <Item
-          icon="document-text"
-          tint={colors.primary}
-          title="Datos del proyecto"
-          subtitle="Número de contrato, contratista y variables globales."
-          onPress={() => router.push('/(coordinador)/settings/proyecto' as any)}
-        />
-        <Item
-          icon="location"
-          tint="#059669"
-          title="Puntos de referencia"
-          subtitle="Postes / hitos para autocompletar ubicación en reportes."
-          onPress={() => router.push('/(coordinador)/settings/puntos' as any)}
-        />
-        <Item
-          icon="grid"
-          tint="#D97706"
-          title="Áreas de trabajo"
-          subtitle="Topografía, Geotecnia, Estructuras y demás."
-          onPress={() => router.push('/(coordinador)/areas' as any)}
-        />
+        {!readOnly && (
+          <>
+            <Text style={styles.section}>Proyecto</Text>
+            <Item
+              icon="document-text"
+              tint={colors.primary}
+              title="Datos del proyecto"
+              subtitle="Número de contrato, contratista y variables globales."
+              onPress={() => router.push('/(coordinador)/settings/proyecto' as any)}
+            />
+            <Item
+              icon="location"
+              tint="#059669"
+              title="Puntos de referencia"
+              subtitle="Postes / hitos para autocompletar ubicación en reportes."
+              onPress={() => router.push('/(coordinador)/settings/puntos' as any)}
+            />
+            <Item
+              icon="grid"
+              tint="#D97706"
+              title="Áreas de trabajo"
+              subtitle="Topografía, Geotecnia, Estructuras y demás."
+              onPress={() => router.push('/(coordinador)/areas' as any)}
+            />
+          </>
+        )}
 
-        <Text style={[styles.section, { marginTop: spacing.lg }]}>Mi cuenta</Text>
+        <Text style={[styles.section, !readOnly && { marginTop: spacing.lg }]}>Mi cuenta</Text>
         <Item
           icon="person-circle"
           tint="#7C3AED"
