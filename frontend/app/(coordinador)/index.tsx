@@ -290,4 +290,22 @@ const styles = StyleSheet.create({
   empty: { alignItems: 'center', padding: spacing.lg, gap: 6 },
   emptyText: { fontSize: 13, color: colors.textMuted, fontWeight: '600' },
   loading: { padding: spacing.lg, alignItems: 'center' },
+  filterRow: { flexDirection: 'row', gap: 8, marginTop: spacing.md, flexWrap: 'wrap' },
+  filterChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  filterChipActive: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
+  },
+  filterChipText: { fontSize: 12, fontWeight: '700', color: colors.textBody },
+  filterChipTextActive: { color: '#fff' },
 });

@@ -1,9 +1,10 @@
 // Mapeo de roles y branding centralizado para SynCo.
 // Roles operativos:
+//  - 'coordinador_global'   -> Super Admin multi-proyecto.
 //  - 'especialista'         -> escribe reportes (área asignada).
 //  - 'supervisor_t1'        -> solo lectura, scope Tramo 1.
 //  - 'supervisor_t2'        -> solo lectura, scope Tramo 2.
-//  - 'supervisor_general'   -> solo lectura, visión global.
+//  - 'supervisor_general'   -> solo lectura, visión global de un proyecto.
 //  - 'coordinador' (legacy) -> alias de supervisor_general.
 //  - 'contratista' / 'dependencia' -> invitados, solo lectura, todos los tramos.
 
@@ -11,6 +12,7 @@ export const APP_BRAND = 'SynCo';
 export const APP_TAGLINE = 'Reporte de obra inteligente, sin huella local.';
 
 export type AppRole =
+  | 'coordinador_global'
   | 'coordinador'
   | 'especialista'
   | 'supervisor_t1'
@@ -21,6 +23,7 @@ export type AppRole =
 
 export function roleLabel(role?: string | null, areaName?: string | null): string {
   if (!role) return '—';
+  if (role === 'coordinador_global') return 'Coordinador Global';
   if (role === 'coordinador' || role === 'supervisor_general') return 'Supervisor General';
   if (role === 'supervisor_t1') return 'Supervisor Tramo 1';
   if (role === 'supervisor_t2') return 'Supervisor Tramo 2';
@@ -32,6 +35,7 @@ export function roleLabel(role?: string | null, areaName?: string | null): strin
 }
 
 export function roleShortLabel(role?: string | null): string {
+  if (role === 'coordinador_global') return 'Coord. Global';
   if (role === 'coordinador' || role === 'supervisor_general') return 'Supervisor';
   if (role === 'supervisor_t1') return 'Sup. T1';
   if (role === 'supervisor_t2') return 'Sup. T2';
@@ -41,6 +45,7 @@ export function roleShortLabel(role?: string | null): string {
 }
 
 const SUPERVISOR_ROLES = new Set([
+  'coordinador_global',
   'coordinador',
   'supervisor_general',
   'supervisor_t1',
@@ -92,6 +97,7 @@ export function isReadOnlyField(role?: string | null): boolean {
 
 /** Color del Badge visual al lado del nombre en Chat / Noticias. */
 export function roleBadgeColor(role?: string | null): { bg: string; fg: string } {
+  if (role === 'coordinador_global') return { bg: '#EDE9FE', fg: '#5B21B6' };
   if (role === 'coordinador' || role === 'supervisor_general') return { bg: '#DBEAFE', fg: '#1E3A8A' };
   if (role === 'supervisor_t1') return { bg: '#FCE7F3', fg: '#9D174D' };
   if (role === 'supervisor_t2') return { bg: '#E0F2FE', fg: '#075985' };

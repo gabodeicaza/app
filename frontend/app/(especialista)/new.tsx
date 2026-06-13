@@ -30,6 +30,7 @@ import { api } from '@/src/api';
 import { useAuth } from '@/src/auth-context';
 import { useSync } from '@/src/sync-context';
 import { colors, radius, spacing } from '@/src/theme';
+import { getPosteCoord, posteLocationName } from '@/src/utils/posteCoords';
 
 const { width } = Dimensions.get('window');
 const THUMB = (width - spacing.md * 2 - spacing.sm * 2) / 3;
@@ -168,6 +169,20 @@ export default function NewReport() {
       alive = false;
     };
   }, [user?.area]);
+
+  // Georreferenciación automática: cuando cambian Tramo/Estación/Poste,
+  // auto-vincula Lat/Lng + nombre de ubicación desde el diccionario mock.
+  // Cero Huella Local: utilidad pura en memoria, sin disco.
+  useEffect(() => {
+    const c = getPosteCoord(tramo, estacion, poste);
+    if (c) {
+      setCoordinates(c.label);
+      setLocationName(posteLocationName(tramo, estacion, poste));
+    } else {
+      setCoordinates('');
+      setLocationName('');
+    }
+  }, [tramo, estacion, poste]);
 
   // Auto-calculate progress (avance)
   const progress = useMemo(() => {
@@ -361,15 +376,16 @@ export default function NewReport() {
       });
       if (result.canceled) return;
       const asset = result.assets[0];
-      if (!asset?.base64) return;
+      const b64 = asset?.base64;
+      if (!b64) return;
       const ts = new Date();
       const pad = (n: number) => (n < 10 ? '0' + n : String(n));
       const name = `escaneo-${ts.getFullYear()}${pad(ts.getMonth() + 1)}${pad(ts.getDate())}-${pad(ts.getHours())}${pad(ts.getMinutes())}${pad(ts.getSeconds())}.jpg`;
       setFiles((prev) => [...prev, {
         name,
         mimeType: 'image/jpeg',
-        dataUrl: `data:image/jpeg;base64,${asset.base64}`,
-        size: asset.base64.length,
+        dataUrl: `data:image/jpeg;base64,${b64}`,
+        size: b64.length,
       }]);
       // Cero Huella Local: borrar archivo temporal del picker.
       void wipeTemp(asset.uri);
@@ -697,7 +713,7 @@ export default function NewReport() {
 
             {tramo && estacion && poste ? (
               <View style={styles.locSummary}>
-                <Ionicons name="checkmark-circle" size={14} color={colors.success || '#16a34a'} />
+                <Ionicons name="checkmark-circle" size={14} color="#16a34a" />
                 <Text style={styles.locSummaryTxt}>
                   Tramo {tramo}  Estacin {estacion}  Poste {poste}
                 </Text>
@@ -705,56 +721,43 @@ export default function NewReport() {
             ) : null}
           </View>
 
-          {/* === REFERENCE POINT === */}
+          {/* === COORDENADAS AUTO-VINCULADAS === */}
           <View style={styles.card}>
             <View style={styles.commentsHeader}>
-              <Text style={styles.label}>Punto de referencia</Text>
-              <Pressable
-                onPress={() => setNewPointModalOpen(true)}
-                style={styles.smallPrimaryBtn}
-              >
-                <Ionicons name="add" size={14} color="#fff" />
-                <Text style={styles.smallPrimaryBtnTxt}>Nuevo</Text>
-              </Pressable>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <Ionicons name="navigate" size={16} color={colors.primary} />
+                <Text style={styles.label}>Georreferenciación</Text>
+              </View>
+              {tramo && estacion && poste ? (
+                <View style={styles.autoBadge}>
+                  <Ionicons name="link" size={11} color="#065F46" />
+                  <Text style={styles.autoBadgeTxt}>Auto</Text>
+                </View>
+              ) : null}
             </View>
-
-            <Pressable
-              onPress={() => setPointPickerOpen(true)}
-              style={styles.pickerBtn}
-            >
-              <Ionicons name="location" size={18} color={selectedPoint ? colors.primary : colors.textMuted} />
-              <Text style={[styles.pickerTxt, !selectedPoint && { color: colors.textMuted }]} numberOfLines={1}>
-                {selectedPoint ? selectedPoint.name : 'Selecciona un punto (Ej. Poste 1)'}
-              </Text>
-              {selectedPoint ? (
-                <Pressable onPress={clearPoint} hitSlop={8} style={{ padding: 2 }}>
-                  <Ionicons name="close-circle" size={18} color={colors.textMuted} />
-                </Pressable>
-              ) : (
-                <Ionicons name="chevron-down" size={16} color={colors.textMuted} />
-              )}
-            </Pressable>
+            <Text style={[styles.subLabel, { marginBottom: 8 }]}>
+              Coordenadas vinculadas automáticamente al poste seleccionado
+            </Text>
 
             <View style={styles.rowGap}>
               <View style={{ flex: 1 }}>
                 <Text style={styles.subLabel}>Ubicación</Text>
                 <TextInput
                   value={locationName}
-                  onChangeText={setLocationName}
-                  placeholder="Ej. Tramo Norte"
+                  editable={false}
+                  placeholder="Selecciona Tramo / Estación / Poste"
                   placeholderTextColor={colors.textMuted}
-                  style={styles.input}
+                  style={[styles.input, styles.inputDisabled]}
                 />
               </View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.subLabel}>Coordenadas</Text>
                 <TextInput
                   value={coordinates}
-                  onChangeText={setCoordinates}
-                  placeholder="19.43°N, 99.13°W"
+                  editable={false}
+                  placeholder="—"
                   placeholderTextColor={colors.textMuted}
-                  style={styles.input}
-                  autoCapitalize="none"
+                  style={[styles.input, styles.inputDisabled]}
                 />
               </View>
             </View>
@@ -1395,6 +1398,23 @@ const styles = StyleSheet.create({
   },
   textarea: { minHeight: 120 },
   rowGap: { flexDirection: 'row', gap: spacing.sm, marginTop: 8 },
+  inputDisabled: {
+    backgroundColor: '#F1F5F9',
+    color: colors.textBody,
+    borderColor: '#E2E8F0',
+  },
+  autoBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    backgroundColor: '#D1FAE5',
+    borderWidth: 1,
+    borderColor: '#A7F3D0',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 999,
+  },
+  autoBadgeTxt: { fontSize: 10, fontWeight: '800', color: '#065F46', textTransform: 'uppercase', letterSpacing: 0.3 },
 
   // Reference point picker
   commentsHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 },

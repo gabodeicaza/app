@@ -164,6 +164,30 @@ backend:
           comment: "Accepts reference_point_id/name, location, coordinates, first/last reading + unit (with auto avance calc), activities text, personnel[], equipment[], priority 1/2/3, images, title, comments."
 
 frontend:
+  - task: "Auto-Georreferenciación por Poste (Cero Huella Local)"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app/(especialista)/new.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "El mapa manual fue removido. Al seleccionar Tramo/Estación/Poste, los campos 'Ubicación' y 'Coordenadas' se llenan automáticamente desde /app/frontend/src/utils/posteCoords.ts y son read-only. Aparece un badge 'Auto'. Validar que no se rompe el render, que el badge se muestra al completar Tramo/Estación/Poste, y que ambas inputs están deshabilitadas (editable=false)."
+
+  - task: "Adjuntar Archivo y Escáner cumplen Cero Huella Local"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app/(especialista)/new.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "pickDocument() y scanDocument() leen base64 en RAM y ejecutan wipeTemp(asset.uri) para borrar la copia temporal del picker. Validar (vía code-review + UI) que el flujo NO depende de almacenamiento persistente y que el botón 'Adjuntar archivo' y 'Escanear' están visibles y son accesibles en el formulario nuevo. Cualquier intento de seleccionar archivo debe terminar con un elemento en files[] (dataUrl base64)."
+
   - task: "Intelligent Specialist Report form"
     implemented: true
     working: "NA"
