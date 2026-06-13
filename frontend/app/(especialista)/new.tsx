@@ -309,7 +309,7 @@ export default function NewReport() {
 
   async function pickDocument() {
     if (files.length >= 5) {
-      Alert.alert('Lmite alcanzado', 'Mximo 5 archivos por reporte.');
+      Alert.alert('Límite alcanzado', 'Máximo 5 archivos por reporte.');
       return;
     }
     try {
@@ -326,7 +326,7 @@ export default function NewReport() {
       const asset = res.assets[0];
       if (!asset?.uri) return;
       if (asset.size && asset.size > MAX_FILE_BYTES) {
-        Alert.alert('Archivo muy grande', 'Mximo 8 MB por archivo.');
+        Alert.alert('Archivo muy grande', 'Máximo 8 MB por archivo.');
         void wipeTemp(asset.uri);
         return;
       }
@@ -349,7 +349,7 @@ export default function NewReport() {
 
   async function scanDocument() {
     if (files.length >= 5) {
-      Alert.alert('Lmite alcanzado', 'Mximo 5 archivos por reporte.');
+      Alert.alert('Límite alcanzado', 'Máximo 5 archivos por reporte.');
       return;
     }
     const perm = await ImagePicker.getCameraPermissionsAsync();
@@ -360,8 +360,8 @@ export default function NewReport() {
     }
     if (!granted) {
       Alert.alert(
-        'Permiso de cmara denegado',
-        'Habilita la cmara en Ajustes para escanear documentos.',
+        'Permiso de cámara denegado',
+        'Habilita la cámara en Ajustes para escanear documentos.',
         [{ text: 'Cancelar' }, { text: 'Abrir Ajustes', onPress: () => Linking.openSettings() }],
       );
       return;
@@ -644,11 +644,11 @@ export default function NewReport() {
             <HeaderRow icon="business-outline" label="Contratista" value={siteCfg.contractor || (loadingMeta ? '…' : 'No configurado')} muted={!siteCfg.contractor} />
           </View>
 
-          {/* === UBICACIN CABLEBS (Tramo / Estacin / Poste) === */}
+          {/* === UBICACIÓN CABLEBÚS (Tramo / Estación / Poste) === */}
           <View style={styles.card}>
-            <Text style={styles.headerTitle}>Ubicacin Cablebs</Text>
+            <Text style={styles.headerTitle}>Ubicación Cablebús</Text>
             <Text style={[styles.subLabel, { marginBottom: 8 }]}>
-              Obligatorio  define el contexto fsico del reporte
+              Obligatorio · define el contexto físico del reporte
             </Text>
 
             <Text style={styles.subLabel}>Tramo</Text>
@@ -673,7 +673,7 @@ export default function NewReport() {
 
             {tramo ? (
               <>
-                <Text style={[styles.subLabel, { marginTop: 10 }]}>Estacin</Text>
+                <Text style={[styles.subLabel, { marginTop: 10 }]}>Estación</Text>
                 <View style={styles.locRow}>
                   {(tramo === 1 ? [1, 2, 3, 4, 5] : [6, 7, 8, 9]).map((e) => (
                     <Pressable
@@ -715,7 +715,7 @@ export default function NewReport() {
               <View style={styles.locSummary}>
                 <Ionicons name="checkmark-circle" size={14} color="#16a34a" />
                 <Text style={styles.locSummaryTxt}>
-                  Tramo {tramo}  Estacin {estacion}  Poste {poste}
+                  Tramo {tramo} · Estación {estacion} · Poste {poste}
                 </Text>
               </View>
             ) : null}
@@ -1023,7 +1023,7 @@ export default function NewReport() {
               <Text style={styles.muted}>{files.length}/5</Text>
             </View>
             <Text style={[styles.muted, { marginBottom: 6 }]}>
-              PDF, Excel, Word, CSV o escaneo de cmara. Mximo 8 MB c/u.
+              PDF, Excel, Word, CSV o escaneo de cámara. Máximo 8 MB c/u.
             </Text>
             <View style={styles.photoActions}>
               <Pressable onPress={pickDocument} style={styles.actionBtn}>
@@ -1200,7 +1200,7 @@ export default function NewReport() {
           </View>
         </View>
       </Modal>
-      {/* === Sello anti-fraude (cmara) === */}
+      {/* === Sello anti-fraude (cámara) === */}
       <StampedPhotoModal
         visible={!!pendingStampBase64}
         base64={pendingStampBase64}
