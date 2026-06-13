@@ -7,6 +7,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { AppHeader } from '@/src/components/AppHeader';
 import { Button } from '@/src/components/Button';
+import { ReadOnlyGuard } from '@/src/components/ReadOnlyGuard';
 import { api } from '@/src/api';
 import { colors, radius, spacing, areaTone } from '@/src/theme';
 
@@ -156,14 +157,17 @@ export default function PuntosSettings() {
 
   if (loading) {
     return (
+      <ReadOnlyGuard title="Puntos de referencia">
       <View style={styles.flex}>
         <AppHeader title="Puntos de referencia" back />
         <View style={styles.centerFull}><ActivityIndicator color={colors.primary} size="large" /></View>
       </View>
+      </ReadOnlyGuard>
     );
   }
 
   return (
+    <ReadOnlyGuard title="Puntos de referencia">
     <View style={styles.flex}>
       <AppHeader title="Puntos de referencia" subtitle={`${points.length} registrados`} back />
       <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
@@ -339,6 +343,7 @@ export default function PuntosSettings() {
         </View>
       </Modal>
     </View>
+    </ReadOnlyGuard>
   );
 }
 
