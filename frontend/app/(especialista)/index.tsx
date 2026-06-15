@@ -185,6 +185,7 @@ export default function EspHome() {
           </View>
         ) : null}
 
+
         {/* Stats */}
         <View style={styles.stats}>
           <Stat icon="document-text" label={`Reportes ${filterLabel.toLowerCase()}`} value={filteredReports.length} />

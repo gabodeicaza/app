@@ -1,13 +1,17 @@
-"""SyncSite API - Construction site reporting backend.
+"""SynCo v2.0 — SaaS Multiproyecto para reportes de obra.
 
-Provides JWT auth, role-based reports (coordinador / especialista),
-dynamic area management, and AI text helpers powered by Gemini 2.5 Flash.
+Arquitectura:
+- Coordinador General (god mode): único que crea proyectos, árbol de nodos,
+  áreas e invitaciones.
+- Sub-Coordinador: scope_node_id (un nodo del árbol; ve todo lo que cuelga).
+- Especialista: area + puesto + scope_node_ids (hojas autorizadas a capturar).
+- Sin auto-registro. Acceso 100% por token de invitación.
 """
 import os
 import re
 import uuid
 import logging
-import unicodedata
+import secrets
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Literal
@@ -21,54 +25,61 @@ from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field, EmailStr
 
-from emergentintegrations.llm.chat import LlmChat, UserMessage
-
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
 
-# --- Config -----------------------------------------------------------------
 MONGO_URL = os.environ["MONGO_URL"]
 DB_NAME = os.environ["DB_NAME"]
 JWT_SECRET = os.environ["JWT_SECRET"]
-JWT_ALGORITHM = os.environ["JWT_ALGORITHM"]
-JWT_EXPIRE_MINUTES = int(os.environ["JWT_EXPIRE_MINUTES"])
-EMERGENT_LLM_KEY = os.environ["EMERGENT_LLM_KEY"]
+JWT_ALGORITHM = os.environ.get("JWT_ALGORITHM", "HS256")
+JWT_EXPIRE_MINUTES = int(os.environ.get("JWT_EXPIRE_MINUTES", "10080"))
+BOOTSTRAP_SECRET = os.environ.get("BOOTSTRAP_SECRET", "synco_bootstrap_2026_change_me")
 
 client = AsyncIOMotorClient(MONGO_URL)
 db = client[DB_NAME]
 
-app = FastAPI(title="SyncSite API")
+app = FastAPI(title="SynCo v2.0 API")
 api = APIRouter(prefix="/api")
 bearer = HTTPBearer(auto_error=False)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-log = logging.getLogger("syncsite")
+log = logging.getLogger("synco")
 
 
-# --- Models -----------------------------------------------------------------
-class RegisterIn(BaseModel):
-    email: EmailStr
-    password: str
-    name: str
-    role: Literal[
-        "coordinador_global",   # Super Admin multi-proyecto
-        "coordinador",          # alias legacy de supervisor_general (admin de un proyecto)
-        "especialista",
-        "supervisor_t1",
-        "supervisor_t2",
-        "supervisor_general",
-        "contratista",
-        "dependencia",
-    ]
-    area: Optional[str] = None
-    puesto: Optional[str] = None
-    tramo: Optional[int] = None  # solo aplica a supervisores de tramo
-    project_id: Optional[str] = None  # se ignora para coordinador_global; default = cablebus-l4
+# === Constants =============================================================
+ROLE_COORD = "coordinador_general"
+ROLE_SUB = "sub_coordinador"
+ROLE_ESPECIALISTA = "especialista"
+VALID_ROLES = {ROLE_COORD, ROLE_SUB, ROLE_ESPECIALISTA}
+
+MEASUREMENT_TYPES = {"coord_latlon", "cadenamiento", "eje", "nivel"}
+
+# Colecciones del esquema v2
+COLLECTIONS_V2 = ["users", "projects", "location_nodes", "areas", "invitations", "reports"]
+
+# Colecciones legacy a eliminar en startup
+COLLECTIONS_LEGACY = [
+    "activities", "reference_points", "chat_messages", "chat_areas", "chat_area_messages",
+    "events", "documents", "site_config", "report_history",
+]
+
+
+# === Models =================================================================
+class Token(BaseModel):
+    token: str
+    user: dict
 
 
 class LoginIn(BaseModel):
     email: EmailStr
     password: str
+
+
+class BootstrapIn(BaseModel):
+    secret: str
+    email: EmailStr
+    password: str
+    name: str
 
 
 class UserOut(BaseModel):
@@ -78,1878 +89,809 @@ class UserOut(BaseModel):
     role: str
     area: Optional[str] = None
     puesto: Optional[str] = None
+    scope_node_id: Optional[str] = None
+    scope_node_ids: List[str] = Field(default_factory=list)
+    project_ids: List[str] = Field(default_factory=list)
+    created_at: datetime
 
 
-class UserUpdateIn(BaseModel):
-    name: Optional[str] = None
-    puesto: Optional[str] = None
-
-
-class AuthResponse(BaseModel):
-    token: str
-    user: UserOut
-
-
-class AreaIn(BaseModel):
-    name: str
-    color: Optional[str] = "#1E40AF"
-    icon: Optional[str] = "hardhat"
-
-
-class AreaOut(BaseModel):
-    id: str
-    name: str
-    color: str
-    icon: str
-
-
-UnitLiteral = Literal["m3", "m", "cm", "mm", "km", "none"]
-TramoLiteral = Literal[1, 2]
-
-# Estaciones permitidas por tramo (Cablebús Línea 4)
-TRAMO_ESTACIONES = {
-    1: [1, 2, 3, 4, 5],
-    2: [6, 7, 8, 9],
-}
-# Postes válidos (rango global 1..35)
-POSTE_MIN, POSTE_MAX = 1, 35
-
-
-class ReportIn(BaseModel):
-    title: str
-    comments: str = ""
-    area: str
-    images: List[str] = Field(default_factory=list)  # base64 data URLs
-    location: Optional[str] = None
-    priority: Literal[1, 2, 3] = 1  # 1=Informativo, 2=Importante, 3=Urgente
-    # --- Jerarquía de Ubicación (obligatoria) ---
-    tramo: TramoLiteral
-    estacion: int
-    poste: int
-    # --- Intelligent report fields ---
-    reference_point_id: Optional[str] = None
-    reference_point_name: Optional[str] = None
-    coordinates: Optional[str] = None
-    first_reading: Optional[float] = None
-    last_reading: Optional[float] = None
-    unit: Optional[UnitLiteral] = None
-    activities: Optional[str] = None
-    personnel: List[str] = Field(default_factory=list)
-    equipment: List[str] = Field(default_factory=list)
-    files: List[dict] = Field(default_factory=list)  # [{name, mimeType, dataUrl}]
-
-
-class ReportOut(BaseModel):
-    id: str
-    title: str
-    comments: str
-    area: str
-    areaName: str
-    images: List[str]
-    location: Optional[str] = None
-    createdBy: str
-    createdByName: str
-    createdByRole: str
-    createdByPuesto: Optional[str] = None
-    createdAt: str
-    status: str = "synced"
-    priority: int = 1
-    # --- Jerarquía de Ubicación ---
-    tramo: Optional[int] = None
-    estacion: Optional[int] = None
-    poste: Optional[int] = None
-    # --- Intelligent report fields ---
-    reference_point_id: Optional[str] = None
-    reference_point_name: Optional[str] = None
-    coordinates: Optional[str] = None
-    first_reading: Optional[float] = None
-    last_reading: Optional[float] = None
-    unit: Optional[str] = None
-    progress: Optional[float] = None  # auto-calculated Última - Primera
-    activities: Optional[str] = None
-    personnel: List[str] = Field(default_factory=list)
-    equipment: List[str] = Field(default_factory=list)
-    files: List[dict] = Field(default_factory=list)
-    contract: Optional[str] = None
-    contractor: Optional[str] = None
-
-
-# --- Reference Points (Postes) -----------------------
-class ReferencePointIn(BaseModel):
-    name: str
-    location: Optional[str] = None
-    coordinates: Optional[str] = None
-    area: Optional[str] = None  # None = available to all areas
-
-
-class ReferencePointOut(BaseModel):
-    id: str
-    name: str
-    location: Optional[str] = None
-    coordinates: Optional[str] = None
-    area: Optional[str] = None
-    areaName: Optional[str] = None
-    createdBy: str
-    createdByName: str
-    createdAt: str
-
-
-# --- Projects (Multi-Obra) ---------------------------
 class ProjectIn(BaseModel):
     name: str
-    code: Optional[str] = None  # slug-like identifier; auto-generated if omitted
+    constructora: str
+    contract_number: str
+    start_date: Optional[str] = None  # ISO date "2026-01-15"
+    end_date: Optional[str] = None
     description: Optional[str] = None
-    location: Optional[str] = None
-    client: Optional[str] = None
-    contractor: Optional[str] = None
-    status: Literal["active", "paused", "closed"] = "active"
-
-
-class ProjectUpdate(BaseModel):
-    name: Optional[str] = None
-    code: Optional[str] = None
-    description: Optional[str] = None
-    location: Optional[str] = None
-    client: Optional[str] = None
-    contractor: Optional[str] = None
-    status: Optional[Literal["active", "paused", "closed"]] = None
 
 
 class ProjectOut(BaseModel):
     id: str
     name: str
-    code: str
+    constructora: str
+    contract_number: str
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
     description: Optional[str] = None
-    location: Optional[str] = None
-    client: Optional[str] = None
-    contractor: Optional[str] = None
-    status: str = "active"
-    createdAt: str
+    created_by: str
+    created_at: datetime
+    archived: bool = False
 
 
-# --- Site Config (project-wide singleton) ------------
-class SiteConfigIn(BaseModel):
-    contract: Optional[str] = None
-    contractor: Optional[str] = None
-
-
-class SiteConfigOut(BaseModel):
-    contract: str = ""
-    contractor: str = ""
-    updatedAt: Optional[str] = None
-    updatedBy: Optional[str] = None
-
-
-class AITextIn(BaseModel):
-    title: str = ""
-    comments: str = ""
-    area: str
-
-
-class AITextOut(BaseModel):
-    text: str
-
-
-class SummaryIn(BaseModel):
-    reports: List[dict]
-
-
-class SummaryOut(BaseModel):
-    summary: str
-
-
-class ActivityIn(BaseModel):
-    title: str
-    description: str = ""
-    priority: Literal[1, 2, 3] = 1  # 1=Informativo, 2=Importante, 3=Urgente
-    area: Optional[str] = None  # None = global (only coordinadores)
-    tramo: Optional[int] = None  # None = ambos tramos; 1 o 2 = noticia específica
-
-
-class ActivityOut(BaseModel):
-    id: str
-    title: str
-    description: str
-    priority: int
-    area: Optional[str] = None
-    areaName: Optional[str] = None
-    tramo: Optional[int] = None
-    createdBy: str
-    createdByName: str
-    createdByRole: str
-    createdAt: str
-
-
-class PeriodSummaryIn(BaseModel):
-    period: Literal["daily", "weekly", "monthly"]
-    area: Optional[str] = None  # None = all areas (coordinador only)
-
-
-# --- Chat (direct messaging) -----------------------------
-class ChatSendIn(BaseModel):
-    to_user: str
-    text: str
-
-
-class ChatMessageOut(BaseModel):
-    id: str
-    from_user: str
-    from_name: str
-    to_user: str
-    to_name: str
-    text: str
-    createdAt: str
-    read: bool = False
-
-
-class ChatUserOut(BaseModel):
-    id: str
+class LocationNodeIn(BaseModel):
+    project_id: str
+    parent_id: Optional[str] = None
     name: str
-    email: str
-    role: str
-    area: Optional[str] = None
-    areaName: Optional[str] = None
+    order: int = 0
+    is_leaf: bool = False
+    measurement_type: Optional[Literal["coord_latlon", "cadenamiento", "eje", "nivel"]] = None
+
+
+class LocationNodeOut(BaseModel):
+    id: str
+    project_id: str
+    parent_id: Optional[str] = None
+    name: str
+    depth: int
+    order: int
+    is_leaf: bool
+    measurement_type: Optional[str] = None
+    path: List[str] = Field(default_factory=list)  # cadena de ids desde raíz hasta self
+
+
+class AreaIn(BaseModel):
+    project_id: str
+    name: str
+    color: Optional[str] = "#1E40AF"
+
+
+class AreaOut(BaseModel):
+    id: str
+    project_id: str
+    name: str
+    color: str
+    created_at: datetime
+
+
+class InvitationIn(BaseModel):
+    project_id: str
+    email: EmailStr
+    name: str
+    role: Literal["sub_coordinador", "especialista"]
+    # Sub-coordinador: scope_node_id (un nodo padre)
+    scope_node_id: Optional[str] = None
+    # Especialista: area_id, puesto, scope_node_ids (lista de hojas)
+    area_id: Optional[str] = None
     puesto: Optional[str] = None
-    lastMessage: Optional[str] = None
-    lastAt: Optional[str] = None
-    unread: int = 0
+    scope_node_ids: List[str] = Field(default_factory=list)
 
 
-# --- Calendar / Eventos ---------------------------------
-class FileAttachment(BaseModel):
-    name: str
-    mimeType: str
-    dataUrl: str  # base64 data URL (e.g. "data:application/pdf;base64,...")
-
-
-class EventIn(BaseModel):
-    title: str
-    description: str = ""
-    date: str  # ISO datetime (event start)
-    location: Optional[str] = None
-    area: Optional[str] = None  # None = global
-    alert_at: Optional[str] = None  # ISO datetime when alert fires
-    notify_all: bool = True  # alert to all users
-
-
-class EventOut(BaseModel):
+class InvitationOut(BaseModel):
     id: str
-    title: str
-    description: str
-    date: str
-    location: Optional[str] = None
-    area: Optional[str] = None
-    areaName: Optional[str] = None
-    alert_at: Optional[str] = None
-    notify_all: bool = True
-    createdBy: str
-    createdByName: str
-    createdAt: str
+    token: str
+    project_id: str
+    project_name: str
+    email: EmailStr
+    name: str
+    role: str
+    area_id: Optional[str] = None
+    puesto: Optional[str] = None
+    scope_node_id: Optional[str] = None
+    scope_node_ids: List[str] = Field(default_factory=list)
+    status: str  # "pending" | "accepted" | "revoked"
+    created_at: datetime
+    expires_at: datetime
 
 
-# --- Helpers ----------------------------------------------------------------
-def slugify(s: str) -> str:
-    s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode().lower()
-    s = re.sub(r"[^a-z0-9]+", "-", s).strip("-")
-    return s or "area"
+class AcceptInviteIn(BaseModel):
+    token: str
+    password: str
 
 
-def hash_password(pwd: str) -> str:
-    return bcrypt.hashpw(pwd.encode(), bcrypt.gensalt()).decode()
+class ReportIn(BaseModel):
+    project_id: str
+    node_id: str  # debe ser hoja
+    # Valor de medición (formato depende del measurement_type del nodo)
+    measurement_value: dict  # ej: {"lat": 19.43, "lon": -99.13} | {"cadenamiento": "5+100"} | {"eje": "A"} | {"nivel": 12.45}
+    area_id: Optional[str] = None
+    notes: Optional[str] = None
+    personnel: List[str] = Field(default_factory=list)
+    equipment: List[str] = Field(default_factory=list)
+    images: List[str] = Field(default_factory=list)  # base64
+    files: List[dict] = Field(default_factory=list)  # [{filename, mime, data_base64}]
 
 
-def verify_password(pwd: str, hashed: str) -> bool:
+class ReportOut(BaseModel):
+    id: str
+    project_id: str
+    node_id: str
+    node_path_names: List[str]
+    measurement_type: str
+    measurement_value: dict
+    area_id: Optional[str] = None
+    area_name: Optional[str] = None
+    notes: Optional[str] = None
+    personnel: List[str] = Field(default_factory=list)
+    equipment: List[str] = Field(default_factory=list)
+    images: List[str] = Field(default_factory=list)
+    files: List[dict] = Field(default_factory=list)
+    captured_by: str
+    captured_by_name: str
+    created_at: datetime
+
+
+# === Helpers ================================================================
+def hash_pw(pw: str) -> str:
+    return bcrypt.hashpw(pw.encode(), bcrypt.gensalt(rounds=10)).decode()
+
+
+def verify_pw(pw: str, h: str) -> bool:
     try:
-        return bcrypt.checkpw(pwd.encode(), hashed.encode())
+        return bcrypt.checkpw(pw.encode(), h.encode())
     except Exception:
         return False
 
 
 def make_token(user_id: str) -> str:
-    payload = {
-        "sub": user_id,
-        "exp": datetime.now(timezone.utc) + timedelta(minutes=JWT_EXPIRE_MINUTES),
-        "iat": datetime.now(timezone.utc),
-    }
-    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+    exp = datetime.now(timezone.utc) + timedelta(minutes=JWT_EXPIRE_MINUTES)
+    return jwt.encode({"sub": user_id, "exp": exp}, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 
-async def get_current_user(
-    creds: Optional[HTTPAuthorizationCredentials] = Depends(bearer),
-) -> dict:
+async def current_user(creds: Optional[HTTPAuthorizationCredentials] = Depends(bearer)) -> dict:
     if not creds:
-        raise HTTPException(status_code=401, detail="Token requerido")
+        raise HTTPException(401, "Token requerido")
     try:
-        data = jwt.decode(creds.credentials, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-        uid = data["sub"]
+        payload = jwt.decode(creds.credentials, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        uid = payload.get("sub")
     except jwt.PyJWTError:
-        raise HTTPException(status_code=401, detail="Token inválido")
-    user = await db.users.find_one({"id": uid}, {"_id": 0, "password": 0})
-    if not user:
-        raise HTTPException(status_code=401, detail="Usuario no encontrado")
-    return user
+        raise HTTPException(401, "Token inválido")
+    u = await db.users.find_one({"id": uid})
+    if not u:
+        raise HTTPException(401, "Usuario no existe")
+    u.pop("_id", None)
+    u.pop("password", None)
+    return u
 
 
-def user_doc_to_out(doc: dict) -> UserOut:
-    return UserOut(
-        id=doc["id"], email=doc["email"], name=doc["name"],
-        role=doc["role"], area=doc.get("area"),
-        puesto=doc.get("puesto"),
-    )
+def require_role(*allowed_roles: str):
+    async def dep(user: dict = Depends(current_user)) -> dict:
+        if user["role"] not in allowed_roles:
+            raise HTTPException(403, f"Rol no autorizado: {user['role']}")
+        return user
+    return dep
 
 
-async def area_exists(area_id: str) -> Optional[dict]:
-    return await db.areas.find_one({"id": area_id}, {"_id": 0})
-
-
-async def get_area_name(area_id: str) -> str:
-    a = await area_exists(area_id)
-    return a["name"] if a else area_id
-
-
-# --- Role helpers -----------------------------------------------------------
-# Operativos:
-# - 'especialista'    -> escribe reportes (su área), todo tramo.
-# - 'supervisor_t1'   -> solo lectura, scope Tramo 1.
-# - 'supervisor_t2'   -> solo lectura, scope Tramo 2.
-# - 'supervisor_general' / 'coordinador' (legacy) -> solo lectura, ambos tramos.
-# Invitados (solo lectura, todos los tramos):
-# - 'contratista' / 'dependencia'.
-GUEST_ROLES = {"contratista", "dependencia"}
-TRAMO_SUPERVISOR_ROLES = {"supervisor_t1", "supervisor_t2"}
-GLOBAL_SUPERVISOR_ROLES = {"coordinador", "supervisor_general"}
-SUPERVISOR_VIEW_ROLES = (
-    GLOBAL_SUPERVISOR_ROLES | TRAMO_SUPERVISOR_ROLES | GUEST_ROLES
-)
-# Roles que NO pueden mutar (escribir reportes, postes, noticias, eventos…)
-READ_ONLY_ROLES = (
-    GUEST_ROLES | TRAMO_SUPERVISOR_ROLES | GLOBAL_SUPERVISOR_ROLES
-)
-# Roles que pueden generar / leer Noticias y Resúmenes IA con visión global:
-GENERAL_VIEW_ROLES = GLOBAL_SUPERVISOR_ROLES | GUEST_ROLES
-
-
-def is_guest_ro(role: str) -> bool:
-    return role in GUEST_ROLES
-
-
-def is_supervisor_view(role: str) -> bool:
-    return role in SUPERVISOR_VIEW_ROLES
-
-
-def tramo_scope(user: dict) -> Optional[int]:
-    """Devuelve el tramo al que está limitado el usuario (1 o 2), o None si ve todo."""
-    role = user.get("role", "")
-    if role == "supervisor_t1":
-        return 1
-    if role == "supervisor_t2":
-        return 2
-    # supervisor_t1/t2 explícito o supervisores generales
-    return None
-
-
-def can_emit_news(role: str) -> bool:
-    # Solo los supervisores (global + tramo) pueden emitir noticias para campo.
-    return role in (GLOBAL_SUPERVISOR_ROLES | TRAMO_SUPERVISOR_ROLES)
-
-
-def require_not_guest(user: dict, msg: str = "Acceso de solo lectura: tu perfil no puede modificar datos."):
-    role = user.get("role", "")
-    if role in READ_ONLY_ROLES and role not in (GLOBAL_SUPERVISOR_ROLES | TRAMO_SUPERVISOR_ROLES):
-        raise HTTPException(status_code=403, detail=msg)
-
-
-def require_can_create_report(user: dict):
-    if user.get("role", "") != "especialista":
-        raise HTTPException(status_code=403, detail="Solo el rol Especialista puede crear reportes.")
-
-
-def require_can_emit_news(user: dict):
-    if not can_emit_news(user.get("role", "")):
-        raise HTTPException(status_code=403, detail="Solo los Supervisores pueden emitir noticias.")
-
-
-# --- Routes: Auth -----------------------------------------------------------
-@api.post("/auth/register", response_model=AuthResponse)
-async def register(body: RegisterIn):
-    if body.role == "especialista":
-        if not body.area or not await area_exists(body.area):
-            raise HTTPException(status_code=400, detail="Área inválida para especialista")
-    existing = await db.users.find_one({"email": body.email.lower()})
-    if existing:
-        raise HTTPException(status_code=400, detail="Email ya registrado")
-    uid = str(uuid.uuid4())
-    doc = {
-        "id": uid,
-        "email": body.email.lower(),
-        "name": body.name,
-        "password": hash_password(body.password),
-        "role": body.role,
-        "area": body.area if body.role == "especialista" else None,
-        "puesto": (body.puesto or "").strip() or None,
-        "createdAt": datetime.now(timezone.utc).isoformat(),
+def user_to_out(u: dict) -> dict:
+    return {
+        "id": u["id"],
+        "email": u["email"],
+        "name": u["name"],
+        "role": u["role"],
+        "area": u.get("area"),
+        "puesto": u.get("puesto"),
+        "scope_node_id": u.get("scope_node_id"),
+        "scope_node_ids": u.get("scope_node_ids") or [],
+        "project_ids": u.get("project_ids") or [],
+        "created_at": u.get("created_at", datetime.now(timezone.utc)),
     }
-    await db.users.insert_one(doc)
-    return AuthResponse(token=make_token(uid), user=user_doc_to_out(doc))
 
 
-@api.post("/auth/login", response_model=AuthResponse)
-async def login(body: LoginIn):
-    user = await db.users.find_one({"email": body.email.lower()})
-    if not user or not verify_password(body.password, user["password"]):
-        raise HTTPException(status_code=401, detail="Credenciales inválidas")
-    return AuthResponse(token=make_token(user["id"]), user=user_doc_to_out(user))
+async def ensure_project_access(user: dict, project_id: str) -> dict:
+    """Valida que el usuario tenga acceso a un proyecto; devuelve el proyecto."""
+    p = await db.projects.find_one({"id": project_id, "archived": {"$ne": True}})
+    if not p:
+        raise HTTPException(404, "Proyecto no existe")
+    if user["role"] == ROLE_COORD:
+        return p  # acceso global
+    if project_id not in (user.get("project_ids") or []):
+        raise HTTPException(403, "Sin acceso a este proyecto")
+    return p
 
 
-@api.get("/auth/me", response_model=UserOut)
-async def me(user: dict = Depends(get_current_user)):
-    return user_doc_to_out(user)
+async def build_node_path(node: dict) -> List[str]:
+    """Devuelve la cadena de IDs desde raíz hasta self (incluido)."""
+    path = [node["id"]]
+    cur = node
+    while cur.get("parent_id"):
+        parent = await db.location_nodes.find_one({"id": cur["parent_id"]})
+        if not parent:
+            break
+        path.insert(0, parent["id"])
+        cur = parent
+    return path
 
 
-@api.put("/auth/me", response_model=UserOut)
-async def update_me(body: UserUpdateIn, user: dict = Depends(get_current_user)):
-    """Allows the user to update their own profile (name / puesto)."""
-    updates: dict = {}
-    if body.name is not None:
-        n = body.name.strip()
-        if not n:
-            raise HTTPException(status_code=400, detail="Nombre inválido")
-        updates["name"] = n
-    if body.puesto is not None:
-        updates["puesto"] = body.puesto.strip() or None
-    if not updates:
-        raise HTTPException(status_code=400, detail="Nada para actualizar")
-    await db.users.update_one({"id": user["id"]}, {"$set": updates})
-    fresh = await db.users.find_one({"id": user["id"]}, {"_id": 0, "password": 0})
-    return user_doc_to_out(fresh)
+async def node_path_names(node_id: str) -> List[str]:
+    node = await db.location_nodes.find_one({"id": node_id})
+    if not node:
+        return []
+    ids = await build_node_path(node)
+    names: List[str] = []
+    for nid in ids:
+        n = await db.location_nodes.find_one({"id": nid})
+        if n:
+            names.append(n["name"])
+    return names
 
 
-# --- Routes: Areas ----------------------------------------------------------
-@api.get("/areas", response_model=List[AreaOut])
-async def list_areas(_: dict = Depends(get_current_user)):
-    cursor = db.areas.find({}, {"_id": 0}).sort("name", 1)
-    return [AreaOut(**a) async for a in cursor]
-
-
-@api.post("/areas", response_model=AreaOut)
-async def create_area(body: AreaIn, user: dict = Depends(get_current_user)):
-    if user["role"] != "coordinador":
-        raise HTTPException(status_code=403, detail="Solo coordinadores pueden agregar áreas")
-    name = body.name.strip()
-    if not name:
-        raise HTTPException(status_code=400, detail="Nombre requerido")
-    aid = slugify(name)
-    if await area_exists(aid):
-        raise HTTPException(status_code=400, detail="El área ya existe")
-    doc = {
-        "id": aid,
-        "name": name,
-        "color": body.color or "#1E40AF",
-        "icon": body.icon or "hardhat",
-        "createdAt": datetime.now(timezone.utc).isoformat(),
-        "createdBy": user["id"],
-    }
-    await db.areas.insert_one(doc)
-    doc.pop("_id", None)
-    return AreaOut(**doc)
-
-
-@api.delete("/areas/{area_id}")
-async def delete_area(area_id: str, user: dict = Depends(get_current_user)):
-    if user["role"] != "coordinador":
-        raise HTTPException(status_code=403, detail="Solo coordinadores")
-    # Prevent deletion if a specialist or report uses it
-    in_use_user = await db.users.find_one({"area": area_id})
-    if in_use_user:
-        raise HTTPException(status_code=400, detail="Área en uso por algún especialista")
-    res = await db.areas.delete_one({"id": area_id})
-    if not res.deleted_count:
-        raise HTTPException(status_code=404, detail="Área no encontrada")
-    return {"ok": True}
-
-
-# --- Routes: Reference Points (Postes) -------------------------------------
-@api.get("/reference-points", response_model=List[ReferencePointOut])
-async def list_reference_points(user: dict = Depends(get_current_user)):
-    """Lista los puntos de referencia visibles para el usuario:
-    - Coordinador: ve todos.
-    - Especialista: ve los globales (area=None) + los de su área.
-    """
-    query: dict = {}
-    if user["role"] == "especialista":
-        query["$or"] = [{"area": user.get("area")}, {"area": None}]
-    cursor = db.reference_points.find(query, {"_id": 0}).sort("name", 1)
-    out: List[ReferencePointOut] = []
-    async for p in cursor:
-        if p.get("area"):
-            p["areaName"] = await get_area_name(p["area"])
-        else:
-            p["areaName"] = "Global"
-        out.append(ReferencePointOut(**p))
+async def descendants_ids(root_id: str) -> List[str]:
+    """Devuelve TODOS los descendientes (incluyendo root_id) de un nodo."""
+    out = [root_id]
+    queue = [root_id]
+    while queue:
+        pid = queue.pop(0)
+        children = await db.location_nodes.find({"parent_id": pid}).to_list(length=10000)
+        for c in children:
+            out.append(c["id"])
+            queue.append(c["id"])
     return out
 
 
-@api.post("/reference-points", response_model=ReferencePointOut)
-async def create_reference_point(body: ReferencePointIn, user: dict = Depends(get_current_user)):
-    require_not_guest(user)
-    name = body.name.strip()
-    if not name:
-        raise HTTPException(status_code=400, detail="Nombre requerido")
-    # Determine target area:
-    # - Especialista: forced to their own area (cannot create global)
-    # - Coordinador: can pass area=None (global) or any existing area
-    target_area: Optional[str] = body.area
-    if user["role"] == "especialista":
-        if not user.get("area"):
-            raise HTTPException(status_code=400, detail="Sin área asignada")
-        target_area = user["area"]
+# === Startup: wipe legacy ===================================================
+@app.on_event("startup")
+async def startup_event():
+    # Eliminar colecciones legacy de la versión anterior
+    existing = await db.list_collection_names()
+    for c in COLLECTIONS_LEGACY:
+        if c in existing:
+            await db[c].drop()
+            log.info(f"[wipe] Dropped legacy collection: {c}")
+    # Indexes esenciales
+    await db.users.create_index("email", unique=True)
+    await db.invitations.create_index("token", unique=True)
+    await db.location_nodes.create_index([("project_id", 1), ("parent_id", 1)])
+    await db.reports.create_index([("project_id", 1), ("created_at", -1)])
+    log.info("[startup] SynCo v2.0 ready")
+
+
+# === ROOT / HEALTH ==========================================================
+@api.get("/")
+async def root():
+    return {"name": "SynCo v2.0", "status": "ok"}
+
+
+@api.get("/health")
+async def health():
+    return {"ok": True, "ts": datetime.now(timezone.utc).isoformat()}
+
+
+# === BOOTSTRAP (idempotente) ================================================
+@api.post("/admin/bootstrap")
+async def bootstrap(body: BootstrapIn):
+    if body.secret != BOOTSTRAP_SECRET:
+        raise HTTPException(403, "Secret inválido")
+    existing = await db.users.find_one({"email": body.email.lower()})
+    if existing:
+        # Idempotente: si ya existe y es coordinador_general, OK
+        if existing.get("role") != ROLE_COORD:
+            raise HTTPException(409, "Email existe con otro rol")
+        return {"ok": True, "user": user_to_out(existing), "created": False}
+    uid = str(uuid.uuid4())
+    user = {
+        "id": uid,
+        "email": body.email.lower(),
+        "password": hash_pw(body.password),
+        "name": body.name,
+        "role": ROLE_COORD,
+        "created_at": datetime.now(timezone.utc),
+        "project_ids": [],
+    }
+    await db.users.insert_one(user)
+    log.info(f"[bootstrap] Created coordinador_general {body.email}")
+    return {"ok": True, "user": user_to_out(user), "created": True}
+
+
+# === AUTH ===================================================================
+@api.post("/auth/login", response_model=Token)
+async def login(body: LoginIn):
+    u = await db.users.find_one({"email": body.email.lower()})
+    if not u or not verify_pw(body.password, u["password"]):
+        raise HTTPException(401, "Credenciales inválidas")
+    return {"token": make_token(u["id"]), "user": user_to_out(u)}
+
+
+@api.get("/auth/me")
+async def me(user: dict = Depends(current_user)):
+    return user_to_out(user)
+
+
+# === PROJECTS ===============================================================
+@api.get("/projects")
+async def list_projects(user: dict = Depends(current_user)):
+    if user["role"] == ROLE_COORD:
+        cursor = db.projects.find({"archived": {"$ne": True}}).sort("created_at", -1)
     else:
-        if target_area and not await area_exists(target_area):
-            raise HTTPException(status_code=400, detail="Área inválida")
+        pids = user.get("project_ids") or []
+        cursor = db.projects.find({"id": {"$in": pids}, "archived": {"$ne": True}}).sort("created_at", -1)
+    items = await cursor.to_list(length=500)
+    for it in items:
+        it.pop("_id", None)
+    return items
 
-    # Prevent duplicates inside same scope (area or global)
-    dup_query: dict = {"name": name, "area": target_area}
-    if await db.reference_points.find_one(dup_query):
-        raise HTTPException(status_code=400, detail="Ya existe un punto con ese nombre")
 
+@api.post("/projects")
+async def create_project(body: ProjectIn, user: dict = Depends(require_role(ROLE_COORD))):
     pid = str(uuid.uuid4())
     doc = {
         "id": pid,
-        "name": name,
-        "location": (body.location or "").strip() or None,
-        "coordinates": (body.coordinates or "").strip() or None,
-        "area": target_area,
-        "createdBy": user["id"],
-        "createdByName": user["name"],
-        "createdAt": datetime.now(timezone.utc).isoformat(),
+        "name": body.name.strip(),
+        "constructora": body.constructora.strip(),
+        "contract_number": body.contract_number.strip(),
+        "start_date": body.start_date,
+        "end_date": body.end_date,
+        "description": (body.description or "").strip() or None,
+        "created_by": user["id"],
+        "created_at": datetime.now(timezone.utc),
+        "archived": False,
     }
-    await db.reference_points.insert_one(doc)
+    await db.projects.insert_one(doc)
     doc.pop("_id", None)
-    doc["areaName"] = await get_area_name(target_area) if target_area else "Global"
-    return ReferencePointOut(**doc)
+    return doc
 
 
-@api.put("/reference-points/{point_id}", response_model=ReferencePointOut)
-async def update_reference_point(
-    point_id: str,
-    body: ReferencePointIn,
-    user: dict = Depends(get_current_user),
-):
-    """Edita un punto de referencia existente.
-    - Coordinador puede editar cualquiera y mover entre global/área.
-    - Especialista solo puede editar los suyos y dentro de su propia área.
-    """
-    p = await db.reference_points.find_one({"id": point_id}, {"_id": 0})
-    if not p:
-        raise HTTPException(status_code=404, detail="Punto no encontrado")
-    if user["role"] != "coordinador" and p["createdBy"] != user["id"]:
-        raise HTTPException(status_code=403, detail="Sin permiso")
+@api.get("/projects/{pid}")
+async def get_project(pid: str, user: dict = Depends(current_user)):
+    p = await ensure_project_access(user, pid)
+    p.pop("_id", None)
+    return p
 
-    name = body.name.strip()
-    if not name:
-        raise HTTPException(status_code=400, detail="Nombre requerido")
 
-    target_area: Optional[str] = body.area
-    if user["role"] == "especialista":
-        # Especialistas no pueden cambiar el área (ni hacer global).
-        target_area = user.get("area")
-    else:
-        if target_area and not await area_exists(target_area):
-            raise HTTPException(status_code=400, detail="Área inválida")
-
-    # Evitar duplicados (mismo nombre + mismo scope) excluyendo este punto.
-    dup = await db.reference_points.find_one({
-        "name": name,
-        "area": target_area,
-        "id": {"$ne": point_id},
-    })
-    if dup:
-        raise HTTPException(status_code=400, detail="Ya existe un punto con ese nombre")
-
-    updates = {
-        "name": name,
-        "location": (body.location or "").strip() or None,
-        "coordinates": (body.coordinates or "").strip() or None,
-        "area": target_area,
+@api.put("/projects/{pid}")
+async def update_project(pid: str, body: ProjectIn, user: dict = Depends(require_role(ROLE_COORD))):
+    upd = {
+        "name": body.name.strip(),
+        "constructora": body.constructora.strip(),
+        "contract_number": body.contract_number.strip(),
+        "start_date": body.start_date,
+        "end_date": body.end_date,
+        "description": (body.description or "").strip() or None,
     }
-    await db.reference_points.update_one({"id": point_id}, {"$set": updates})
-
-    p.update(updates)
-    p["areaName"] = await get_area_name(target_area) if target_area else "Global"
-    return ReferencePointOut(**p)
-
-
-@api.delete("/reference-points/{point_id}")
-async def delete_reference_point(point_id: str, user: dict = Depends(get_current_user)):
-    p = await db.reference_points.find_one({"id": point_id}, {"_id": 0})
-    if not p:
-        raise HTTPException(status_code=404, detail="Punto no encontrado")
-    # Coordinador can delete any; especialistas can delete only their own.
-    if user["role"] != "coordinador" and p["createdBy"] != user["id"]:
-        raise HTTPException(status_code=403, detail="Sin permiso")
-    await db.reference_points.delete_one({"id": point_id})
-    return {"ok": True}
+    r = await db.projects.update_one({"id": pid}, {"$set": upd})
+    if r.matched_count == 0:
+        raise HTTPException(404, "Proyecto no existe")
+    p = await db.projects.find_one({"id": pid})
+    p.pop("_id", None)
+    return p
 
 
-# --- Routes: Site Config (Contract / Contractor) ---------------------------
-@api.get("/site-config", response_model=SiteConfigOut)
-async def get_site_config(_: dict = Depends(get_current_user)):
-    cfg = await db.site_config.find_one({"id": "default"}, {"_id": 0}) or {}
-    return SiteConfigOut(
-        contract=cfg.get("contract") or "",
-        contractor=cfg.get("contractor") or "",
-        updatedAt=cfg.get("updatedAt"),
-        updatedBy=cfg.get("updatedByName"),
-    )
+@api.delete("/projects/{pid}")
+async def archive_project(pid: str, user: dict = Depends(require_role(ROLE_COORD))):
+    await db.projects.update_one({"id": pid}, {"$set": {"archived": True}})
+    return {"ok": True, "archived": True}
 
 
-@api.put("/site-config", response_model=SiteConfigOut)
-async def update_site_config(body: SiteConfigIn, user: dict = Depends(get_current_user)):
-    if user["role"] != "coordinador":
-        raise HTTPException(status_code=403, detail="Solo coordinadores pueden actualizar la configuración")
-    updates = {
-        "id": "default",
-        "contract": (body.contract or "").strip(),
-        "contractor": (body.contractor or "").strip(),
-        "updatedAt": datetime.now(timezone.utc).isoformat(),
-        "updatedBy": user["id"],
-        "updatedByName": user["name"],
-    }
-    await db.site_config.update_one(
-        {"id": "default"}, {"$set": updates}, upsert=True
-    )
-    return SiteConfigOut(
-        contract=updates["contract"],
-        contractor=updates["contractor"],
-        updatedAt=updates["updatedAt"],
-        updatedBy=updates["updatedByName"],
-    )
+# === LOCATION NODES (Árbol Recursivo) =======================================
+@api.get("/projects/{pid}/nodes")
+async def list_nodes(pid: str, user: dict = Depends(current_user)):
+    await ensure_project_access(user, pid)
+    items = await db.location_nodes.find({"project_id": pid}).sort([("depth", 1), ("order", 1)]).to_list(length=10000)
+    for it in items:
+        it.pop("_id", None)
+    return items
 
 
-# --- Routes: Report History (autocomplete data) ----------------------------
-@api.get("/report-history")
-async def report_history(user: dict = Depends(get_current_user)):
-    """Devuelve datos históricos para autocompletado en el formulario.
-    Compartido por área: extrae personal y equipos únicos de los reportes
-    previos del área del usuario (o el área pedida por un coordinador).
-    """
-    target_area: Optional[str] = None
-    if user["role"] == "especialista":
-        target_area = user.get("area")
-    # Coordinator without area filter receives an empty set (no área context)
-    query: dict = {}
-    if target_area:
-        query["area"] = target_area
-
-    personnel_set: set = set()
-    equipment_set: set = set()
-    activities_set: list = []
-    seen_activities: set = set()
-
-    async for r in db.reports.find(
-        query, {"_id": 0, "personnel": 1, "equipment": 1, "activities": 1, "createdAt": 1}
-    ).sort("createdAt", -1).limit(200):
-        for p in (r.get("personnel") or []):
-            if p and p.strip():
-                personnel_set.add(p.strip())
-        for e in (r.get("equipment") or []):
-            if e and e.strip():
-                equipment_set.add(e.strip())
-        act = (r.get("activities") or "").strip()
-        if act and act not in seen_activities:
-            seen_activities.add(act)
-            activities_set.append(act)
-
-    return {
-        "personnel": sorted(personnel_set, key=str.lower),
-        "equipment": sorted(equipment_set, key=str.lower),
-        "activities": activities_set[:25],
-        "area": target_area,
-    }
-
-
-# --- Routes: Projects (Multi-Obra) -------------------
-def _project_code(name: str) -> str:
-    import re
-    base = re.sub(r"[^a-z0-9]+", "-", (name or "").lower()).strip("-")
-    return base[:48] or f"proj-{uuid.uuid4().hex[:6]}"
-
-
-def _project_doc_to_out(d: dict) -> dict:
-    return {
-        "id": d.get("id"),
-        "name": d.get("name", ""),
-        "code": d.get("code", ""),
-        "description": d.get("description"),
-        "location": d.get("location"),
-        "client": d.get("client"),
-        "contractor": d.get("contractor"),
-        "status": d.get("status", "active"),
-        "createdAt": d.get("createdAt", ""),
-    }
-
-
-@api.get("/projects", response_model=List[ProjectOut])
-async def list_projects(user: dict = Depends(get_current_user)):
-    """Lista todos los proyectos visibles para el usuario.
-    - coordinador_global: todos
-    - resto: sólo el proyecto al que están vinculados (user.project_id)
-    """
-    role = user.get("role")
-    query: dict = {}
-    if role != "coordinador_global" and role != "coordinador":
-        # Filtrar por proyecto asignado, si existe
-        pid = user.get("project_id")
-        if pid:
-            query["id"] = pid
+@api.get("/projects/{pid}/nodes/tree")
+async def get_tree(pid: str, user: dict = Depends(current_user)):
+    """Devuelve el árbol completo como estructura jerárquica."""
+    await ensure_project_access(user, pid)
+    items = await db.location_nodes.find({"project_id": pid}).sort([("depth", 1), ("order", 1)]).to_list(length=10000)
+    by_id = {}
+    for it in items:
+        it.pop("_id", None)
+        it["children"] = []
+        by_id[it["id"]] = it
+    roots = []
+    for it in items:
+        if it.get("parent_id") and it["parent_id"] in by_id:
+            by_id[it["parent_id"]]["children"].append(it)
         else:
-            # Sin proyecto asignado: devolver todos los activos (read-only)
-            query["status"] = "active"
-    out: List[dict] = []
-    async for d in db.projects.find(query, {"_id": 0}).sort("createdAt", 1):
-        out.append(_project_doc_to_out(d))
+            roots.append(it)
+    return roots
+
+
+@api.post("/projects/{pid}/nodes")
+async def create_node(pid: str, body: LocationNodeIn, user: dict = Depends(require_role(ROLE_COORD))):
+    if body.project_id != pid:
+        raise HTTPException(400, "project_id mismatch")
+    await ensure_project_access(user, pid)
+    parent = None
+    depth = 0
+    if body.parent_id:
+        parent = await db.location_nodes.find_one({"id": body.parent_id, "project_id": pid})
+        if not parent:
+            raise HTTPException(404, "Nodo padre no existe")
+        depth = parent["depth"] + 1
+        # Si el padre era hoja, deja de serlo automáticamente.
+        if parent.get("is_leaf"):
+            await db.location_nodes.update_one(
+                {"id": parent["id"]},
+                {"$set": {"is_leaf": False, "measurement_type": None}},
+            )
+    if body.is_leaf and body.measurement_type not in MEASUREMENT_TYPES:
+        raise HTTPException(400, "Nodos hoja requieren measurement_type válido")
+    nid = str(uuid.uuid4())
+    doc = {
+        "id": nid,
+        "project_id": pid,
+        "parent_id": body.parent_id,
+        "name": body.name.strip(),
+        "depth": depth,
+        "order": body.order,
+        "is_leaf": body.is_leaf,
+        "measurement_type": body.measurement_type if body.is_leaf else None,
+        "created_at": datetime.now(timezone.utc),
+    }
+    await db.location_nodes.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+class NodePatch(BaseModel):
+    name: Optional[str] = None
+    order: Optional[int] = None
+    is_leaf: Optional[bool] = None
+    measurement_type: Optional[Literal["coord_latlon", "cadenamiento", "eje", "nivel"]] = None
+
+
+@api.patch("/nodes/{nid}")
+async def update_node(nid: str, body: NodePatch, user: dict = Depends(require_role(ROLE_COORD))):
+    node = await db.location_nodes.find_one({"id": nid})
+    if not node:
+        raise HTTPException(404, "Nodo no existe")
+    upd: dict = {}
+    if body.name is not None:
+        upd["name"] = body.name.strip()
+    if body.order is not None:
+        upd["order"] = body.order
+    if body.is_leaf is not None:
+        if body.is_leaf:
+            # Para convertirse en hoja no debe tener hijos
+            has_children = await db.location_nodes.find_one({"parent_id": nid})
+            if has_children:
+                raise HTTPException(400, "No se puede marcar como hoja: tiene hijos")
+            if body.measurement_type not in MEASUREMENT_TYPES:
+                raise HTTPException(400, "Hoja requiere measurement_type")
+            upd["is_leaf"] = True
+            upd["measurement_type"] = body.measurement_type
+        else:
+            upd["is_leaf"] = False
+            upd["measurement_type"] = None
+    elif body.measurement_type is not None:
+        if not node.get("is_leaf"):
+            raise HTTPException(400, "measurement_type solo aplica a hojas")
+        if body.measurement_type not in MEASUREMENT_TYPES:
+            raise HTTPException(400, "measurement_type inválido")
+        upd["measurement_type"] = body.measurement_type
+    if upd:
+        await db.location_nodes.update_one({"id": nid}, {"$set": upd})
+    out = await db.location_nodes.find_one({"id": nid})
+    out.pop("_id", None)
     return out
 
 
-@api.get("/projects/{project_id}", response_model=ProjectOut)
-async def get_project(project_id: str, user: dict = Depends(get_current_user)):
-    d = await db.projects.find_one({"id": project_id}, {"_id": 0})
-    if not d:
-        raise HTTPException(status_code=404, detail="Proyecto no encontrado")
-    return _project_doc_to_out(d)
+@api.delete("/nodes/{nid}")
+async def delete_node(nid: str, user: dict = Depends(require_role(ROLE_COORD))):
+    node = await db.location_nodes.find_one({"id": nid})
+    if not node:
+        raise HTTPException(404, "Nodo no existe")
+    ids_to_delete = await descendants_ids(nid)
+    await db.location_nodes.delete_many({"id": {"$in": ids_to_delete}})
+    # NO borramos reportes huérfanos automáticamente (preservación). Marcar como huérfanos:
+    await db.reports.update_many(
+        {"node_id": {"$in": ids_to_delete}}, {"$set": {"node_orphan": True}}
+    )
+    return {"ok": True, "deleted_count": len(ids_to_delete)}
 
 
-@api.post("/projects", response_model=ProjectOut)
-async def create_project(body: ProjectIn, user: dict = Depends(get_current_user)):
-    if user.get("role") not in ("coordinador_global", "coordinador"):
-        raise HTTPException(status_code=403, detail="Sólo el Coordinador Global puede crear proyectos")
-    code = (body.code or _project_code(body.name)).lower()
-    # Verificar unicidad del code
-    exists = await db.projects.find_one({"code": code}, {"_id": 1})
-    if exists:
-        code = f"{code}-{uuid.uuid4().hex[:4]}"
+# === AREAS (por proyecto) ===================================================
+@api.get("/projects/{pid}/areas")
+async def list_areas(pid: str, user: dict = Depends(current_user)):
+    await ensure_project_access(user, pid)
+    items = await db.areas.find({"project_id": pid}).sort("name", 1).to_list(length=200)
+    for it in items:
+        it.pop("_id", None)
+    return items
+
+
+@api.post("/projects/{pid}/areas")
+async def create_area(pid: str, body: AreaIn, user: dict = Depends(require_role(ROLE_COORD))):
+    if body.project_id != pid:
+        raise HTTPException(400, "project_id mismatch")
+    await ensure_project_access(user, pid)
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(400, "Nombre requerido")
+    existing = await db.areas.find_one({"project_id": pid, "name": name})
+    if existing:
+        raise HTTPException(409, "Área ya existe en este proyecto")
     doc = {
         "id": str(uuid.uuid4()),
-        "name": body.name.strip(),
-        "code": code,
-        "description": (body.description or "").strip() or None,
-        "location": (body.location or "").strip() or None,
-        "client": (body.client or "").strip() or None,
-        "contractor": (body.contractor or "").strip() or None,
-        "status": body.status,
-        "createdAt": datetime.now(timezone.utc).isoformat(),
-        "createdBy": user["id"],
+        "project_id": pid,
+        "name": name,
+        "color": body.color or "#1E40AF",
+        "created_at": datetime.now(timezone.utc),
     }
-    await db.projects.insert_one(doc)
-    return _project_doc_to_out(doc)
+    await db.areas.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
 
 
-@api.put("/projects/{project_id}", response_model=ProjectOut)
-async def update_project(project_id: str, body: ProjectUpdate, user: dict = Depends(get_current_user)):
-    if user.get("role") not in ("coordinador_global", "coordinador"):
-        raise HTTPException(status_code=403, detail="Sólo el Coordinador Global puede editar proyectos")
-    update: dict = {k: v for k, v in body.dict(exclude_unset=True).items() if v is not None}
-    if not update:
-        d = await db.projects.find_one({"id": project_id}, {"_id": 0})
-        if not d:
-            raise HTTPException(status_code=404, detail="Proyecto no encontrado")
-        return _project_doc_to_out(d)
-    if "code" in update:
-        update["code"] = update["code"].lower()
-        clash = await db.projects.find_one(
-            {"code": update["code"], "id": {"$ne": project_id}}, {"_id": 1}
-        )
-        if clash:
-            raise HTTPException(status_code=400, detail="Código de proyecto en uso")
-    res = await db.projects.find_one_and_update(
-        {"id": project_id}, {"$set": update}, return_document=True, projection={"_id": 0}
-    )
-    if not res:
-        raise HTTPException(status_code=404, detail="Proyecto no encontrado")
-    return _project_doc_to_out(res)
+@api.delete("/areas/{aid}")
+async def delete_area(aid: str, user: dict = Depends(require_role(ROLE_COORD))):
+    a = await db.areas.find_one({"id": aid})
+    if not a:
+        raise HTTPException(404, "Área no existe")
+    await db.areas.delete_one({"id": aid})
+    return {"ok": True}
 
 
-@api.delete("/projects/{project_id}")
-async def delete_project(project_id: str, user: dict = Depends(get_current_user)):
-    if user.get("role") not in ("coordinador_global", "coordinador"):
-        raise HTTPException(status_code=403, detail="Sólo el Coordinador Global puede eliminar proyectos")
-    # No eliminamos en duro si tiene reportes/usuarios — lo marcamos como 'closed'
-    n_reports = await db.reports.count_documents({"project_id": project_id})
-    n_users = await db.users.count_documents({"project_id": project_id})
-    if n_reports > 0 or n_users > 0:
-        await db.projects.update_one({"id": project_id}, {"$set": {"status": "closed"}})
-        return {"ok": True, "archived": True, "reports": n_reports, "users": n_users}
-    res = await db.projects.delete_one({"id": project_id})
-    if res.deleted_count == 0:
-        raise HTTPException(status_code=404, detail="Proyecto no encontrado")
-    return {"ok": True, "archived": False}
+# === INVITATIONS ============================================================
+@api.get("/projects/{pid}/invitations")
+async def list_invites(pid: str, user: dict = Depends(require_role(ROLE_COORD))):
+    await ensure_project_access(user, pid)
+    items = await db.invitations.find({"project_id": pid}).sort("created_at", -1).to_list(length=500)
+    for it in items:
+        it.pop("_id", None)
+    return items
 
 
-# --- Routes: Reports --------------------------------------------------------
-@api.post("/reports", response_model=ReportOut)
-async def create_report(body: ReportIn, user: dict = Depends(get_current_user)):
-    require_can_create_report(user)
-    if not await area_exists(body.area):
-        raise HTTPException(status_code=400, detail="Área inválida")
-    if user["role"] == "especialista" and user.get("area") != body.area:
-        raise HTTPException(status_code=403, detail="No puedes reportar en otra área")
-
-    # Validar jerarquía Tramo / Estación / Poste (obligatorios y consistentes).
-    if int(body.tramo) not in TRAMO_ESTACIONES:
-        raise HTTPException(status_code=400, detail="Tramo inválido (1 o 2).")
-    if int(body.estacion) not in TRAMO_ESTACIONES[int(body.tramo)]:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Estación {body.estacion} no pertenece al Tramo {body.tramo}.",
-        )
-    if not (POSTE_MIN <= int(body.poste) <= POSTE_MAX):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Poste fuera de rango ({POSTE_MIN}-{POSTE_MAX}).",
-        )
-
-    # Snapshot site config (contract / contractor) into the report
-    cfg = await db.site_config.find_one({"id": "default"}, {"_id": 0}) or {}
-
-    # Calculate progress (avance)
-    progress: Optional[float] = None
-    if (
-        body.first_reading is not None
-        and body.last_reading is not None
-        and body.unit
-        and body.unit != "none"
-    ):
-        try:
-            progress = round(float(body.last_reading) - float(body.first_reading), 4)
-        except Exception:
-            progress = None
-
-    # Clean personnel / equipment / files lists
-    personnel = [p.strip() for p in (body.personnel or []) if p and p.strip()]
-    equipment = [e.strip() for e in (body.equipment or []) if e and e.strip()]
-    files = []
-    for f in (body.files or []):
-        if not isinstance(f, dict):
-            continue
-        if f.get("dataUrl") and f.get("name"):
-            files.append({
-                "name": str(f.get("name"))[:200],
-                "mimeType": str(f.get("mimeType") or "application/octet-stream"),
-                "dataUrl": str(f.get("dataUrl")),
-            })
-
-    rid = f"REP-T{int(body.tramo)}E{int(body.estacion)}P{int(body.poste)}-{str(uuid.uuid4())[:6]}"
-    area_name = await get_area_name(body.area)
+@api.post("/projects/{pid}/invitations")
+async def create_invite(pid: str, body: InvitationIn, user: dict = Depends(require_role(ROLE_COORD))):
+    if body.project_id != pid:
+        raise HTTPException(400, "project_id mismatch")
+    project = await ensure_project_access(user, pid)
+    email = body.email.lower()
+    # Validar email no exista YA con cuenta activa
+    existing_user = await db.users.find_one({"email": email})
+    if existing_user:
+        # OK si es el mismo usuario que será agregado a un nuevo proyecto, sino conflicto
+        raise HTTPException(409, "Email ya registrado en el sistema")
+    # Validaciones por rol
+    if body.role == "sub_coordinador":
+        if not body.scope_node_id:
+            raise HTTPException(400, "Sub-coordinador requiere scope_node_id")
+        node = await db.location_nodes.find_one({"id": body.scope_node_id, "project_id": pid})
+        if not node:
+            raise HTTPException(404, "scope_node_id inválido")
+    elif body.role == "especialista":
+        if not body.area_id:
+            raise HTTPException(400, "Especialista requiere area_id")
+        area = await db.areas.find_one({"id": body.area_id, "project_id": pid})
+        if not area:
+            raise HTTPException(404, "area_id inválido")
+        if not body.scope_node_ids:
+            raise HTTPException(400, "Especialista requiere al menos 1 scope_node_id")
+        # Todos deben ser hojas del proyecto
+        nodes = await db.location_nodes.find(
+            {"id": {"$in": body.scope_node_ids}, "project_id": pid}
+        ).to_list(length=1000)
+        if len(nodes) != len(body.scope_node_ids):
+            raise HTTPException(400, "scope_node_ids contiene IDs inválidos")
+        for n in nodes:
+            if not n.get("is_leaf"):
+                raise HTTPException(400, f"Nodo '{n['name']}' no es hoja")
+    tok = secrets.token_urlsafe(24)
     doc = {
-        "id": rid,
-        "title": body.title,
-        "comments": body.comments,
-        "area": body.area,
-        "areaName": area_name,
+        "id": str(uuid.uuid4()),
+        "token": tok,
+        "project_id": pid,
+        "project_name": project["name"],
+        "email": email,
+        "name": body.name.strip(),
+        "role": body.role,
+        "area_id": body.area_id,
+        "puesto": (body.puesto or "").strip() or None,
+        "scope_node_id": body.scope_node_id,
+        "scope_node_ids": body.scope_node_ids or [],
+        "status": "pending",
+        "created_at": datetime.now(timezone.utc),
+        "expires_at": datetime.now(timezone.utc) + timedelta(days=30),
+    }
+    await db.invitations.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api.delete("/invitations/{iid}")
+async def revoke_invite(iid: str, user: dict = Depends(require_role(ROLE_COORD))):
+    r = await db.invitations.update_one({"id": iid, "status": "pending"}, {"$set": {"status": "revoked"}})
+    if r.matched_count == 0:
+        raise HTTPException(404, "Invitación no pendiente")
+    return {"ok": True}
+
+
+@api.get("/invitations/by-token/{tok}")
+async def invite_preview(tok: str):
+    inv = await db.invitations.find_one({"token": tok})
+    if not inv:
+        raise HTTPException(404, "Invitación inválida")
+    if inv["status"] != "pending":
+        raise HTTPException(410, f"Invitación {inv['status']}")
+    if inv["expires_at"].replace(tzinfo=timezone.utc) if inv["expires_at"].tzinfo is None else inv["expires_at"] < datetime.now(timezone.utc):
+        raise HTTPException(410, "Invitación expirada")
+    inv.pop("_id", None)
+    return {
+        "project_name": inv["project_name"],
+        "email": inv["email"],
+        "name": inv["name"],
+        "role": inv["role"],
+        "puesto": inv.get("puesto"),
+    }
+
+
+@api.post("/invitations/accept", response_model=Token)
+async def accept_invite(body: AcceptInviteIn):
+    inv = await db.invitations.find_one({"token": body.token})
+    if not inv:
+        raise HTTPException(404, "Invitación inválida")
+    if inv["status"] != "pending":
+        raise HTTPException(410, f"Invitación {inv['status']}")
+    exp = inv["expires_at"]
+    if exp.tzinfo is None:
+        exp = exp.replace(tzinfo=timezone.utc)
+    if exp < datetime.now(timezone.utc):
+        raise HTTPException(410, "Invitación expirada")
+    if len(body.password) < 6:
+        raise HTTPException(400, "Password mínimo 6 caracteres")
+    existing = await db.users.find_one({"email": inv["email"]})
+    if existing:
+        raise HTTPException(409, "Email ya tiene cuenta")
+    uid = str(uuid.uuid4())
+    # Obtener nombre del área si aplica
+    area_name = None
+    if inv.get("area_id"):
+        a = await db.areas.find_one({"id": inv["area_id"]})
+        if a:
+            area_name = a["name"]
+    user_doc = {
+        "id": uid,
+        "email": inv["email"],
+        "password": hash_pw(body.password),
+        "name": inv["name"],
+        "role": inv["role"],
+        "area": area_name,
+        "area_id": inv.get("area_id"),
+        "puesto": inv.get("puesto"),
+        "scope_node_id": inv.get("scope_node_id"),
+        "scope_node_ids": inv.get("scope_node_ids") or [],
+        "project_ids": [inv["project_id"]],
+        "created_at": datetime.now(timezone.utc),
+    }
+    await db.users.insert_one(user_doc)
+    await db.invitations.update_one(
+        {"id": inv["id"]}, {"$set": {"status": "accepted", "accepted_at": datetime.now(timezone.utc), "accepted_user_id": uid}}
+    )
+    return {"token": make_token(uid), "user": user_to_out(user_doc)}
+
+
+# === REPORTS ================================================================
+def validate_measurement_value(mtype: str, value: dict):
+    if mtype == "coord_latlon":
+        lat, lon = value.get("lat"), value.get("lon")
+        if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
+            raise HTTPException(400, "coord_latlon requiere lat y lon numéricos")
+        if not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
+            raise HTTPException(400, "Coordenadas fuera de rango")
+    elif mtype == "cadenamiento":
+        v = value.get("cadenamiento") or value.get("value")
+        if not isinstance(v, str) or not re.match(r"^\d+\+\d{1,4}(\.\d+)?$", v):
+            raise HTTPException(400, "cadenamiento formato '5+100' o '5+100.50'")
+    elif mtype == "eje":
+        v = value.get("eje") or value.get("value")
+        if not isinstance(v, str) or not v.strip():
+            raise HTTPException(400, "eje requiere texto")
+    elif mtype == "nivel":
+        v = value.get("nivel") if "nivel" in value else value.get("value")
+        if not isinstance(v, (int, float)):
+            raise HTTPException(400, "nivel requiere número decimal")
+    else:
+        raise HTTPException(400, f"measurement_type desconocido: {mtype}")
+
+
+@api.post("/reports")
+async def create_report(body: ReportIn, user: dict = Depends(current_user)):
+    if user["role"] not in (ROLE_ESPECIALISTA, ROLE_COORD):
+        raise HTTPException(403, "Solo Especialistas (o Coordinador General) pueden capturar")
+    await ensure_project_access(user, body.project_id)
+    node = await db.location_nodes.find_one({"id": body.node_id, "project_id": body.project_id})
+    if not node:
+        raise HTTPException(404, "Nodo no existe en este proyecto")
+    if not node.get("is_leaf"):
+        raise HTTPException(400, "Solo se puede capturar en nodos hoja")
+    if user["role"] == ROLE_ESPECIALISTA:
+        if body.node_id not in (user.get("scope_node_ids") or []):
+            raise HTTPException(403, "Nodo no está en tu scope autorizado")
+    validate_measurement_value(node["measurement_type"], body.measurement_value)
+    path_names = await node_path_names(body.node_id)
+    area_name = None
+    if body.area_id:
+        a = await db.areas.find_one({"id": body.area_id, "project_id": body.project_id})
+        if a:
+            area_name = a["name"]
+    elif user.get("area"):
+        area_name = user["area"]
+    doc = {
+        "id": str(uuid.uuid4()),
+        "project_id": body.project_id,
+        "node_id": body.node_id,
+        "node_path_names": path_names,
+        "measurement_type": node["measurement_type"],
+        "measurement_value": body.measurement_value,
+        "area_id": body.area_id or user.get("area_id"),
+        "area_name": area_name,
+        "notes": (body.notes or "").strip() or None,
+        "personnel": body.personnel,
+        "equipment": body.equipment,
         "images": body.images,
-        "location": body.location,
-        "createdBy": user["id"],
-        "createdByName": user["name"],
-        "createdByRole": user["role"],
-        "createdByPuesto": user.get("puesto"),
-        "createdAt": datetime.now(timezone.utc).isoformat(),
-        "status": "synced",
-        "priority": int(getattr(body, "priority", 1) or 1),
-        "tramo": int(body.tramo),
-        "estacion": int(body.estacion),
-        "poste": int(body.poste),
-        "reference_point_id": body.reference_point_id,
-        "reference_point_name": body.reference_point_name,
-        "coordinates": body.coordinates,
-        "first_reading": body.first_reading,
-        "last_reading": body.last_reading,
-        "unit": body.unit,
-        "progress": progress,
-        "activities": body.activities,
-        "personnel": personnel,
-        "equipment": equipment,
-        "files": files,
-        "contract": cfg.get("contract") or None,
-        "contractor": cfg.get("contractor") or None,
+        "files": body.files,
+        "captured_by": user["id"],
+        "captured_by_name": user["name"],
+        "created_at": datetime.now(timezone.utc),
     }
     await db.reports.insert_one(doc)
     doc.pop("_id", None)
-    return ReportOut(**doc)
+    return doc
 
 
-@api.get("/reports", response_model=List[ReportOut])
-async def list_reports(user: dict = Depends(get_current_user)):
-    query: dict = {}
-    if user["role"] == "especialista":
-        # Especialistas ven todos los reportes de su área (suyos + compañeros).
-        if user.get("area"):
-            query["area"] = user["area"]
-        else:
-            query["createdBy"] = user["id"]
-    else:
-        # Supervisores de tramo solo ven SU tramo. Generales / invitados ven todo.
-        scope = tramo_scope(user)
-        if scope is not None:
-            query["tramo"] = scope
-    cursor = db.reports.find(query, {"_id": 0}).sort("createdAt", -1).limit(200)
-    out: List[ReportOut] = []
-    async for r in cursor:
-        r.setdefault("areaName", await get_area_name(r.get("area", "")))
-        r.setdefault("location", None)
-        r.setdefault("createdByPuesto", None)
-        r.setdefault("priority", 1)
-        r.setdefault("personnel", [])
-        r.setdefault("equipment", [])
-        r.setdefault("files", [])
-        r.setdefault("tramo", None)
-        r.setdefault("estacion", None)
-        r.setdefault("poste", None)
-        out.append(ReportOut(**r))
-    return out
+@api.get("/projects/{pid}/reports")
+async def list_reports(pid: str, user: dict = Depends(current_user)):
+    await ensure_project_access(user, pid)
+    q: dict = {"project_id": pid}
+    if user["role"] == ROLE_SUB and user.get("scope_node_id"):
+        allowed = await descendants_ids(user["scope_node_id"])
+        q["node_id"] = {"$in": allowed}
+    elif user["role"] == ROLE_ESPECIALISTA:
+        scope = user.get("scope_node_ids") or []
+        q["node_id"] = {"$in": scope}
+    items = await db.reports.find(q).sort("created_at", -1).to_list(length=2000)
+    for it in items:
+        it.pop("_id", None)
+    return items
 
 
-@api.get("/reports/today")
-async def reports_today(user: dict = Depends(get_current_user)):
-    """Today's reports + per-area stats."""
-    today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-    cursor = db.reports.find(
-        {"createdAt": {"$gte": today.isoformat()}}, {"_id": 0}
-    ).sort("createdAt", -1)
-    reports = []
-    async for r in cursor:
-        r.setdefault("areaName", await get_area_name(r.get("area", "")))
-        r.setdefault("location", None)
-        r.setdefault("createdByPuesto", None)
-        r.setdefault("priority", 1)
-        r.setdefault("personnel", [])
-        r.setdefault("equipment", [])
-        reports.append(r)
-
-    # Per-area stats based on existing areas
-    areas = [a async for a in db.areas.find({}, {"_id": 0})]
-    stats = {a["id"]: {"name": a["name"], "color": a["color"], "count": 0} for a in areas}
-    for r in reports:
-        a = r["area"]
-        if a in stats:
-            stats[a]["count"] += 1
-        else:
-            stats[a] = {"name": r.get("areaName", a), "color": "#64748B", "count": 1}
-    return {"reports": reports, "stats": stats, "total": len(reports)}
+@api.get("/reports/{rid}")
+async def get_report(rid: str, user: dict = Depends(current_user)):
+    r = await db.reports.find_one({"id": rid})
+    if not r:
+        raise HTTPException(404, "Reporte no existe")
+    await ensure_project_access(user, r["project_id"])
+    # Scope check
+    if user["role"] == ROLE_SUB and user.get("scope_node_id"):
+        allowed = await descendants_ids(user["scope_node_id"])
+        if r["node_id"] not in allowed:
+            raise HTTPException(403, "Sin acceso a este reporte")
+    elif user["role"] == ROLE_ESPECIALISTA:
+        if r["node_id"] not in (user.get("scope_node_ids") or []):
+            raise HTTPException(403, "Sin acceso a este reporte")
+    r.pop("_id", None)
+    return r
 
 
-@api.get("/reports/by-period")
-async def reports_by_period(
-    period: Literal["today", "week", "month"] = "today",
-    user: dict = Depends(get_current_user),
-):
-    """Reportes filtrados por rango temporal + stats por área.
-    period: today | week | month (siempre referenciados a UTC ahora).
-    """
-    now = datetime.now(timezone.utc)
-    if period == "today":
-        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    elif period == "week":
-        # Lunes 00:00 UTC de la semana en curso
-        start = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=now.weekday())
-    else:  # month
-        start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-
-    cursor = db.reports.find(
-        {"createdAt": {"$gte": start.isoformat()}}, {"_id": 0}
-    ).sort("createdAt", -1)
-    reports = []
-    async for r in cursor:
-        r.setdefault("areaName", await get_area_name(r.get("area", "")))
-        r.setdefault("location", None)
-        r.setdefault("createdByPuesto", None)
-        r.setdefault("priority", 1)
-        r.setdefault("personnel", [])
-        r.setdefault("equipment", [])
-        reports.append(r)
-
-    areas = [a async for a in db.areas.find({}, {"_id": 0})]
-    stats = {a["id"]: {"name": a["name"], "color": a["color"], "count": 0} for a in areas}
-    for r in reports:
-        a = r.get("area")
-        if a in stats:
-            stats[a]["count"] += 1
-        elif a:
-            stats[a] = {"name": r.get("areaName", a), "color": "#64748B", "count": 1}
-    return {
-        "reports": reports,
-        "stats": stats,
-        "total": len(reports),
-        "period": period,
-        "since": start.isoformat(),
-    }
-
-
-# --- Routes: AI -------------------------------------------------------------
-async def _gemini_chat(system: str, prompt: str, temperature: float = 0.7) -> str:
-    chat = (
-        LlmChat(
-            api_key=EMERGENT_LLM_KEY,
-            session_id=f"syncsite-{uuid.uuid4()}",
-            system_message=system,
-        )
-        .with_model("gemini", "gemini-2.5-flash")
-        .with_params(temperature=temperature)
-    )
-    reply = await chat.send_message(UserMessage(text=prompt))
-    return reply if isinstance(reply, str) else str(reply)
-
-
-@api.post("/ai/improve-text", response_model=AITextOut)
-async def ai_improve(body: AITextIn, user: dict = Depends(get_current_user)):
-    if not body.title and not body.comments:
-        raise HTTPException(status_code=400, detail="Sin contenido")
-    area_name = await get_area_name(body.area)
-    # Prompt estricto anti-alucinaciones: SOLO limpia ortografía/gramática/claridad.
-    system = (
-        "Actúa como un Ingeniero Civil Supervisor de Obra estricto y profesional. "
-        "Tu única tarea es tomar las notas de campo del usuario y mejorar la ortografía, "
-        "gramática y claridad para que luzcan como un reporte técnico formal. "
-        "ESTÁ ESTRICTAMENTE PROHIBIDO inventar datos, agregar eventos que no se mencionan "
-        "en el texto original, o redactar historias. Solo limpia, estructura y "
-        "profesionaliza el texto ingresado."
-    )
-    prompt = (
-        f"Área del reporte (solo contexto, NO la incluyas en la salida): {area_name}\n\n"
-        f"TÍTULO ORIGINAL:\n{body.title or '(sin título)'}\n\n"
-        f"NOTAS ORIGINALES DEL USUARIO:\n{body.comments or '(sin notas)'}\n\n"
-        "Devuelve SOLO el texto profesionalizado (corregido en ortografía, gramática y "
-        "claridad) preservando ÚNICAMENTE la información presente en el original. "
-        "No agregues encabezados, viñetas, ni las palabras 'Título:' o 'Reporte:'. "
-        "Si el texto original es muy breve, devuélvelo igual de breve pero correcto. "
-        "Nunca inventes datos, fechas, cantidades, personal, equipo, ubicaciones ni eventos."
-    )
-    try:
-        # Temperatura muy baja: respuestas deterministas, sin creatividad.
-        text = await _gemini_chat(system, prompt, temperature=0.1)
-        return AITextOut(text=text.strip())
-    except Exception as e:
-        log.exception("AI improve failed")
-        raise HTTPException(status_code=502, detail=f"IA no disponible: {e}")
-
-
-@api.post("/ai/daily-summary", response_model=SummaryOut)
-async def ai_summary(body: SummaryIn, user: dict = Depends(get_current_user)):
-    if not body.reports:
-        raise HTTPException(status_code=400, detail="Sin reportes para analizar")
-    if not is_supervisor_view(user["role"]):
-        raise HTTPException(status_code=403, detail="Solo perfiles de Supervisión / Invitados")
-    system = (
-        "Eres el Director del Proyecto. Generas resúmenes ejecutivos claros y accionables "
-        "a partir de múltiples reportes de campo, en español."
-    )
-    compact = [
-        {
-            "area": r.get("areaName") or r.get("area"),
-            "titulo": r.get("title"),
-            "comentarios": r.get("comments"),
-            "autor": r.get("createdByName"),
-        }
-        for r in body.reports
-    ]
-    prompt = (
-        f"Analiza los siguientes reportes de obra del día y genera un resumen ejecutivo. "
-        f"Agrupa por área, resalta cualquier problema urgente o de seguridad, y da una "
-        f"conclusión sobre el progreso del día.\n\nReportes: {compact}\n\n"
-        f"Formato: párrafos claros, máximo 250 palabras. Sin viñetas."
-    )
-    try:
-        text = await _gemini_chat(system, prompt)
-        return SummaryOut(summary=text.strip())
-    except Exception as e:
-        log.exception("AI summary failed")
-        raise HTTPException(status_code=502, detail=f"IA no disponible: {e}")
-
-
-# --- Routes: Activities (Noticias / FYP) ------------------------------------
-def _period_window(period: Optional[str], tz_offset_minutes: int = 0):
-    """Returns (start_iso, end_iso) for filtering activities.
-
-    The window is computed relative to NOW shifted by tz_offset_minutes (minutes east of UTC),
-    so a client in UTC-6 sends -360 and gets a window aligned to their local day.
-    """
-    if not period or period == "all":
-        return None, None
-    now_utc = datetime.now(timezone.utc)
-    # convert to "client local" by subtracting offset
-    local = now_utc + timedelta(minutes=tz_offset_minutes)
-    if period == "daily":
-        start_local = local.replace(hour=0, minute=0, second=0, microsecond=0)
-        end_local = start_local + timedelta(days=1)
-    elif period == "weekly":
-        days_back = local.weekday()  # Monday=0
-        start_local = (local - timedelta(days=days_back)).replace(
-            hour=0, minute=0, second=0, microsecond=0
-        )
-        end_local = start_local + timedelta(days=7)
-    elif period == "monthly":
-        start_local = local.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        # add ~32 days then snap to next month's 1st
-        nxt = (start_local + timedelta(days=32)).replace(day=1)
-        end_local = nxt
-    else:
-        return None, None
-    # back to UTC ISO
-    start_utc = (start_local - timedelta(minutes=tz_offset_minutes)).replace(tzinfo=timezone.utc)
-    end_utc = (end_local - timedelta(minutes=tz_offset_minutes)).replace(tzinfo=timezone.utc)
-    return start_utc.isoformat(), end_utc.isoformat()
-
-
-@api.get("/activities", response_model=List[ActivityOut])
-async def list_activities(
-    user: dict = Depends(get_current_user),
-    period: Optional[str] = None,  # "daily" | "weekly" | "monthly" | "all"
-    tz_offset: int = 0,  # minutes east of UTC (browser: -getTimezoneOffset())
-):
-    """Returns activities filtered by role and (optional) time window:
-    - Especialista: only own area + global (area=None) activities.
-    - Coordinador: sees everything across areas.
-    """
-    query: dict = {}
-    if user["role"] == "especialista":
-        query["$or"] = [{"area": user.get("area")}, {"area": None}]
-    # Filtro por tramo si el usuario es Supervisor T1/T2.
-    scope = tramo_scope(user)
-    if scope is not None:
-        # Acepta noticias del tramo del usuario O globales (tramo None).
-        query["$and"] = [
-            {"$or": [{"tramo": scope}, {"tramo": None}]},
-        ]
-    start_iso, end_iso = _period_window(period, tz_offset)
-    if start_iso and end_iso:
-        query["createdAt"] = {"$gte": start_iso, "$lt": end_iso}
-    cursor = db.activities.find(query, {"_id": 0}).sort("createdAt", -1).limit(200)
-    out: List[ActivityOut] = []
-    async for a in cursor:
-        if a.get("area"):
-            a["areaName"] = await get_area_name(a["area"])
-        else:
-            a["areaName"] = "Global"
-        out.append(ActivityOut(**a))
-    # Sort by priority desc, then date desc
-    out.sort(key=lambda x: (-x.priority, x.createdAt), reverse=False)
-    out.sort(key=lambda x: x.priority, reverse=True)
-    return out
-
-
-@api.post("/activities", response_model=ActivityOut)
-async def create_activity(body: ActivityIn, user: dict = Depends(get_current_user)):
-    require_can_emit_news(user)
-    if not body.title.strip():
-        raise HTTPException(status_code=400, detail="Título requerido")
-    # Resolve area (los supervisores SI pueden emitir; el especialista no llega aquí).
-    target_area = body.area
-    if target_area and not await area_exists(target_area):
-        raise HTTPException(status_code=400, detail="Área inválida")
-
-    # Resolver tramo de la noticia.
-    #  - Supervisores de tramo: forzar su propio tramo (no pueden emitir para el otro).
-    #  - Supervisor general: puede dirigir a un tramo específico o ambos (None).
-    scope = tramo_scope(user)
-    if scope is not None:
-        tramo_out: Optional[int] = scope
-    else:
-        tramo_out = int(body.tramo) if body.tramo in (1, 2) else None
-
-    aid = str(uuid.uuid4())
-    doc = {
-        "id": aid,
-        "title": body.title.strip(),
-        "description": body.description.strip(),
-        "priority": int(body.priority),
-        "area": target_area,
-        "tramo": tramo_out,
-        "createdBy": user["id"],
-        "createdByName": user["name"],
-        "createdByRole": user["role"],
-        "createdAt": datetime.now(timezone.utc).isoformat(),
-    }
-    await db.activities.insert_one(doc)
-    doc.pop("_id", None)
-    doc["areaName"] = await get_area_name(target_area) if target_area else "Global"
-    return ActivityOut(**doc)
-
-
-@api.delete("/activities/{activity_id}")
-async def delete_activity(activity_id: str, user: dict = Depends(get_current_user)):
-    a = await db.activities.find_one({"id": activity_id}, {"_id": 0})
-    if not a:
-        raise HTTPException(status_code=404, detail="Noticia no encontrada")
-    # Permitir borrar al autor o a supervisores generales.
-    is_global_super = user["role"] in GLOBAL_SUPERVISOR_ROLES
-    if a["createdBy"] != user["id"] and not is_global_super:
-        raise HTTPException(status_code=403, detail="Sin permiso")
-    await db.activities.delete_one({"id": activity_id})
+@api.delete("/reports/{rid}")
+async def delete_report(rid: str, user: dict = Depends(current_user)):
+    r = await db.reports.find_one({"id": rid})
+    if not r:
+        raise HTTPException(404, "Reporte no existe")
+    if user["role"] != ROLE_COORD and r["captured_by"] != user["id"]:
+        raise HTTPException(403, "Solo el autor o un Coordinador General puede borrar")
+    await db.reports.delete_one({"id": rid})
     return {"ok": True}
 
 
-# --- Routes: Period-based AI Summary (Daily/Weekly/Monthly) -----------------
-@api.post("/ai/period-summary", response_model=SummaryOut)
-async def ai_period_summary(body: PeriodSummaryIn, user: dict = Depends(get_current_user)):
-    """Generates AI summary of REPORTS for a given period (daily/weekly/monthly)
-    and optional area filter. Triggered manually by a button to save tokens.
-    """
-    now = datetime.now(timezone.utc)
-    if body.period == "daily":
-        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        label = "del día de hoy"
-    elif body.period == "weekly":
-        start = (now - timedelta(days=7)).replace(hour=0, minute=0, second=0, microsecond=0)
-        label = "de los últimos 7 días"
-    else:
-        start = (now - timedelta(days=30)).replace(hour=0, minute=0, second=0, microsecond=0)
-        label = "de los últimos 30 días"
-
-    # Build query
-    query: dict = {"createdAt": {"$gte": start.isoformat()}}
-    # Especialista: force area
-    if user["role"] == "especialista":
-        if not user.get("area"):
-            raise HTTPException(status_code=400, detail="Sin área asignada")
-        query["area"] = user["area"]
-    elif body.area:
-        query["area"] = body.area
-
-    reports = []
-    async for r in db.reports.find(query, {"_id": 0}).sort("createdAt", -1).limit(300):
-        r.setdefault("areaName", await get_area_name(r.get("area", "")))
-        reports.append(r)
-
-    if not reports:
-        return SummaryOut(
-            summary=f"No hay reportes registrados {label}. "
-            "Crea reportes para que el resumen ejecutivo pueda generarse."
-        )
-
-    system = (
-        "Eres el Director del Proyecto. Generas resúmenes ejecutivos claros y accionables "
-        "a partir de reportes de campo, en español."
-    )
-    compact = [
-        {
-            "area": r.get("areaName") or r.get("area"),
-            "titulo": r.get("title"),
-            "comentarios": r.get("comments"),
-            "autor": r.get("createdByName"),
-            "fecha": r.get("createdAt", "")[:10],
-        }
-        for r in reports
-    ]
-    period_text = {"daily": "del día", "weekly": "semanal", "monthly": "mensual"}[body.period]
-    prompt = (
-        f"Analiza los siguientes reportes de obra y genera un resumen ejecutivo {period_text}. "
-        f"Agrupa por área, resalta problemas urgentes o de seguridad, identifica tendencias y "
-        f"da una conclusión sobre el progreso. Sé claro y accionable.\n\n"
-        f"Reportes ({len(reports)}): {compact}\n\n"
-        f"Formato: párrafos claros, máximo 280 palabras. Sin viñetas ni emojis."
-    )
-    try:
-        text = await _gemini_chat(system, prompt)
-        return SummaryOut(summary=text.strip())
-    except Exception as e:
-        log.exception("AI period summary failed")
-        raise HTTPException(status_code=502, detail=f"IA no disponible: {e}")
+# === USERS (admin) ==========================================================
+@api.get("/projects/{pid}/users")
+async def list_project_users(pid: str, user: dict = Depends(require_role(ROLE_COORD))):
+    await ensure_project_access(user, pid)
+    items = await db.users.find({"project_ids": pid}).to_list(length=1000)
+    return [user_to_out(u) for u in items]
 
 
-# --- Routes: Chat (Direct Messaging) ----------------------------------------
-def _chat_key(a: str, b: str) -> List[str]:
-    return sorted([a, b])
-
-
-@api.get("/chat/users", response_model=List[ChatUserOut])
-async def chat_users(user: dict = Depends(get_current_user)):
-    """Lista de usuarios para iniciar conversación, con último mensaje y no leídos."""
-    uid = user["id"]
-    users_cursor = db.users.find(
-        {"id": {"$ne": uid}}, {"_id": 0, "password": 0}
-    )
-    out: List[ChatUserOut] = []
-    async for u in users_cursor:
-        # Last message (in either direction)
-        last = await db.chat_messages.find_one(
-            {"$or": [
-                {"from_user": uid, "to_user": u["id"]},
-                {"from_user": u["id"], "to_user": uid},
-            ]},
-            {"_id": 0},
-            sort=[("createdAt", -1)],
-        )
-        unread = await db.chat_messages.count_documents(
-            {"from_user": u["id"], "to_user": uid, "read": False}
-        )
-        area_name: Optional[str] = None
-        if u.get("area"):
-            area_name = await get_area_name(u["area"])
-        out.append(ChatUserOut(
-            id=u["id"], name=u["name"], email=u["email"], role=u["role"],
-            area=u.get("area"), areaName=area_name, puesto=u.get("puesto"),
-            lastMessage=(last or {}).get("text"),
-            lastAt=(last or {}).get("createdAt"),
-            unread=unread,
-        ))
-    # Sort by lastAt desc, fallback name asc
-    out.sort(key=lambda x: (x.lastAt or "0", x.name), reverse=True)
-    return out
-
-
-@api.get("/chat/messages/{peer_id}", response_model=List[ChatMessageOut])
-async def chat_messages(peer_id: str, user: dict = Depends(get_current_user)):
-    uid = user["id"]
-    peer = await db.users.find_one({"id": peer_id}, {"_id": 0, "password": 0})
-    if not peer:
-        raise HTTPException(status_code=404, detail="Usuario no encontrado")
-    cursor = db.chat_messages.find(
-        {"$or": [
-            {"from_user": uid, "to_user": peer_id},
-            {"from_user": peer_id, "to_user": uid},
-        ]},
-        {"_id": 0},
-    ).sort("createdAt", 1).limit(500)
-    msgs = [ChatMessageOut(**m) async for m in cursor]
-    # Mark incoming as read
-    await db.chat_messages.update_many(
-        {"from_user": peer_id, "to_user": uid, "read": False},
-        {"$set": {"read": True}},
-    )
-    return msgs
-
-
-@api.post("/chat/send", response_model=ChatMessageOut)
-async def chat_send(body: ChatSendIn, user: dict = Depends(get_current_user)):
-    text = body.text.strip()
-    if not text:
-        raise HTTPException(status_code=400, detail="Mensaje vacío")
-    if len(text) > 2000:
-        raise HTTPException(status_code=400, detail="Mensaje demasiado largo")
-    if body.to_user == user["id"]:
-        raise HTTPException(status_code=400, detail="No puedes enviarte mensajes a ti mismo")
-    peer = await db.users.find_one({"id": body.to_user}, {"_id": 0, "password": 0})
-    if not peer:
-        raise HTTPException(status_code=404, detail="Destinatario no encontrado")
-    mid = str(uuid.uuid4())
-    doc = {
-        "id": mid,
-        "from_user": user["id"],
-        "from_name": user["name"],
-        "to_user": peer["id"],
-        "to_name": peer["name"],
-        "text": text,
-        "createdAt": datetime.now(timezone.utc).isoformat(),
-        "read": False,
-    }
-    await db.chat_messages.insert_one(doc)
-    doc.pop("_id", None)
-    return ChatMessageOut(**doc)
-
-
-@api.get("/chat/unread-total")
-async def chat_unread_total(user: dict = Depends(get_current_user)):
-    n = await db.chat_messages.count_documents(
-        {"to_user": user["id"], "read": False}
-    )
-    return {"unread": n}
-
-
-# --- Chat por Área (broadcast) -------------------------------------
-class AreaChatSendIn(BaseModel):
-    area_id: str  # "general" or one of the area ids
-    text: str
-
-
-class AreaChatMessageOut(BaseModel):
-    id: str
-    area_id: str
-    area_name: str
-    from_user: str
-    from_name: str
-    from_role: str
-    text: str
-    createdAt: str
-
-
-class AreaRoomOut(BaseModel):
-    id: str  # "general" or area id
-    name: str
-    color: Optional[str] = None
-    icon: Optional[str] = None
-    lastMessage: Optional[str] = None
-    lastAt: Optional[str] = None
-    lastFrom: Optional[str] = None
-
-
-async def _area_name(area_id: str) -> str:
-    if area_id == "general":
-        return "General (todos)"
-    return (await get_area_name(area_id)) or area_id
-
-
-@api.get("/chat/areas", response_model=List[AreaRoomOut])
-async def chat_area_rooms(user: dict = Depends(get_current_user)):
-    # Build rooms: General + every area in DB
-    rooms: List[AreaRoomOut] = []
-    general_last = await db.chat_area_messages.find_one(
-        {"area_id": "general"}, {"_id": 0}, sort=[("createdAt", -1)]
-    )
-    rooms.append(AreaRoomOut(
-        id="general", name="General (todos)", color="#2563EB", icon="globe",
-        lastMessage=(general_last or {}).get("text"),
-        lastAt=(general_last or {}).get("createdAt"),
-        lastFrom=(general_last or {}).get("from_name"),
-    ))
-    async for a in db.areas.find({}, {"_id": 0}):
-        last = await db.chat_area_messages.find_one(
-            {"area_id": a["id"]}, {"_id": 0}, sort=[("createdAt", -1)]
-        )
-        rooms.append(AreaRoomOut(
-            id=a["id"], name=a["name"], color=a.get("color"), icon=a.get("icon"),
-            lastMessage=(last or {}).get("text"),
-            lastAt=(last or {}).get("createdAt"),
-            lastFrom=(last or {}).get("from_name"),
-        ))
-    return rooms
-
-
-@api.get("/chat/area/{area_id}/messages", response_model=List[AreaChatMessageOut])
-async def chat_area_messages(area_id: str, user: dict = Depends(get_current_user)):
-    cursor = db.chat_area_messages.find(
-        {"area_id": area_id}, {"_id": 0}
-    ).sort("createdAt", 1).limit(500)
-    return [AreaChatMessageOut(**m) async for m in cursor]
-
-
-@api.post("/chat/area/send", response_model=AreaChatMessageOut)
-async def chat_area_send(body: AreaChatSendIn, user: dict = Depends(get_current_user)):
-    text = body.text.strip()
-    if not text:
-        raise HTTPException(status_code=400, detail="Mensaje vacío")
-    if len(text) > 2000:
-        raise HTTPException(status_code=400, detail="Mensaje demasiado largo")
-    area_id = body.area_id.strip()
-    if area_id != "general":
-        # Validate area exists
-        exists = await db.areas.find_one({"id": area_id}, {"_id": 0})
-        if not exists:
-            raise HTTPException(status_code=404, detail="Área no encontrada")
-    area_name = await _area_name(area_id)
-    mid = str(uuid.uuid4())
-    doc = {
-        "id": mid,
-        "area_id": area_id,
-        "area_name": area_name,
-        "from_user": user["id"],
-        "from_name": user["name"],
-        "from_role": user["role"],
-        "text": text,
-        "createdAt": datetime.now(timezone.utc).isoformat(),
-    }
-    await db.chat_area_messages.insert_one(doc)
-    doc.pop("_id", None)
-    return AreaChatMessageOut(**doc)
-
-
-# --- Routes: Calendar / Eventos ---------------------------------------
-@api.get("/events", response_model=List[EventOut])
-async def list_events(
-    user: dict = Depends(get_current_user),
-    from_date: Optional[str] = None,
-    to_date: Optional[str] = None,
-):
-    """Lista de eventos visibles para el usuario.
-    Especialista ve: globales (area=None) + de su área.
-    Supervisor ve: todos.
-    """
-    query: dict = {}
-    if user["role"] == "especialista":
-        query["$or"] = [{"area": user.get("area")}, {"area": None}]
-    if from_date or to_date:
-        date_q: dict = {}
-        if from_date:
-            date_q["$gte"] = from_date
-        if to_date:
-            date_q["$lte"] = to_date
-        query["date"] = date_q
-    cursor = db.events.find(query, {"_id": 0}).sort("date", 1).limit(500)
-    out: List[EventOut] = []
-    async for e in cursor:
-        if e.get("area"):
-            e["areaName"] = await get_area_name(e["area"])
-        else:
-            e["areaName"] = "Global"
-        out.append(EventOut(**e))
-    return out
-
-
-@api.post("/events", response_model=EventOut)
-async def create_event(body: EventIn, user: dict = Depends(get_current_user)):
-    require_not_guest(user)
-    if not body.title.strip():
-        raise HTTPException(status_code=400, detail="Título requerido")
-    if not body.date:
-        raise HTTPException(status_code=400, detail="Fecha requerida")
-    area_id = body.area
-    if area_id and not await area_exists(area_id):
-        raise HTTPException(status_code=400, detail="Área inválida")
-    eid = str(uuid.uuid4())
-    area_name = await get_area_name(area_id) if area_id else "Global"
-    doc = {
-        "id": eid,
-        "title": body.title.strip()[:200],
-        "description": (body.description or "").strip()[:2000],
-        "date": body.date,
-        "location": (body.location or None) and body.location.strip()[:200],
-        "area": area_id,
-        "areaName": area_name,
-        "alert_at": body.alert_at,
-        "notify_all": bool(body.notify_all),
-        "createdBy": user["id"],
-        "createdByName": user["name"],
-        "createdAt": datetime.now(timezone.utc).isoformat(),
-    }
-    await db.events.insert_one(doc)
-    doc.pop("_id", None)
-    return EventOut(**doc)
-
-
-@api.put("/events/{event_id}", response_model=EventOut)
-async def update_event(event_id: str, body: EventIn, user: dict = Depends(get_current_user)):
-    existing = await db.events.find_one({"id": event_id}, {"_id": 0})
-    if not existing:
-        raise HTTPException(status_code=404, detail="Evento no encontrado")
-    # Author or supervisor only
-    if user["role"] != "coordinador" and existing.get("createdBy") != user["id"]:
-        raise HTTPException(status_code=403, detail="No puedes editar este evento")
-    area_id = body.area
-    if area_id and not await area_exists(area_id):
-        raise HTTPException(status_code=400, detail="Área inválida")
-    area_name = await get_area_name(area_id) if area_id else "Global"
-    update = {
-        "title": body.title.strip()[:200],
-        "description": (body.description or "").strip()[:2000],
-        "date": body.date,
-        "location": (body.location or None) and body.location.strip()[:200],
-        "area": area_id,
-        "areaName": area_name,
-        "alert_at": body.alert_at,
-        "notify_all": bool(body.notify_all),
-    }
-    await db.events.update_one({"id": event_id}, {"$set": update})
-    merged = {**existing, **update}
-    merged.pop("_id", None)
-    return EventOut(**merged)
-
-
-@api.delete("/events/{event_id}")
-async def delete_event(event_id: str, user: dict = Depends(get_current_user)):
-    existing = await db.events.find_one({"id": event_id}, {"_id": 0})
-    if not existing:
-        raise HTTPException(status_code=404, detail="Evento no encontrado")
-    if user["role"] != "coordinador" and existing.get("createdBy") != user["id"]:
-        raise HTTPException(status_code=403, detail="No puedes eliminar este evento")
-    await db.events.delete_one({"id": event_id})
-    return {"ok": True}
-
-
-@api.get("/events/alerts")
-async def event_alerts(user: dict = Depends(get_current_user)):
-    """Devuelve eventos cuya alert_at ya pasó (próximos 24h) y aún no han sido descartados
-    por este usuario. Usado por el frontend para mostrar notificaciones in-app."""
-    now = datetime.now(timezone.utc)
-    horizon = now + timedelta(hours=24)
-    query: dict = {
-        "alert_at": {"$lte": horizon.isoformat()},
-        "notify_all": True,
-    }
-    if user["role"] == "especialista":
-        query["$or"] = [{"area": user.get("area")}, {"area": None}]
-    cursor = db.events.find(query, {"_id": 0}).sort("alert_at", 1)
-    fired: list = []
-    async for e in cursor:
-        if not e.get("alert_at"):
-            continue
-        # Skip if user already dismissed this alert
-        dismissed = await db.event_alert_dismissals.find_one(
-            {"event_id": e["id"], "user_id": user["id"]}, {"_id": 0}
-        )
-        if dismissed:
-            continue
-        e.pop("_id", None)
-        fired.append(e)
-    return fired
-
-
-@api.post("/events/{event_id}/dismiss-alert")
-async def dismiss_alert(event_id: str, user: dict = Depends(get_current_user)):
-    await db.event_alert_dismissals.update_one(
-        {"event_id": event_id, "user_id": user["id"]},
-        {"$set": {"event_id": event_id, "user_id": user["id"],
-                  "at": datetime.now(timezone.utc).isoformat()}},
-        upsert=True,
-    )
-    return {"ok": True}
-
-
-# --- Routes: Documentos Clave (Repositorio Compartido) ---------------------
-# Cero Huella Local: los archivos se guardan SOLO en MongoDB como Base64.
-# El cliente nunca debe persistirlos en disco; se procesan en RAM y se borran
-# al cerrar la sesión / limpiar el formulario.
-class DocumentIn(BaseModel):
-    title: str
-    description: Optional[str] = None
-    mime_type: str
-    filename: str
-    data_base64: str
-    project_id: Optional[str] = None  # default: el del usuario
-
-
-class DocumentOut(BaseModel):
-    id: str
-    title: str
-    description: Optional[str] = None
-    mime_type: str
-    filename: str
-    size_kb: int
-    project_id: str
-    uploaded_by: str
-    uploaded_by_name: str
-    uploaded_at: str
-
-
-def can_manage_documents(role: str) -> bool:
-    """Solo Coordinador Global y Supervisores Generales suben/eliminan docs.
-    Supervisores T1/T2, contratistas y dependencias son SOLO LECTURA."""
-    return role in ({"coordinador_global"} | GLOBAL_SUPERVISOR_ROLES)
-
-
-@api.get("/documents", response_model=List[DocumentOut])
-async def list_documents(user: dict = Depends(get_current_user)):
-    pid = user.get("project_id") or "cablebus-l4"
-    if user.get("role") == "coordinador_global":
-        cursor = db.documents.find({})
-    else:
-        cursor = db.documents.find({"project_id": pid})
-    out: List[DocumentOut] = []
-    async for d in cursor.sort("uploaded_at", -1):
-        out.append(DocumentOut(
-            id=d["id"], title=d["title"], description=d.get("description"),
-            mime_type=d["mime_type"], filename=d["filename"],
-            size_kb=int(d.get("size_kb", 0)),
-            project_id=d.get("project_id", pid),
-            uploaded_by=d["uploaded_by"],
-            uploaded_by_name=d.get("uploaded_by_name", ""),
-            uploaded_at=d["uploaded_at"],
-        ))
-    return out
-
-
-@api.get("/documents/{doc_id}")
-async def get_document_raw(doc_id: str, user: dict = Depends(get_current_user)):
-    pid = user.get("project_id") or "cablebus-l4"
-    d = await db.documents.find_one({"id": doc_id})
-    if not d:
-        raise HTTPException(status_code=404, detail="Documento no encontrado")
-    if user.get("role") != "coordinador_global" and d.get("project_id") != pid:
-        raise HTTPException(status_code=403, detail="Documento fuera de tu proyecto")
-    return {
-        "id": d["id"], "title": d["title"], "description": d.get("description"),
-        "mime_type": d["mime_type"], "filename": d["filename"],
-        "data_base64": d["data_base64"],
-        "uploaded_by_name": d.get("uploaded_by_name", ""),
-        "uploaded_at": d["uploaded_at"],
-    }
-
-
-@api.post("/documents", response_model=DocumentOut)
-async def upload_document(body: DocumentIn, user: dict = Depends(get_current_user)):
-    if not can_manage_documents(user.get("role", "")):
-        raise HTTPException(
-            status_code=403,
-            detail="Solo Coordinadores y Supervisores Generales pueden subir documentos.",
-        )
-    pid = body.project_id or user.get("project_id") or "cablebus-l4"
-    title = (body.title or "").strip()
-    if not title:
-        raise HTTPException(status_code=400, detail="Título requerido")
-    if not body.data_base64:
-        raise HTTPException(status_code=400, detail="Archivo vacío")
-    size_kb = max(1, int(len(body.data_base64) * 3 / 4 / 1024))
-    if size_kb > 15 * 1024:  # 15 MB
-        raise HTTPException(status_code=413, detail="Archivo demasiado grande (>15 MB)")
-    doc_id = str(uuid.uuid4())
-    now = datetime.now(timezone.utc).isoformat()
-    doc = {
-        "id": doc_id,
-        "title": title,
-        "description": (body.description or "").strip(),
-        "mime_type": body.mime_type,
-        "filename": body.filename,
-        "data_base64": body.data_base64,
-        "size_kb": size_kb,
-        "project_id": pid,
-        "uploaded_by": user["id"],
-        "uploaded_by_name": user.get("name", ""),
-        "uploaded_at": now,
-    }
-    await db.documents.insert_one(doc)
-    return DocumentOut(
-        id=doc_id, title=title, description=doc["description"],
-        mime_type=body.mime_type, filename=body.filename, size_kb=size_kb,
-        project_id=pid, uploaded_by=user["id"],
-        uploaded_by_name=user.get("name", ""), uploaded_at=now,
-    )
-
-
-@api.delete("/documents/{doc_id}")
-async def delete_document(doc_id: str, user: dict = Depends(get_current_user)):
-    if not can_manage_documents(user.get("role", "")):
-        raise HTTPException(status_code=403, detail="Sin permisos para eliminar documentos.")
-    d = await db.documents.find_one({"id": doc_id})
-    if not d:
-        raise HTTPException(status_code=404, detail="Documento no encontrado")
-    pid = user.get("project_id") or "cablebus-l4"
-    if user.get("role") != "coordinador_global" and d.get("project_id") != pid:
-        raise HTTPException(status_code=403, detail="Documento fuera de tu proyecto")
-    await db.documents.delete_one({"id": doc_id})
-    return {"ok": True}
-
-
-# --- Health -----------------------------------------------------------------
-@api.get("/")
-async def health():
-    return {"status": "ok", "service": "syncsite"}
-
-
+# === MOUNT ==================================================================
 app.include_router(api)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_credentials=True,
     allow_origins=["*"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-# --- Seed -------------------------------------------------------------------
-SEED_AREAS = [
-    {"id": "geotecnia",  "name": "Geotecnia",  "color": "#D97706", "icon": "mountain"},
-    {"id": "topografia", "name": "Topografía", "color": "#059669", "icon": "map"},
-    {"id": "obracivil",  "name": "Obra Civil", "color": "#2563EB", "icon": "hammer"},
-    {"id": "seguridad",  "name": "Seguridad",  "color": "#DC2626", "icon": "shield"},
-    {"id": "calidad",    "name": "Calidad",    "color": "#7C3AED", "icon": "check-circle"},
-]
-
-SEED_USERS = [
-    {"email": "coordinador@syncsite.com", "name": "Carlos Coordinador",
-     "role": "supervisor_general", "area": None, "puesto": "Coordinador de Obra", "password": "demo1234"},
-    {"email": "super.tramo1@syncsite.com", "name": "Andrés Tramo 1",
-     "role": "supervisor_t1", "area": None, "puesto": "Supervisor de Tramo 1",
-     "tramo": 1, "password": "demo1234"},
-    {"email": "super.tramo2@syncsite.com", "name": "Miguel Tramo 2",
-     "role": "supervisor_t2", "area": None, "puesto": "Supervisor de Tramo 2",
-     "tramo": 2, "password": "demo1234"},
-    {"email": "geotecnia@syncsite.com", "name": "Ana Geotécnica",
-     "role": "especialista", "area": "geotecnia", "puesto": "Ingeniera Geotécnica", "password": "demo1234"},
-    {"email": "topografia@syncsite.com", "name": "Luis Topógrafo",
-     "role": "especialista", "area": "topografia", "puesto": "Topógrafo Senior", "password": "demo1234"},
-    {"email": "obracivil@syncsite.com", "name": "María Obra Civil",
-     "role": "especialista", "area": "obracivil", "puesto": "Residente de Obra", "password": "demo1234"},
-    {"email": "seguridad@syncsite.com", "name": "Pedro Seguridad",
-     "role": "especialista", "area": "seguridad", "puesto": "Supervisor HSE", "password": "demo1234"},
-    {"email": "calidad@syncsite.com", "name": "Sofía Calidad",
-     "role": "especialista", "area": "calidad", "puesto": "Inspectora de Calidad", "password": "demo1234"},
-    # --- Roles INVITADOS (read-only) ---
-    {"email": "contratista@syncsite.com", "name": "Roberto Contratista",
-     "role": "contratista", "area": None, "puesto": "Gerente de Construcción", "password": "demo1234"},
-    {"email": "dependencia@syncsite.com", "name": "Lic. Elena Dependencia",
-     "role": "dependencia", "area": None, "puesto": "Enlace Gobierno CDMX", "password": "demo1234"},
-    # --- Coordinador Global (Super Admin Multi-Obra) ---
-    {"email": "admin@synco.com", "name": "Admin SynCo",
-     "role": "coordinador_global", "area": None, "puesto": "Coordinador Global", "password": "demo1234"},
-]
-
-
-SEED_PROJECTS = [
-    {
-        "id": "cablebus-l4",
-        "name": "Cablebús Línea 4",
-        "code": "cablebus-l4",
-        "description": "Construcción de la Línea 4 del Cablebús CDMX",
-        "location": "Ciudad de México",
-        "client": "Gobierno CDMX",
-        "contractor": "Consorcio Cablebús",
-        "status": "active",
-    },
-]
-
-
-@app.on_event("startup")
-async def seed():
-    # --- Proyectos (Multi-Obra) ---
-    default_pid: Optional[str] = None
-    for p in SEED_PROJECTS:
-        existing = await db.projects.find_one({"id": p["id"]})
-        if not existing:
-            await db.projects.insert_one({
-                **p,
-                "createdAt": datetime.now(timezone.utc).isoformat(),
-                "createdBy": "system",
-            })
-        default_pid = p["id"]
-    # Backfill: vincular usuarios y reportes sin project_id al proyecto default
-    if default_pid:
-        await db.users.update_many(
-            {"$or": [{"project_id": {"$exists": False}}, {"project_id": None}]},
-            {"$set": {"project_id": default_pid}},
-        )
-        await db.reports.update_many(
-            {"$or": [{"project_id": {"$exists": False}}, {"project_id": None}]},
-            {"$set": {"project_id": default_pid}},
-        )
-
-    for a in SEED_AREAS:
-        if not await db.areas.find_one({"id": a["id"]}):
-            await db.areas.insert_one({
-                **a,
-                "createdAt": datetime.now(timezone.utc).isoformat(),
-                "createdBy": "system",
-            })
-    for u in SEED_USERS:
-        existing = await db.users.find_one({"email": u["email"]})
-        if not existing:
-            await db.users.insert_one({
-                "id": str(uuid.uuid4()),
-                "email": u["email"],
-                "name": u["name"],
-                "password": hash_password(u["password"]),
-                "role": u["role"],
-                "area": u["area"],
-                "puesto": u.get("puesto"),
-                "tramo": u.get("tramo"),
-                "project_id": None if u["role"] == "coordinador_global" else default_pid,
-                "createdAt": datetime.now(timezone.utc).isoformat(),
-            })
-        else:
-            # Upgrade idempotente: alinear rol/tramo del seed con el usuario existente.
-            patch: dict = {}
-            if existing.get("role") != u["role"]:
-                patch["role"] = u["role"]
-            if existing.get("tramo") != u.get("tramo"):
-                patch["tramo"] = u.get("tramo")
-            if existing.get("puesto") != u.get("puesto"):
-                patch["puesto"] = u.get("puesto")
-            # El coordinador_global no debe estar atado a un proyecto
-            if u["role"] == "coordinador_global" and existing.get("project_id"):
-                patch["project_id"] = None
-            if patch:
-                await db.users.update_one({"email": u["email"]}, {"$set": patch})
-    n_projects = await db.projects.count_documents({})
-    log.info("Seed ready: %d projects, %d areas, %d users",
-             n_projects, len(SEED_AREAS), len(SEED_USERS))
-
-
-@app.on_event("shutdown")
-async def shutdown():
-    client.close()
