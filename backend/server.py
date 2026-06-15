@@ -706,7 +706,10 @@ async def invite_preview(tok: str):
         raise HTTPException(404, "Invitación inválida")
     if inv["status"] != "pending":
         raise HTTPException(410, f"Invitación {inv['status']}")
-    if inv["expires_at"].replace(tzinfo=timezone.utc) if inv["expires_at"].tzinfo is None else inv["expires_at"] < datetime.now(timezone.utc):
+    exp = inv["expires_at"]
+    if exp.tzinfo is None:
+        exp = exp.replace(tzinfo=timezone.utc)
+    if exp < datetime.now(timezone.utc):
         raise HTTPException(410, "Invitación expirada")
     inv.pop("_id", None)
     return {

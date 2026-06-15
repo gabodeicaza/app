@@ -7,16 +7,17 @@ import { useAuth } from '@/src/auth-context';
 import { Button } from '@/src/components/Button';
 import { colors, radius, spacing } from '@/src/theme';
 import { roleLabel } from '@/src/utils/roles';
+import { confirm } from '@/src/utils/confirm';
 
 export default function SubCoordHome() {
   const insets = useSafeAreaInsets();
   const { user, logout } = useAuth();
 
   async function onLogout() {
-    Alert.alert('Cerrar sesión', '¿Seguro que deseas salir?', [
-      { text: 'Cancelar', style: 'cancel' },
-      { text: 'Salir', style: 'destructive', onPress: async () => { await logout(); router.replace('/(auth)/login'); } },
-    ]);
+    const ok = await confirm('Cerrar sesión', '¿Seguro que deseas salir?', { confirmText: 'Salir', destructive: true });
+    if (!ok) return;
+    await logout();
+    router.replace('/(auth)/login');
   }
 
   return (

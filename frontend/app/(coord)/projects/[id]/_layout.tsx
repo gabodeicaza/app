@@ -7,6 +7,8 @@ export default function ProjectLayout() {
     <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.bg } }}>
       <Stack.Screen name="index" />
       <Stack.Screen name="tree" />
+      <Stack.Screen name="areas" />
+      <Stack.Screen name="invitations" />
     </Stack>
   );
 }

@@ -10,6 +10,7 @@ import { Button } from '@/src/components/Button';
 import { api, LocationNode, LocationNodeTree } from '@/src/api';
 import { colors, radius, spacing, shadow } from '@/src/theme';
 import { MEASUREMENT_LABELS, MEASUREMENT_ICONS, MeasurementType } from '@/src/utils/roles';
+import { confirm } from '@/src/utils/confirm';
 
 // =============================================================================
 // Constructor visual del Árbol de Nodos
@@ -77,19 +78,16 @@ export default function TreeBuilderScreen() {
   async function onDelete(node: LocationNodeTree) {
     const childrenCount = countNodes(node.children);
     const msg = childrenCount === 0
-      ? `¿Eliminar el nodo “${node.name}”?`
-      : `¿Eliminar “${node.name}” y sus ${childrenCount} descendiente(s)? Esta acción no se puede deshacer.`;
-    Alert.alert('Eliminar nodo', msg, [
-      { text: 'Cancelar', style: 'cancel' },
-      { text: 'Eliminar', style: 'destructive', onPress: async () => {
-        try {
-          await api.deleteNode(node.id);
-          await load();
-        } catch (e: any) {
-          Alert.alert('Error', e?.message || 'No se pudo eliminar');
-        }
-      } },
-    ]);
+      ? `¿Eliminar el nodo "${node.name}"?`
+      : `¿Eliminar "${node.name}" y sus ${childrenCount} descendiente(s)? Esta acción no se puede deshacer.`;
+    const ok = await confirm('Eliminar nodo', msg, { confirmText: 'Eliminar', destructive: true });
+    if (!ok) return;
+    try {
+      await api.deleteNode(node.id);
+      await load();
+    } catch (e: any) {
+      Alert.alert('Error', e?.message || 'No se pudo eliminar');
+    }
   }
 
   async function onSave(payload: { name: string; is_leaf: boolean; measurement_type: MeasurementType | null }) {

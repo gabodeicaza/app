@@ -5,6 +5,7 @@ import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { api, Project } from '@/src/api';
 import { colors, radius, spacing } from '@/src/theme';
+import { confirm } from '@/src/utils/confirm';
 
 export default function ProjectDetailScreen() {
   const insets = useSafeAreaInsets();
@@ -29,13 +30,14 @@ export default function ProjectDetailScreen() {
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
   async function onArchive() {
-    Alert.alert('Archivar proyecto', 'El proyecto se ocultará pero sus datos se conservan. ¿Continuar?', [
-      { text: 'Cancelar', style: 'cancel' },
-      { text: 'Archivar', style: 'destructive', onPress: async () => {
-        try { await api.archiveProject(pid); router.back(); }
-        catch (e: any) { Alert.alert('Error', e?.message || 'No se pudo archivar'); }
-      } },
-    ]);
+    const ok = await confirm(
+      'Archivar proyecto',
+      'El proyecto se ocultará pero sus datos se conservan. ¿Continuar?',
+      { confirmText: 'Archivar', destructive: true },
+    );
+    if (!ok) return;
+    try { await api.archiveProject(pid); router.back(); }
+    catch (e: any) { Alert.alert('Error', e?.message || 'No se pudo archivar'); }
   }
 
   return (
@@ -78,15 +80,13 @@ export default function ProjectDetailScreen() {
               icon="color-palette-outline"
               title="Áreas / Disciplinas"
               subtitle="Topografía, Geotecnia, Estructuras…"
-              disabled
-              comingSoon
+              onPress={() => router.push({ pathname: '/(coord)/projects/[id]/areas', params: { id: pid } })}
             />
             <ActionTile
               icon="mail-outline"
               title="Invitaciones"
               subtitle="Genera tokens para Sub-Coord. y Especialistas"
-              disabled
-              comingSoon
+              onPress={() => router.push({ pathname: '/(coord)/projects/[id]/invitations', params: { id: pid } })}
             />
             <ActionTile
               icon="document-text-outline"

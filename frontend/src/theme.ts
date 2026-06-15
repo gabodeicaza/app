@@ -16,6 +16,10 @@ export const colors = {
   syncing: '#F59E0B',
   error: '#EF4444',
   errorBg: '#FEE2E2',
+  warning: '#F59E0B',
+  warningBg: '#FEF3C7',
+  success: '#10B981',
+  successBg: '#D1FAE5',
   black: '#000000',
   overlay: 'rgba(0,0,0,0.6)',
 };
