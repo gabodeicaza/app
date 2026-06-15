@@ -45,6 +45,8 @@ export function roleShortLabel(role?: string | null): string {
 }
 
 const SUPERVISOR_ROLES = new Set([
+  'coordinador_general',   // v2.0 — God Mode
+  'sub_coordinador',       // v2.0 — scope por rama
   'coordinador_global',
   'coordinador',
   'supervisor_general',
