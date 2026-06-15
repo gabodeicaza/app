@@ -2,6 +2,7 @@ import React, { useCallback, useMemo, useState } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, Alert,
   Modal, TextInput, KeyboardAvoidingView, Platform, RefreshControl, Share,
+  useWindowDimensions,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
@@ -18,6 +19,8 @@ type WizardRole = 'sub_coordinador' | 'especialista';
 
 export default function InvitationsScreen() {
   const insets = useSafeAreaInsets();
+  const { height: windowHeight } = useWindowDimensions();
+  const sheetHeight = Math.max(480, Math.floor(windowHeight * 0.92));
   const { id } = useLocalSearchParams<{ id: string }>();
   const pid = (Array.isArray(id) ? id[0] : id) || '';
 
@@ -214,7 +217,7 @@ export default function InvitationsScreen() {
       {/* Wizard */}
       <Modal visible={wizardOpen} animationType="slide" transparent onRequestClose={() => setWizardOpen(false)}>
         <View style={styles.modalBackdrop}>
-          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ width: '100%', maxHeight: '92%' }}>
+          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={[styles.sheetWrapper, { height: sheetHeight }]}>
             <View style={[styles.modalCard, { paddingBottom: insets.bottom + spacing.md }]}>
               <View style={styles.modalHeader}>
                 <Text style={styles.modalTitle}>Nueva invitación · Paso {step + 1} de 4</Text>
@@ -227,7 +230,11 @@ export default function InvitationsScreen() {
                 ))}
               </View>
 
-              <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ gap: spacing.md, paddingBottom: 8 }}>
+              <ScrollView
+                style={{ flex: 1 }}
+                keyboardShouldPersistTaps="handled"
+                contentContainerStyle={{ gap: spacing.md, paddingBottom: spacing.md }}
+              >
                 {step === 0 ? (
                   <StepRole role={role} onChange={setRole} />
                 ) : step === 1 ? (
@@ -267,6 +274,18 @@ export default function InvitationsScreen() {
                     <Text style={styles.errorText}>{wizardErr}</Text>
                   </View>
                 ) : null}
+
+                {/* Hint inline: confirma que el usuario ya puede continuar */}
+                {step === 2 && wizardCanProceed ? (
+                  <View style={styles.readyHint}>
+                    <Ionicons name="checkmark-circle" size={16} color={colors.success} />
+                    <Text style={styles.readyHintText}>
+                      {role === ROLE_ESP
+                        ? `${scopeNodeIds.length} nodo${scopeNodeIds.length === 1 ? '' : 's'} hoja seleccionado${scopeNodeIds.length === 1 ? '' : 's'}. Pulsa "Continuar" abajo.`
+                        : 'Nodo seleccionado. Pulsa "Continuar" abajo.'}
+                    </Text>
+                  </View>
+                ) : null}
               </ScrollView>
 
               <View style={styles.wizardActions}>
@@ -277,7 +296,13 @@ export default function InvitationsScreen() {
                   </Pressable>
                 ) : <View />}
                 {step < 3 ? (
-                  <Button label="Continuar" onPress={next} variant={wizardCanProceed ? 'primary' : 'secondary'} />
+                  <Button
+                    label={step === 2 ? 'Confirmar selección' : 'Continuar'}
+                    onPress={next}
+                    variant={wizardCanProceed ? 'primary' : 'secondary'}
+                    disabled={!wizardCanProceed}
+                    icon={step === 2 && wizardCanProceed ? <Ionicons name="checkmark" size={18} color="#fff" /> : undefined}
+                  />
                 ) : (
                   <Button label="Generar invitación" onPress={submitInvite} loading={submitting} />
                 )}
@@ -719,8 +744,9 @@ const styles = StyleSheet.create({
   fabText: { color: colors.textInverse, fontWeight: '800', fontSize: 14 },
 
   // Modal & wizard
-  modalBackdrop: { flex: 1, backgroundColor: '#0009', justifyContent: 'flex-end', padding: 0 },
-  modalCard: { backgroundColor: colors.surface, borderTopLeftRadius: radius.lg, borderTopRightRadius: radius.lg, paddingHorizontal: spacing.lg, paddingTop: spacing.md },
+  modalBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: '#0009' },
+  sheetWrapper: { position: 'absolute', left: 0, right: 0, bottom: 0 },
+  modalCard: { flex: 1, backgroundColor: colors.surface, borderTopLeftRadius: radius.lg, borderTopRightRadius: radius.lg, paddingHorizontal: spacing.lg, paddingTop: spacing.md },
   modalHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingBottom: spacing.sm, borderBottomWidth: 1, borderBottomColor: colors.border, marginBottom: spacing.sm },
   modalTitle: { fontSize: 15, fontWeight: '800', color: colors.text, flex: 1 },
   stepDots: { flexDirection: 'row', gap: 6, marginBottom: spacing.md },
@@ -767,6 +793,18 @@ const styles = StyleSheet.create({
 
   // Wizard actions
   wizardActions: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderTopWidth: 1, borderTopColor: colors.border, paddingTop: spacing.sm, marginTop: spacing.sm },
+  readyHint: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: colors.success + '15',
+    borderWidth: 1,
+    borderColor: colors.success + '55',
+    borderRadius: radius.md,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 10,
+  },
+  readyHintText: { flex: 1, color: colors.success, fontSize: 13, fontWeight: '700' },
   backBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 12, paddingVertical: 10 },
   backText: { color: colors.textBody, fontWeight: '700' },
 
