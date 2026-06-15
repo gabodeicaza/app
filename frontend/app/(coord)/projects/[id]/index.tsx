@@ -72,8 +72,7 @@ export default function ProjectDetailScreen() {
               icon="git-network-outline"
               title="Árbol de nodos"
               subtitle="Estructura espacial recursiva (tramos, estaciones, hojas)"
-              disabled
-              comingSoon
+              onPress={() => router.push({ pathname: '/(coord)/projects/[id]/tree', params: { id: pid } })}
             />
             <ActionTile
               icon="color-palette-outline"
