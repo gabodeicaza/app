@@ -716,12 +716,18 @@ async def invite_preview(tok: str):
     if exp < datetime.now(timezone.utc):
         raise HTTPException(410, "Invitación expirada")
     inv.pop("_id", None)
+    area_name = None
+    if inv.get("area_id"):
+        area = await db.areas.find_one({"id": inv["area_id"]})
+        if area:
+            area_name = area.get("name")
     return {
         "project_name": inv["project_name"],
         "email": inv["email"],
         "name": inv["name"],
         "role": inv["role"],
         "puesto": inv.get("puesto"),
+        "area_name": area_name,
     }
 
 

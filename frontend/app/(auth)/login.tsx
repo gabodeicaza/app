@@ -98,10 +98,33 @@ export default function LoginScreen() {
           <View style={{ height: spacing.md }} />
           <Button label="Entrar" loading={busy} onPress={onSubmit} fullWidth />
 
+          {/* Divider */}
+          <View style={styles.divider}>
+            <View style={styles.dividerLine} />
+            <Text style={styles.dividerText}>o</Text>
+            <View style={styles.dividerLine} />
+          </View>
+
+          {/* Canje de invitación in-app */}
+          <Pressable
+            style={({ pressed }) => [styles.inviteBtn, pressed && { opacity: 0.85 }]}
+            onPress={() => router.push('/(auth)/redeem')}
+            disabled={busy}
+          >
+            <View style={styles.inviteIcon}>
+              <Ionicons name="key-outline" size={18} color={colors.primary} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.inviteTitle}>Tengo un código de invitación</Text>
+              <Text style={styles.inviteSubtitle}>Pega aquí el token que te envió tu Coordinador.</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={colors.primary} />
+          </Pressable>
+
           <View style={styles.infoBox}>
             <Ionicons name="information-circle-outline" size={16} color={colors.textMuted} />
             <Text style={styles.infoText}>
-              El acceso es solo por invitación. Si recibiste un enlace de invitación, ábrelo desde tu correo o pega el token.
+              El acceso a SynCo es solo por invitación. Tu Coordinador General te enviará un código por WhatsApp o correo.
             </Text>
           </View>
         </View>
@@ -128,6 +151,27 @@ const styles = StyleSheet.create({
   input: { flex: 1, paddingVertical: 12, fontSize: 15, color: colors.text },
   errorBox: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: colors.errorBg, padding: 10, borderRadius: radius.md, marginTop: spacing.md },
   errorText: { color: colors.error, fontSize: 13, flex: 1, fontWeight: '600' },
+  divider: { flexDirection: 'row', alignItems: 'center', gap: 12, marginVertical: spacing.md },
+  dividerLine: { flex: 1, height: 1, backgroundColor: colors.border },
+  dividerText: { color: colors.textMuted, fontSize: 12, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 1 },
+  inviteBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    borderRadius: radius.md,
+    borderWidth: 1.5,
+    borderColor: colors.primary,
+    backgroundColor: colors.primaryLight + '40',
+  },
+  inviteIcon: {
+    width: 36, height: 36, borderRadius: 18,
+    backgroundColor: colors.primaryLight,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  inviteTitle: { fontSize: 14, fontWeight: '800', color: colors.primary },
+  inviteSubtitle: { fontSize: 11, color: colors.textBody, marginTop: 2 },
   infoBox: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, marginTop: spacing.md, padding: 10, backgroundColor: colors.primaryLight + '55', borderRadius: radius.md },
   infoText: { flex: 1, fontSize: 12, color: colors.textBody, lineHeight: 18 },
 });

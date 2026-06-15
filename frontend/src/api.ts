@@ -136,7 +136,7 @@ export const api = {
 
   // Invitations
   invitePreview: (token: string) =>
-    request<{ project_name: string; email: string; name: string; role: string; puesto?: string | null }>(
+    request<{ project_name: string; email: string; name: string; role: string; puesto?: string | null; area_name?: string | null }>(
       'GET', `/invitations/by-token/${encodeURIComponent(token)}`,
     ),
   acceptInvite: (token: string, password: string) =>
