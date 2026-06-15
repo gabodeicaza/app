@@ -8,7 +8,6 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 
 import { useIconFonts } from '@/src/hooks/use-icon-fonts';
 import { AuthProvider } from '@/src/auth-context';
-import { SyncProvider } from '@/src/sync-context';
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
@@ -27,15 +26,14 @@ export default function RootLayout() {
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
         <AuthProvider>
-          <SyncProvider>
-            <StatusBar style="dark" />
-            <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: '#F8FAFC' } }}>
-              <Stack.Screen name="index" />
-              <Stack.Screen name="(auth)" />
-              <Stack.Screen name="(coordinador)" />
-              <Stack.Screen name="(especialista)" />
-            </Stack>
-          </SyncProvider>
+          <StatusBar style="dark" />
+          <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: '#F8FAFC' } }}>
+            <Stack.Screen name="index" />
+            <Stack.Screen name="(auth)" />
+            <Stack.Screen name="(coord)" />
+            <Stack.Screen name="(subcoord)" />
+            <Stack.Screen name="(spec)" />
+          </Stack>
         </AuthProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>

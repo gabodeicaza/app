@@ -1,4 +1,5 @@
-// Thin REST client. Reads token from secure storage on every call.
+// SynCo v2.0 REST client.
+// Reads JWT from secure storage on every call.
 import { storage } from '@/src/utils/storage';
 
 const BASE = (process.env.EXPO_PUBLIC_BACKEND_URL || '').replace(/\/$/, '') + '/api';
@@ -16,11 +17,7 @@ async function authHeader(): Promise<Record<string, string>> {
   return tok ? { Authorization: `Bearer ${tok}` } : {};
 }
 
-async function request<T>(
-  method: string,
-  path: string,
-  body?: any,
-): Promise<T> {
+async function request<T>(method: string, path: string, body?: any): Promise<T> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...(await authHeader()),
@@ -28,171 +25,192 @@ async function request<T>(
   const res = await fetch(BASE + path, {
     method,
     headers,
-    body: body ? JSON.stringify(body) : undefined,
+    body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   const text = await res.text();
-  const data = text ? JSON.parse(text) : null;
+  const data = text ? safeJson(text) : null;
   if (!res.ok) {
-    const msg = data?.detail || `HTTP ${res.status}`;
-    throw new ApiError(res.status, msg);
+    const msg = (data && (data as any).detail) || `HTTP ${res.status}`;
+    throw new ApiError(res.status, typeof msg === 'string' ? msg : JSON.stringify(msg));
   }
   return data as T;
 }
 
+function safeJson(text: string): any {
+  try { return JSON.parse(text); } catch { return null; }
+}
+
+// ---- Types (subset for hints) ---------------------------------------------
+export interface User {
+  id: string;
+  email: string;
+  name: string;
+  role: 'coordinador_general' | 'sub_coordinador' | 'especialista';
+  area?: string | null;
+  puesto?: string | null;
+  scope_node_id?: string | null;
+  scope_node_ids: string[];
+  project_ids: string[];
+  created_at: string;
+}
+
+export interface Project {
+  id: string;
+  name: string;
+  constructora: string;
+  contract_number: string;
+  start_date?: string | null;
+  end_date?: string | null;
+  description?: string | null;
+  created_by: string;
+  created_at: string;
+  archived?: boolean;
+}
+
+export interface LocationNode {
+  id: string;
+  project_id: string;
+  parent_id: string | null;
+  name: string;
+  depth: number;
+  order: number;
+  is_leaf: boolean;
+  measurement_type: 'coord_latlon' | 'cadenamiento' | 'eje' | 'nivel' | null;
+}
+
+export interface LocationNodeTree extends LocationNode {
+  children: LocationNodeTree[];
+}
+
+export interface Area {
+  id: string;
+  project_id: string;
+  name: string;
+  color: string;
+}
+
+export interface Invitation {
+  id: string;
+  token: string;
+  project_id: string;
+  project_name: string;
+  email: string;
+  name: string;
+  role: 'sub_coordinador' | 'especialista';
+  area_id?: string | null;
+  puesto?: string | null;
+  scope_node_id?: string | null;
+  scope_node_ids: string[];
+  status: 'pending' | 'accepted' | 'revoked';
+  created_at: string;
+  expires_at: string;
+}
+
+export interface Report {
+  id: string;
+  project_id: string;
+  node_id: string;
+  node_path_names: string[];
+  measurement_type: string;
+  measurement_value: Record<string, any>;
+  area_id?: string | null;
+  area_name?: string | null;
+  notes?: string | null;
+  personnel: string[];
+  equipment: string[];
+  images: string[];
+  files: Array<{ filename: string; mime: string; data_base64: string }>;
+  captured_by: string;
+  captured_by_name: string;
+  created_at: string;
+}
+
+// ---- API client -----------------------------------------------------------
 export const api = {
   // Auth
   login: (email: string, password: string) =>
-    request<{ token: string; user: any }>('POST', '/auth/login', { email, password }),
-  register: (body: any) =>
-    request<{ token: string; user: any }>('POST', '/auth/register', body),
-  me: () => request<any>('GET', '/auth/me'),
-  updateMe: (body: { name?: string; puesto?: string | null }) =>
-    request<any>('PUT', '/auth/me', body),
+    request<{ token: string; user: User }>('POST', '/auth/login', { email, password }),
+  me: () => request<User>('GET', '/auth/me'),
+
+  // Invitations
+  invitePreview: (token: string) =>
+    request<{ project_name: string; email: string; name: string; role: string; puesto?: string | null }>(
+      'GET', `/invitations/by-token/${encodeURIComponent(token)}`,
+    ),
+  acceptInvite: (token: string, password: string) =>
+    request<{ token: string; user: User }>('POST', '/invitations/accept', { token, password }),
+
+  // Projects
+  listProjects: () => request<Project[]>('GET', '/projects'),
+  getProject: (pid: string) => request<Project>('GET', `/projects/${pid}`),
+  createProject: (body: {
+    name: string;
+    constructora: string;
+    contract_number: string;
+    start_date?: string | null;
+    end_date?: string | null;
+    description?: string | null;
+  }) => request<Project>('POST', '/projects', body),
+  updateProject: (pid: string, body: any) => request<Project>('PUT', `/projects/${pid}`, body),
+  archiveProject: (pid: string) => request<{ ok: boolean; archived: boolean }>('DELETE', `/projects/${pid}`),
+
+  // Nodes
+  listNodes: (pid: string) => request<LocationNode[]>('GET', `/projects/${pid}/nodes`),
+  getTree: (pid: string) => request<LocationNodeTree[]>('GET', `/projects/${pid}/nodes/tree`),
+  createNode: (pid: string, body: {
+    project_id: string;
+    parent_id?: string | null;
+    name: string;
+    order?: number;
+    is_leaf?: boolean;
+    measurement_type?: 'coord_latlon' | 'cadenamiento' | 'eje' | 'nivel' | null;
+  }) => request<LocationNode>('POST', `/projects/${pid}/nodes`, body),
+  updateNode: (nid: string, body: {
+    name?: string;
+    order?: number;
+    is_leaf?: boolean;
+    measurement_type?: 'coord_latlon' | 'cadenamiento' | 'eje' | 'nivel' | null;
+  }) => request<LocationNode>('PATCH', `/nodes/${nid}`, body),
+  deleteNode: (nid: string) => request<{ ok: boolean; deleted_count: number }>('DELETE', `/nodes/${nid}`),
 
   // Areas
-  listAreas: () => request<any[]>('GET', '/areas'),
-  createArea: (name: string, color?: string, icon?: string) =>
-    request<any>('POST', '/areas', { name, color, icon }),
-  deleteArea: (id: string) => request<{ ok: boolean }>('DELETE', `/areas/${id}`),
+  listAreas: (pid: string) => request<Area[]>('GET', `/projects/${pid}/areas`),
+  createArea: (pid: string, body: { project_id: string; name: string; color?: string }) =>
+    request<Area>('POST', `/projects/${pid}/areas`, body),
+  deleteArea: (aid: string) => request<{ ok: boolean }>('DELETE', `/areas/${aid}`),
+
+  // Invitations (admin)
+  listInvitations: (pid: string) => request<Invitation[]>('GET', `/projects/${pid}/invitations`),
+  createInvitation: (pid: string, body: {
+    project_id: string;
+    email: string;
+    name: string;
+    role: 'sub_coordinador' | 'especialista';
+    scope_node_id?: string | null;
+    area_id?: string | null;
+    puesto?: string | null;
+    scope_node_ids?: string[];
+  }) => request<Invitation>('POST', `/projects/${pid}/invitations`, body),
+  revokeInvitation: (iid: string) => request<{ ok: boolean }>('DELETE', `/invitations/${iid}`),
 
   // Reports
-  createReport: (body: any) => request<any>('POST', '/reports', body),
-  listReports: () => request<any[]>('GET', '/reports'),
-  reportsToday: () => request<{ reports: any[]; stats: any; total: number }>('GET', '/reports/today'),
-  reportsByPeriod: (period: 'today' | 'week' | 'month') =>
-    request<{ reports: any[]; stats: any; total: number; period: string; since: string }>(
-      'GET',
-      `/reports/by-period?period=${period}`,
-    ),
+  createReport: (body: {
+    project_id: string;
+    node_id: string;
+    measurement_value: Record<string, any>;
+    area_id?: string | null;
+    notes?: string | null;
+    personnel?: string[];
+    equipment?: string[];
+    images?: string[];
+    files?: Array<{ filename: string; mime: string; data_base64: string }>;
+  }) => request<Report>('POST', '/reports', body),
+  listReports: (pid: string) => request<Report[]>('GET', `/projects/${pid}/reports`),
+  getReport: (rid: string) => request<Report>('GET', `/reports/${rid}`),
+  deleteReport: (rid: string) => request<{ ok: boolean }>('DELETE', `/reports/${rid}`),
 
-  // Projects (Multi-Obra)
-  listProjects: () => request<any[]>('GET', '/projects'),
-  getProject: (id: string) => request<any>('GET', `/projects/${id}`),
-  createProject: (body: { name: string; code?: string; description?: string; location?: string; client?: string; contractor?: string; status?: 'active' | 'paused' | 'closed' }) =>
-    request<any>('POST', '/projects', body),
-  updateProject: (id: string, body: any) => request<any>('PUT', `/projects/${id}`, body),
-  deleteProject: (id: string) => request<{ ok: boolean; archived: boolean }>('DELETE', `/projects/${id}`),
-
-  // AI
-  improveText: (title: string, comments: string, area: string) =>
-    request<{ text: string }>('POST', '/ai/improve-text', { title, comments, area }),
-  dailySummary: (reports: any[]) =>
-    request<{ summary: string }>('POST', '/ai/daily-summary', { reports }),
-  periodSummary: (period: 'daily' | 'weekly' | 'monthly', area?: string | null) =>
-    request<{ summary: string }>('POST', '/ai/period-summary', { period, area: area ?? null }),
-
-  // Activities (Noticias / FYP)
-  listActivities: (params?: { period?: string; tzOffset?: number }) => {
-    const qs: string[] = [];
-    if (params?.period) qs.push(`period=${encodeURIComponent(params.period)}`);
-    if (typeof params?.tzOffset === 'number') qs.push(`tz_offset=${params.tzOffset}`);
-    const query = qs.length ? `?${qs.join('&')}` : '';
-    return request<any[]>('GET', `/activities${query}`);
-  },
-  createActivity: (body: { title: string; description?: string; priority: 1 | 2 | 3; area?: string | null }) =>
-    request<any>('POST', '/activities', body),
-  deleteActivity: (id: string) => request<{ ok: boolean }>('DELETE', `/activities/${id}`),
-
-  // Reference Points (Postes)
-  listReferencePoints: () => request<any[]>('GET', '/reference-points'),
-  createReferencePoint: (body: {
-    name: string;
-    location?: string | null;
-    coordinates?: string | null;
-    area?: string | null;
-  }) => request<any>('POST', '/reference-points', body),
-  updateReferencePoint: (
-    id: string,
-    body: {
-      name: string;
-      location?: string | null;
-      coordinates?: string | null;
-      area?: string | null;
-    },
-  ) => request<any>('PUT', `/reference-points/${id}`, body),
-  deleteReferencePoint: (id: string) => request<{ ok: boolean }>('DELETE', `/reference-points/${id}`),
-
-  // Chat (direct messaging)
-  chatUsers: () => request<any[]>('GET', '/chat/users'),
-  chatMessages: (peerId: string) => request<any[]>('GET', `/chat/messages/${peerId}`),
-  chatSend: (toUser: string, text: string) =>
-    request<any>('POST', '/chat/send', { to_user: toUser, text }),
-  chatUnreadTotal: () => request<{ unread: number }>('GET', '/chat/unread-total'),
-
-  // Chat por Área (broadcast)
-  chatAreaRooms: () => request<any[]>('GET', '/chat/areas'),
-  chatAreaMessages: (areaId: string) =>
-    request<any[]>('GET', `/chat/area/${areaId}/messages`),
-  chatAreaSend: (areaId: string, text: string) =>
-    request<any>('POST', '/chat/area/send', { area_id: areaId, text }),
-
-  // Calendar / Eventos
-  listEvents: (params?: { from?: string; to?: string }) => {
-    const qs: string[] = [];
-    if (params?.from) qs.push(`from_date=${encodeURIComponent(params.from)}`);
-    if (params?.to) qs.push(`to_date=${encodeURIComponent(params.to)}`);
-    const q = qs.length ? `?${qs.join('&')}` : '';
-    return request<any[]>('GET', `/events${q}`);
-  },
-  createEvent: (body: any) => request<any>('POST', '/events', body),
-  updateEvent: (id: string, body: any) => request<any>('PUT', `/events/${id}`, body),
-  deleteEvent: (id: string) => request<{ ok: boolean }>('DELETE', `/events/${id}`),
-  eventAlerts: () => request<any[]>('GET', '/events/alerts'),
-  dismissAlert: (id: string) => request<{ ok: boolean }>('POST', `/events/${id}/dismiss-alert`),
-
-  // Site Config (Contract / Contractor)
-  getSiteConfig: () =>
-    request<{ contract: string; contractor: string; updatedAt?: string | null; updatedBy?: string | null }>(
-      'GET',
-      '/site-config',
-    ),
-  updateSiteConfig: (body: { contract?: string; contractor?: string }) =>
-    request<{ contract: string; contractor: string; updatedAt?: string | null; updatedBy?: string | null }>(
-      'PUT',
-      '/site-config',
-    body),
-
-  // Smart report autocomplete history (per area)
-  reportHistory: () =>
-    request<{ personnel: string[]; equipment: string[]; activities: string[]; area?: string | null }>(
-      'GET',
-      '/report-history',
-    ),
-
-  // Documentos Clave (Repositorio Compartido — Cero Huella Local)
-  listDocuments: () =>
-    request<Array<{
-      id: string;
-      title: string;
-      description?: string | null;
-      mime_type: string;
-      filename: string;
-      size_kb: number;
-      project_id: string;
-      uploaded_by: string;
-      uploaded_by_name: string;
-      uploaded_at: string;
-    }>>('GET', '/documents'),
-  getDocument: (id: string) =>
-    request<{
-      id: string;
-      title: string;
-      description?: string | null;
-      mime_type: string;
-      filename: string;
-      data_base64: string;
-      uploaded_by_name: string;
-      uploaded_at: string;
-    }>('GET', `/documents/${id}`),
-  uploadDocument: (body: {
-    title: string;
-    description?: string;
-    mime_type: string;
-    filename: string;
-    data_base64: string;
-  }) => request<any>('POST', '/documents', body),
-  deleteDocument: (id: string) =>
-    request<{ ok: boolean }>('DELETE', `/documents/${id}`),
+  // Users (admin)
+  listProjectUsers: (pid: string) => request<User[]>('GET', `/projects/${pid}/users`),
 };
 
 export { BASE };

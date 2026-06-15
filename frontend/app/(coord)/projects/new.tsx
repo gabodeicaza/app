@@ -1,0 +1,119 @@
+import React, { useState } from 'react';
+import {
+  View, Text, StyleSheet, TextInput, ScrollView, KeyboardAvoidingView, Platform, Pressable,
+} from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { router } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
+import { Button } from '@/src/components/Button';
+import { api } from '@/src/api';
+import { colors, radius, spacing } from '@/src/theme';
+
+export default function NewProjectScreen() {
+  const insets = useSafeAreaInsets();
+  const [name, setName] = useState('');
+  const [constructora, setConstructora] = useState('');
+  const [contract, setContract] = useState('');
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
+  const [description, setDescription] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function onCreate() {
+    setError(null);
+    if (!name.trim() || !constructora.trim() || !contract.trim()) {
+      setError('Nombre, constructora y número de contrato son obligatorios');
+      return;
+    }
+    setBusy(true);
+    try {
+      const p = await api.createProject({
+        name: name.trim(),
+        constructora: constructora.trim(),
+        contract_number: contract.trim(),
+        start_date: startDate.trim() || null,
+        end_date: endDate.trim() || null,
+        description: description.trim() || null,
+      });
+      router.replace({ pathname: '/(coord)/projects/[id]', params: { id: p.id } });
+    } catch (e: any) {
+      setError(e?.message || 'No se pudo crear');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+      <View style={[styles.header, { paddingTop: insets.top + 4 }]}>
+        <Pressable onPress={() => router.back()} hitSlop={8} style={styles.iconBtn}>
+          <Ionicons name="close" size={26} color={colors.text} />
+        </Pressable>
+        <Text style={styles.title}>Nuevo proyecto</Text>
+        <View style={{ width: 32 }} />
+      </View>
+
+      <ScrollView
+        contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + 24 }]}
+        keyboardShouldPersistTaps="handled"
+      >
+        <Field label="Nombre del proyecto *" value={name} onChangeText={setName} placeholder="Ej. Libramiento Norte Tramo II" icon="briefcase-outline" />
+        <Field label="Constructora *" value={constructora} onChangeText={setConstructora} placeholder="Ej. ICA SA de CV" icon="business-outline" />
+        <Field label="Número de contrato *" value={contract} onChangeText={setContract} placeholder="Ej. SCT-2026-114" icon="document-text-outline" />
+        <Field label="Fecha de inicio (YYYY-MM-DD)" value={startDate} onChangeText={setStartDate} placeholder="2026-01-15" icon="calendar-outline" />
+        <Field label="Fecha de término (YYYY-MM-DD)" value={endDate} onChangeText={setEndDate} placeholder="2027-06-30" icon="calendar-outline" />
+        <Field label="Descripción (opcional)" value={description} onChangeText={setDescription} placeholder="Notas…" icon="chatbox-ellipses-outline" multiline />
+
+        {error ? (
+          <View style={styles.errorBox}>
+            <Ionicons name="alert-circle" size={16} color={colors.error} />
+            <Text style={styles.errorText}>{error}</Text>
+          </View>
+        ) : null}
+
+        <View style={{ height: spacing.md }} />
+        <Button label="Crear proyecto" onPress={onCreate} loading={busy} fullWidth />
+      </ScrollView>
+    </KeyboardAvoidingView>
+  );
+}
+
+function Field({ label, value, onChangeText, placeholder, icon, multiline }: any) {
+  return (
+    <View style={{ gap: 6 }}>
+      <Text style={styles.label}>{label}</Text>
+      <View style={[styles.inputWrap, multiline && { minHeight: 80, alignItems: 'flex-start', paddingTop: 12 }]}>
+        <Ionicons name={icon} size={18} color={colors.textMuted} />
+        <TextInput
+          value={value} onChangeText={onChangeText}
+          placeholder={placeholder} placeholderTextColor={colors.textMuted}
+          style={[styles.input, multiline && { textAlignVertical: 'top', minHeight: 60 }]}
+          multiline={!!multiline}
+          autoCapitalize="sentences"
+        />
+      </View>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  flex: { flex: 1, backgroundColor: colors.bg },
+  header: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: spacing.md, paddingBottom: spacing.sm,
+    borderBottomWidth: 1, borderBottomColor: colors.border, backgroundColor: colors.surface,
+  },
+  iconBtn: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
+  title: { fontSize: 17, fontWeight: '800', color: colors.text },
+  scroll: { paddingHorizontal: spacing.lg, paddingTop: spacing.md, gap: spacing.md },
+  label: { fontSize: 12, fontWeight: '700', color: colors.textBody },
+  inputWrap: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    borderWidth: 1, borderColor: colors.borderStrong, borderRadius: radius.md,
+    paddingHorizontal: 12, backgroundColor: colors.surface,
+  },
+  input: { flex: 1, paddingVertical: 12, fontSize: 15, color: colors.text },
+  errorBox: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: colors.errorBg, padding: 10, borderRadius: radius.md },
+  errorText: { color: colors.error, fontSize: 13, flex: 1, fontWeight: '600' },
+});
