@@ -194,6 +194,8 @@ class ReportIn(BaseModel):
     measurement_value: dict  # ej: {"lat": 19.43, "lon": -99.13} | {"cadenamiento": "5+100"} | {"eje": "A"} | {"nivel": 12.45}
     area_id: Optional[str] = None
     notes: Optional[str] = None
+    avance: Optional[str] = None
+    contratista: Optional[str] = None
     personnel: List[str] = Field(default_factory=list)
     equipment: List[str] = Field(default_factory=list)
     images: List[str] = Field(default_factory=list)  # base64
@@ -210,6 +212,8 @@ class ReportOut(BaseModel):
     area_id: Optional[str] = None
     area_name: Optional[str] = None
     notes: Optional[str] = None
+    avance: Optional[str] = None
+    contratista: Optional[str] = None
     personnel: List[str] = Field(default_factory=list)
     equipment: List[str] = Field(default_factory=list)
     images: List[str] = Field(default_factory=list)
@@ -822,6 +826,8 @@ async def create_report(body: ReportIn, user: dict = Depends(current_user)):
         "area_id": body.area_id or user.get("area_id"),
         "area_name": area_name,
         "notes": (body.notes or "").strip() or None,
+        "avance": (body.avance or "").strip() or None,
+        "contratista": (body.contratista or "").strip() or None,
         "personnel": body.personnel,
         "equipment": body.equipment,
         "images": body.images,

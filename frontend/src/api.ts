@@ -116,6 +116,8 @@ export interface Report {
   area_id?: string | null;
   area_name?: string | null;
   notes?: string | null;
+  avance?: string | null;
+  contratista?: string | null;
   personnel: string[];
   equipment: string[];
   images: string[];
@@ -200,6 +202,8 @@ export const api = {
     measurement_value: Record<string, any>;
     area_id?: string | null;
     notes?: string | null;
+    avance?: string | null;
+    contratista?: string | null;
     personnel?: string[];
     equipment?: string[];
     images?: string[];
