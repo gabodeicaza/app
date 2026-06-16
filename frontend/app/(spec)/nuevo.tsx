@@ -1012,7 +1012,8 @@ function DynamicItemRow({
             {suggestions.map((s) => (
               <Pressable
                 key={s}
-                onPress={() => { onChangeDesc(s); setFocused(false); }}
+                // onPressIn evita el race-condition con setTimeout(setFocused(false),120) del onBlur del input
+                onPressIn={() => { onChangeDesc(s); setFocused(false); }}
                 style={({ pressed }) => [styles.suggestionItem, pressed && { backgroundColor: colors.primaryLight }]}
               >
                 <Ionicons name="bookmark-outline" size={12} color={colors.primary} />
