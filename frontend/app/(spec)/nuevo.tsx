@@ -1,10 +1,11 @@
-// SynCo v2.0 — Pantalla del Especialista.
-// - Lee el árbol del proyecto y los nodos hoja autorizados (`scope_node_ids`).
-// - Renderiza un cascader dinámico hasta llegar a un nodo hoja autorizado.
-// - Formulario: Avance, Contratista, Personal, Equipo + valor de medición.
-// - Fotos: Base64 en RAM exclusivamente (Cero Huella Local). Cualquier base64
-//   se limpia al limpiar/enviar el formulario.
-// - Tras envío exitoso → modal de éxito con botón "Copiar para WhatsApp".
+// SynCo v2.0 — Pantalla del Especialista (Captura Rápida v2).
+// - Auto-data read-only (fecha, nombre, rol, contrato, ubicación).
+// - Lecturas P/U con helper histórico "Última lectura registrada en este nodo".
+// - Actividades + Observaciones (multilínea).
+// - Personal y Equipo como listas dinámicas con [-] [+] y autocomplete vía
+//   AsyncStorage (catálogo local de items previamente capturados).
+// - Fotos: Base64 en RAM (Cero Huella Local).
+// - Tras éxito → modal "Modo WhatsApp" con botones Copiar y Enviar.
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator, Alert, FlatList, Image, KeyboardAvoidingView, Modal, Platform,
@@ -21,19 +22,40 @@ import { useAuth } from '@/src/auth-context';
 import { Button } from '@/src/components/Button';
 import { colors, radius, spacing, shadow } from '@/src/theme';
 import { confirm, notify } from '@/src/utils/confirm';
+import { storage } from '@/src/utils/storage';
 import {
   MEASUREMENT_LABELS, MeasurementType, roleLabel,
 } from '@/src/utils/roles';
-import { buildWhatsAppMessage, formatMeasurementValue } from '@/src/utils/whatsapp';
+import {
+  buildWhatsAppMessage, formatMeasurementValue, formatDateLongES,
+} from '@/src/utils/whatsapp';
 import { api, LocationNodeTree, Project } from '@/src/api';
 
 type MeasurementValue = Record<string, any>;
 
 interface CascadeLevel {
-  parentName: string | null; // null => raíz
+  parentName: string | null;
   options: LocationNodeTree[];
   selectedId: string | null;
 }
+
+interface DynItem {
+  id: string;
+  qty: number;
+  desc: string;
+}
+
+interface NodeHistorySnapshot {
+  has_previous: boolean;
+  ultima_lectura: number | null;
+  primera_lectura: number | null;
+  captured_by_name: string | null;
+  created_at: string | null;
+}
+
+const CATALOG_PERSONAL_KEY = 'syncsite_catalog_personal';
+const CATALOG_EQUIPO_KEY = 'syncsite_catalog_equipo';
+const MAX_CATALOG_SIZE = 80;
 
 export default function SpecCaptureScreen() {
   const insets = useSafeAreaInsets();
@@ -52,29 +74,39 @@ export default function SpecCaptureScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // ----- Cascade (path de nodos seleccionados) ------------------------------
-  // `path` contiene todos los nodos ya escogidos en orden, de raíz a hoja.
+  // ----- Cascade -----------------------------------------------------------
   const [path, setPath] = useState<LocationNodeTree[]>([]);
 
-  // ----- Form ---------------------------------------------------------------
-  const [avance, setAvance] = useState('');
+  // ----- Form --------------------------------------------------------------
+  const [actividades, setActividades] = useState('');
+  const [observaciones, setObservaciones] = useState('');
   const [contratista, setContratista] = useState('');
-  const [personal, setPersonal] = useState('');
-  const [equipo, setEquipo] = useState('');
+  const [primeraLectura, setPrimeraLectura] = useState('');
+  const [ultimaLectura, setUltimaLectura] = useState('');
+  const [personal, setPersonal] = useState<DynItem[]>([]);
+  const [equipo, setEquipo] = useState<DynItem[]>([]);
   const [measurement, setMeasurement] = useState<MeasurementValue>({});
-  const [images, setImages] = useState<string[]>([]); // base64 sin prefijo, en RAM
+  const [images, setImages] = useState<string[]>([]);
   const [submitting, setSubmitting] = useState(false);
 
-  // ----- Modal de cascada ---------------------------------------------------
-  const [pickerOpen, setPickerOpen] = useState(false);
-  const [pickerLevelIdx, setPickerLevelIdx] = useState(0); // qué nivel se está eligiendo
+  // ----- Catálogos AsyncStorage --------------------------------------------
+  const [catalogPersonal, setCatalogPersonal] = useState<string[]>([]);
+  const [catalogEquipo, setCatalogEquipo] = useState<string[]>([]);
 
-  // ----- Modal de éxito (Modo WhatsApp) ------------------------------------
+  // ----- Historial nodo ----------------------------------------------------
+  const [nodeHistory, setNodeHistory] = useState<NodeHistorySnapshot | null>(null);
+  const [nodeHistoryLoading, setNodeHistoryLoading] = useState(false);
+
+  // ----- Modal cascada -----------------------------------------------------
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [pickerLevelIdx, setPickerLevelIdx] = useState(0);
+
+  // ----- Modal éxito (WhatsApp) --------------------------------------------
   const [successOpen, setSuccessOpen] = useState(false);
   const [waMessage, setWaMessage] = useState('');
 
   // -------------------------------------------------------------------------
-  // Carga inicial: proyecto + árbol filtrado a lo autorizado.
+  // Carga inicial.
   const load = useCallback(async () => {
     if (!projectId) {
       setLoading(false);
@@ -96,17 +128,21 @@ export default function SpecCaptureScreen() {
 
   useEffect(() => { load(); }, [load]);
 
+  // Cargar catálogos de AsyncStorage al iniciar.
+  useEffect(() => {
+    (async () => {
+      const p = await storage.getItem<string>(CATALOG_PERSONAL_KEY, '[]');
+      const e = await storage.getItem<string>(CATALOG_EQUIPO_KEY, '[]');
+      try { setCatalogPersonal(JSON.parse(p || '[]') as string[]); } catch { setCatalogPersonal([]); }
+      try { setCatalogEquipo(JSON.parse(e || '[]') as string[]); } catch { setCatalogEquipo([]); }
+    })();
+  }, []);
+
   // -------------------------------------------------------------------------
-  // Cascade levels: opciones disponibles en cada paso.
+  // Cascade levels.
   const levels: CascadeLevel[] = useMemo(() => {
     const out: CascadeLevel[] = [];
-    // Nivel 0: raíces del árbol filtrado.
-    out.push({
-      parentName: null,
-      options: tree,
-      selectedId: path[0]?.id ?? null,
-    });
-    // Niveles intermedios.
+    out.push({ parentName: null, options: tree, selectedId: path[0]?.id ?? null });
     for (let i = 0; i < path.length; i++) {
       const node = path[i];
       if (!node.children || node.children.length === 0) break;
@@ -130,13 +166,57 @@ export default function SpecCaptureScreen() {
     return path.length >= 2 ? path[path.length - 2] : null;
   }, [path, leafNode]);
 
+  // Ubicación legible (path completo).
+  const ubicacionPathLabel = useMemo(() => {
+    if (path.length === 0) return 'Sin seleccionar';
+    return path.map((n) => n.name).join(' / ');
+  }, [path]);
+
   // -------------------------------------------------------------------------
-  // Selección en el modal de cascada.
+  // Cargar historial del nodo cuando se selecciona una hoja.
+  useEffect(() => {
+    if (!leafNode || !projectId) {
+      setNodeHistory(null);
+      return;
+    }
+    let cancelled = false;
+    setNodeHistoryLoading(true);
+    (async () => {
+      try {
+        const h = await api.nodeHistory(projectId, leafNode.id);
+        if (cancelled) return;
+        if (h.has_previous && h.last_report) {
+          setNodeHistory({
+            has_previous: true,
+            ultima_lectura: h.last_report.ultima_lectura ?? null,
+            primera_lectura: h.last_report.primera_lectura ?? null,
+            captured_by_name: h.last_report.captured_by_name || null,
+            created_at: h.last_report.created_at || null,
+          });
+        } else {
+          setNodeHistory({
+            has_previous: false,
+            ultima_lectura: null,
+            primera_lectura: null,
+            captured_by_name: null,
+            created_at: null,
+          });
+        }
+      } catch {
+        if (!cancelled) setNodeHistory(null);
+      } finally {
+        if (!cancelled) setNodeHistoryLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [leafNode, projectId]);
+
+  // -------------------------------------------------------------------------
+  // Picker.
   function openPicker(levelIdx: number) {
     setPickerLevelIdx(levelIdx);
     setPickerOpen(true);
   }
-
   function pickNode(node: LocationNodeTree) {
     setPickerOpen(false);
     setPath((prev) => {
@@ -144,17 +224,16 @@ export default function SpecCaptureScreen() {
       next.push(node);
       return next;
     });
-    // Si el nodo elegido es hoja, reset measurement para que coincida con su tipo.
     if (node.is_leaf) setMeasurement({});
   }
-
   function resetCascade() {
     setPath([]);
     setMeasurement({});
+    setNodeHistory(null);
   }
 
   // -------------------------------------------------------------------------
-  // Cámara + galería (CERO HUELLA: base64 en memoria, no guardamos a disco).
+  // Cámara/galería (RAM only).
   async function takePhotoFromCamera() {
     try {
       let perm = await ImagePicker.getCameraPermissionsAsync();
@@ -171,7 +250,6 @@ export default function SpecCaptureScreen() {
         quality: 0.7,
         base64: true,
         exif: false,
-        // Notar: NO llamamos MediaLibrary.saveToLibraryAsync para mantener Cero Huella.
       });
       if (res.canceled || !res.assets?.[0]?.base64) return;
       setImages((prev) => [...prev, res.assets[0].base64!]);
@@ -196,7 +274,7 @@ export default function SpecCaptureScreen() {
         quality: 0.7,
         base64: true,
         exif: false,
-        allowsMultipleSelection: Platform.OS !== 'ios', // iOS multi-pick puede pegar
+        allowsMultipleSelection: Platform.OS !== 'ios',
       });
       if (res.canceled) return;
       const newBase64s: string[] = [];
@@ -219,8 +297,93 @@ export default function SpecCaptureScreen() {
   }
 
   // -------------------------------------------------------------------------
+  // Catálogo AsyncStorage.
+  async function persistCatalog(key: string, list: string[]) {
+    // Dedupe + cap.
+    const seen = new Set<string>();
+    const trimmed: string[] = [];
+    for (const s of list) {
+      const k = s.trim();
+      if (!k) continue;
+      const norm = k.toLowerCase();
+      if (seen.has(norm)) continue;
+      seen.add(norm);
+      trimmed.push(k);
+      if (trimmed.length >= MAX_CATALOG_SIZE) break;
+    }
+    await storage.setItem(key, JSON.stringify(trimmed));
+  }
+
+  async function addToCatalog(kind: 'personal' | 'equipo', descs: string[]) {
+    const cleaned = descs.map((s) => s.trim()).filter(Boolean);
+    if (cleaned.length === 0) return;
+    if (kind === 'personal') {
+      const merged = [...cleaned, ...catalogPersonal];
+      const out: string[] = [];
+      const seen = new Set<string>();
+      for (const s of merged) {
+        const n = s.toLowerCase();
+        if (seen.has(n)) continue;
+        seen.add(n);
+        out.push(s);
+        if (out.length >= MAX_CATALOG_SIZE) break;
+      }
+      setCatalogPersonal(out);
+      await persistCatalog(CATALOG_PERSONAL_KEY, out);
+    } else {
+      const merged = [...cleaned, ...catalogEquipo];
+      const out: string[] = [];
+      const seen = new Set<string>();
+      for (const s of merged) {
+        const n = s.toLowerCase();
+        if (seen.has(n)) continue;
+        seen.add(n);
+        out.push(s);
+        if (out.length >= MAX_CATALOG_SIZE) break;
+      }
+      setCatalogEquipo(out);
+      await persistCatalog(CATALOG_EQUIPO_KEY, out);
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Dynamic items helpers.
+  function addItem(kind: 'personal' | 'equipo') {
+    const newItem: DynItem = { id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, qty: 1, desc: '' };
+    if (kind === 'personal') setPersonal((prev) => [...prev, newItem]);
+    else setEquipo((prev) => [...prev, newItem]);
+  }
+  function updateItem(kind: 'personal' | 'equipo', id: string, patch: Partial<DynItem>) {
+    const updater = (prev: DynItem[]) => prev.map((it) => (it.id === id ? { ...it, ...patch } : it));
+    if (kind === 'personal') setPersonal(updater);
+    else setEquipo(updater);
+  }
+  function removeItem(kind: 'personal' | 'equipo', id: string) {
+    if (kind === 'personal') setPersonal((prev) => prev.filter((it) => it.id !== id));
+    else setEquipo((prev) => prev.filter((it) => it.id !== id));
+  }
+  function incQty(kind: 'personal' | 'equipo', id: string, delta: number) {
+    const target = kind === 'personal' ? personal : equipo;
+    const cur = target.find((it) => it.id === id);
+    if (!cur) return;
+    const next = Math.max(1, (cur.qty || 1) + delta);
+    updateItem(kind, id, { qty: next });
+  }
+
+  function serializeItems(items: DynItem[]): string[] {
+    return items
+      .filter((it) => (it.desc || '').trim().length > 0)
+      .map((it) => `${Math.max(1, it.qty || 1)} ${it.desc.trim()}`);
+  }
+
+  // -------------------------------------------------------------------------
   // Envío.
-  const canSubmit = !!leafNode && !!project && validateMeasurement(leafNode.measurement_type, measurement);
+  const primeraLecturaNum = parseFloatOrNull(primeraLectura);
+  const ultimaLecturaNum = parseFloatOrNull(ultimaLectura);
+
+  const canSubmit = !!leafNode && !!project
+    && validateMeasurement(leafNode.measurement_type, measurement)
+    && !submitting;
 
   async function onSubmit() {
     if (!leafNode || !project) return;
@@ -230,22 +393,29 @@ export default function SpecCaptureScreen() {
     }
     setSubmitting(true);
     try {
-      const personnelArr = personal.trim() ? [personal.trim()] : [];
-      const equipmentArr = equipo.trim() ? [equipo.trim()] : [];
+      const personnelArr = serializeItems(personal);
+      const equipmentArr = serializeItems(equipo);
+
       await api.createReport({
         project_id: project.id,
         node_id: leafNode.id,
         measurement_value: measurement,
-        // El backend usa automáticamente user.area_id si no se envía area_id.
-        notes: avance.trim() || null,
-        avance: avance.trim() || null,
+        notes: actividades.trim() || null, // legacy notes = actividades
+        avance: actividades.trim() || null,
+        observaciones: observaciones.trim() || null,
         contratista: contratista.trim() || null,
         personnel: personnelArr,
         equipment: equipmentArr,
-        images: images, // base64
+        images: images,
+        primera_lectura: primeraLecturaNum,
+        ultima_lectura: ultimaLecturaNum,
       });
 
-      // Construir mensaje WhatsApp dinámico.
+      // Actualizar catálogo local (autocomplete).
+      await addToCatalog('personal', personal.map((p) => p.desc));
+      await addToCatalog('equipo', equipo.map((e) => e.desc));
+
+      // Construir mensaje WhatsApp.
       const areaOrPuesto = (user?.puesto || user?.area || '').trim();
       const ubicacion = formatMeasurementValue(leafNode.measurement_type || '', measurement);
       const msg = buildWhatsAppMessage({
@@ -256,8 +426,12 @@ export default function SpecCaptureScreen() {
         leafNodeName: leafNode.name,
         ubicacion,
         contratista,
-        personal,
-        equipo,
+        personal: personnelArr,
+        equipo: equipmentArr,
+        actividades: actividades.trim(),
+        observaciones: observaciones.trim(),
+        primeraLectura: primeraLecturaNum,
+        ultimaLectura: ultimaLecturaNum,
       });
       setWaMessage(msg);
       setSuccessOpen(true);
@@ -269,11 +443,13 @@ export default function SpecCaptureScreen() {
   }
 
   function clearFormAndCloseSuccess() {
-    // Cero Huella: borrar fotos en RAM al limpiar formulario.
-    setAvance('');
+    setActividades('');
+    setObservaciones('');
     setContratista('');
-    setPersonal('');
-    setEquipo('');
+    setPrimeraLectura('');
+    setUltimaLectura('');
+    setPersonal([]);
+    setEquipo([]);
     setMeasurement({});
     setImages([]);
     resetCascade();
@@ -289,10 +465,30 @@ export default function SpecCaptureScreen() {
     }
   }
 
+  async function sendViaWhatsApp() {
+    const encoded = encodeURIComponent(waMessage);
+    const native = `whatsapp://send?text=${encoded}`;
+    const fallback = `https://wa.me/?text=${encoded}`;
+    try {
+      const canOpen = await Linking.canOpenURL(native);
+      if (canOpen) {
+        await Linking.openURL(native);
+      } else {
+        await Linking.openURL(fallback);
+      }
+    } catch (e: any) {
+      try {
+        await Linking.openURL(fallback);
+      } catch (e2: any) {
+        notify('WhatsApp', e2?.message || e?.message || 'No se pudo abrir WhatsApp');
+      }
+    }
+  }
+
   async function onLogout() {
     const ok = await confirm('Cerrar sesión', '¿Seguro que deseas salir? Cualquier foto sin enviar se descartará.', { confirmText: 'Salir', destructive: true });
     if (!ok) return;
-    setImages([]); // limpia base64 en RAM antes de salir
+    setImages([]);
     await logout();
     router.replace('/(auth)/login');
   }
@@ -347,23 +543,27 @@ export default function SpecCaptureScreen() {
         keyboardShouldPersistTaps="handled"
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} />}
       >
-        {/* Tarjeta de usuario */}
-        <View style={styles.userCard}>
-          <View style={styles.avatar}>
-            <Text style={styles.avatarTxt}>{initials(user?.name)}</Text>
+        {/* AUTO-DATA (read-only) */}
+        <SectionCard
+          icon="information-circle-outline"
+          title="Datos del reporte"
+          subtitle="Información automática, no editable."
+        >
+          <View style={styles.autoGrid}>
+            <AutoRow icon="calendar-outline" label="Fecha" value={formatDateLongES(new Date()).replace(/\.$/, '')} />
+            <AutoRow icon="person-outline" label="Capturado por" value={`Ing. ${user?.name || ''}`.trim()} />
+            <AutoRow icon="briefcase-outline" label="Rol" value={roleLabel(user?.role, user?.area)} />
+            {user?.puesto ? <AutoRow icon="ribbon-outline" label="Puesto" value={user.puesto} /> : null}
+            <AutoRow icon="document-attach-outline" label="No. de contrato" value={project?.contract_number || '—'} />
+            <AutoRow icon="git-branch-outline" label="Ubicación" value={ubicacionPathLabel} />
           </View>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.userName}>Ing. {user?.name}</Text>
-            <Text style={styles.userRole}>{roleLabel(user?.role, user?.area)}</Text>
-            {user?.puesto ? <Text style={styles.userPuesto}>{user.puesto}</Text> : null}
-          </View>
-        </View>
+        </SectionCard>
 
         {/* Cascada */}
         <SectionCard
-          icon="git-branch-outline"
-          title="Ubicación"
-          subtitle="Selecciona dónde estás capturando."
+          icon="navigate-outline"
+          title="Selecciona ubicación"
+          subtitle="Navega hasta el nodo hoja autorizado."
         >
           {noAllowedLeaves ? (
             <EmptyState
@@ -413,7 +613,7 @@ export default function SpecCaptureScreen() {
           )}
         </SectionCard>
 
-        {/* Coordenadas objetivo dictadas por el Coordinador (read-only) */}
+        {/* Coordenadas objetivo */}
         {leafNode && leafNode.measurement_type === 'coord_latlon' && (
           (leafNode as any).target_lat != null ||
           (leafNode as any).target_lon != null ||
@@ -452,7 +652,7 @@ export default function SpecCaptureScreen() {
           <SectionCard
             icon="speedometer-outline"
             title={`Medición · ${MEASUREMENT_LABELS[leafNode.measurement_type as MeasurementType] || leafNode.measurement_type}`}
-            subtitle="Captura el valor que define la ubicación de este nodo hoja."
+            subtitle="Captura el valor que define este nodo."
           >
             <MeasurementInput
               type={leafNode.measurement_type as MeasurementType}
@@ -462,18 +662,75 @@ export default function SpecCaptureScreen() {
           </SectionCard>
         ) : null}
 
-        {/* Form principal */}
+        {/* Lecturas P/U */}
         {leafNode ? (
-          <SectionCard icon="document-text-outline" title="Reporte" subtitle="Avance, personal, equipo y contratista.">
-            <Field label="Avance">
+          <SectionCard
+            icon="analytics-outline"
+            title="Lecturas"
+            subtitle="Captura la primera y última lectura del día."
+          >
+            <Field label="Primera lectura">
               <TextInput
-                placeholder="Ej. Colado de zapata Z-4 al 60%"
+                placeholder="Ej. 12.45"
+                placeholderTextColor={colors.textMuted}
+                keyboardType="numeric"
+                style={styles.input}
+                value={primeraLectura}
+                onChangeText={setPrimeraLectura}
+              />
+              {/* Helper histórico SOLO debajo de Primera lectura */}
+              {nodeHistoryLoading ? (
+                <Text style={styles.histHelperMuted}>Buscando histórico…</Text>
+              ) : nodeHistory && nodeHistory.has_previous && nodeHistory.ultima_lectura != null ? (
+                <View style={styles.histHelperBox}>
+                  <Ionicons name="time-outline" size={13} color={colors.primary} />
+                  <Text style={styles.histHelperTxt}>
+                    Última lectura registrada en este nodo:{' '}
+                    <Text style={styles.histHelperVal}>{String(nodeHistory.ultima_lectura)}</Text>
+                  </Text>
+                </View>
+              ) : nodeHistory && !nodeHistory.has_previous ? (
+                <Text style={styles.histHelperMuted}>Sin lecturas previas en este nodo.</Text>
+              ) : null}
+            </Field>
+
+            <Field label="Última lectura">
+              <TextInput
+                placeholder="Ej. 12.80"
+                placeholderTextColor={colors.textMuted}
+                keyboardType="numeric"
+                style={styles.input}
+                value={ultimaLectura}
+                onChangeText={setUltimaLectura}
+              />
+            </Field>
+          </SectionCard>
+        ) : null}
+
+        {/* Reporte: Actividades / Observaciones / Contratista */}
+        {leafNode ? (
+          <SectionCard icon="document-text-outline" title="Reporte" subtitle="Actividades, observaciones y contratista.">
+            <Field label="Actividades">
+              <TextInput
+                placeholder="Describe las actividades del día…"
                 placeholderTextColor={colors.textMuted}
                 style={[styles.input, styles.inputMulti]}
                 multiline
-                numberOfLines={3}
-                value={avance}
-                onChangeText={setAvance}
+                numberOfLines={4}
+                value={actividades}
+                onChangeText={setActividades}
+              />
+            </Field>
+
+            <Field label="Observaciones">
+              <TextInput
+                placeholder="Comentarios, incidencias, retrasos…"
+                placeholderTextColor={colors.textMuted}
+                style={[styles.input, styles.inputMulti]}
+                multiline
+                numberOfLines={4}
+                value={observaciones}
+                onChangeText={setObservaciones}
               />
             </Field>
 
@@ -486,27 +743,39 @@ export default function SpecCaptureScreen() {
                 onChangeText={setContratista}
               />
             </Field>
-
-            <Field label="Personal">
-              <TextInput
-                placeholder="Ej. 3 albañiles, 1 cabo"
-                placeholderTextColor={colors.textMuted}
-                style={styles.input}
-                value={personal}
-                onChangeText={setPersonal}
-              />
-            </Field>
-
-            <Field label="Equipo">
-              <TextInput
-                placeholder="Ej. Retro CAT 320, vibrador 1.5HP"
-                placeholderTextColor={colors.textMuted}
-                style={styles.input}
-                value={equipo}
-                onChangeText={setEquipo}
-              />
-            </Field>
           </SectionCard>
+        ) : null}
+
+        {/* Personal dinámico */}
+        {leafNode ? (
+          <DynamicListSection
+            title="Personal"
+            subtitle="Cantidad + descripción (ej. 3 Albañiles)."
+            icon="people-outline"
+            items={personal}
+            catalog={catalogPersonal}
+            onAdd={() => addItem('personal')}
+            onRemove={(id) => removeItem('personal', id)}
+            onInc={(id, d) => incQty('personal', id, d)}
+            onChangeDesc={(id, t) => updateItem('personal', id, { desc: t })}
+            onChangeQty={(id, q) => updateItem('personal', id, { qty: q })}
+          />
+        ) : null}
+
+        {/* Equipo dinámico */}
+        {leafNode ? (
+          <DynamicListSection
+            title="Equipo"
+            subtitle="Cantidad + descripción (ej. 1 Retro CAT 320)."
+            icon="construct-outline"
+            items={equipo}
+            catalog={catalogEquipo}
+            onAdd={() => addItem('equipo')}
+            onRemove={(id) => removeItem('equipo', id)}
+            onInc={(id, d) => incQty('equipo', id, d)}
+            onChangeDesc={(id, t) => updateItem('equipo', id, { desc: t })}
+            onChangeQty={(id, q) => updateItem('equipo', id, { qty: q })}
+          />
         ) : null}
 
         {/* Fotos */}
@@ -514,7 +783,7 @@ export default function SpecCaptureScreen() {
           <SectionCard
             icon="camera-outline"
             title={`Fotos (${images.length})`}
-            subtitle="Cero Huella Local: las imágenes viven solo en RAM hasta enviar."
+            subtitle="Cero Huella Local: las imágenes viven solo en RAM."
           >
             <View style={{ flexDirection: 'row', gap: spacing.sm, flexWrap: 'wrap' }}>
               {images.map((b64, i) => (
@@ -541,10 +810,10 @@ export default function SpecCaptureScreen() {
         {leafNode ? (
           <View style={{ marginTop: spacing.md }}>
             <Button
-              label={submitting ? 'Enviando…' : 'Finalizar reporte'}
+              label={submitting ? 'Enviando…' : 'Guardar reporte'}
               onPress={onSubmit}
               loading={submitting}
-              disabled={!canSubmit || submitting}
+              disabled={!canSubmit}
               fullWidth
               icon={<Ionicons name="checkmark-circle" size={18} color="#fff" />}
             />
@@ -611,7 +880,7 @@ export default function SpecCaptureScreen() {
               </View>
               <Text style={styles.successTitle}>Reporte enviado</Text>
               <Text style={styles.successSubtitle}>
-                Tus datos y fotos se guardaron en la base. Copia el texto y pégalo en WhatsApp.
+                Tus datos y fotos se guardaron en la base. Copia el texto o ábrelo directo en WhatsApp.
               </Text>
             </View>
             <ScrollView style={styles.successPreview} contentContainerStyle={{ padding: spacing.md }}>
@@ -619,14 +888,21 @@ export default function SpecCaptureScreen() {
             </ScrollView>
             <View style={{ gap: spacing.sm }}>
               <Button
-                label="Copiar para WhatsApp"
-                onPress={copyWhatsAppToClipboard}
+                label="Enviar por WhatsApp"
+                onPress={sendViaWhatsApp}
                 fullWidth
                 icon={<Ionicons name="logo-whatsapp" size={18} color="#fff" />}
               />
               <Button
-                label="Nueva captura"
+                label="Copiar texto"
                 variant="secondary"
+                onPress={copyWhatsAppToClipboard}
+                fullWidth
+                icon={<Ionicons name="copy-outline" size={18} color={colors.primary} />}
+              />
+              <Button
+                label="Nueva captura"
+                variant="ghost"
                 onPress={clearFormAndCloseSuccess}
                 fullWidth
               />
@@ -635,6 +911,121 @@ export default function SpecCaptureScreen() {
         </View>
       </Modal>
     </KeyboardAvoidingView>
+  );
+}
+
+// ============================================================================
+// Sección de listas dinámicas (Personal / Equipo) con autocomplete.
+// ============================================================================
+function DynamicListSection({
+  title, subtitle, icon, items, catalog,
+  onAdd, onRemove, onInc, onChangeDesc, onChangeQty,
+}: {
+  title: string;
+  subtitle: string;
+  icon: keyof typeof Ionicons.glyphMap;
+  items: DynItem[];
+  catalog: string[];
+  onAdd: () => void;
+  onRemove: (id: string) => void;
+  onInc: (id: string, delta: number) => void;
+  onChangeDesc: (id: string, t: string) => void;
+  onChangeQty: (id: string, q: number) => void;
+}) {
+  return (
+    <SectionCard icon={icon} title={`${title} (${items.length})`} subtitle={subtitle}>
+      {items.length === 0 ? (
+        <Text style={styles.emptyInlineTxt}>Aún no agregaste items. Toca “Agregar” para iniciar.</Text>
+      ) : (
+        <View style={{ gap: spacing.sm }}>
+          {items.map((it) => (
+            <DynamicItemRow
+              key={it.id}
+              item={it}
+              catalog={catalog}
+              onRemove={() => onRemove(it.id)}
+              onInc={(d) => onInc(it.id, d)}
+              onChangeDesc={(t) => onChangeDesc(it.id, t)}
+              onChangeQty={(q) => onChangeQty(it.id, q)}
+            />
+          ))}
+        </View>
+      )}
+      <Pressable onPress={onAdd} style={styles.addItemBtn} hitSlop={6}>
+        <Ionicons name="add" size={18} color={colors.primary} />
+        <Text style={styles.addItemBtnTxt}>Agregar {title.toLowerCase()}</Text>
+      </Pressable>
+    </SectionCard>
+  );
+}
+
+function DynamicItemRow({
+  item, catalog, onRemove, onInc, onChangeDesc, onChangeQty,
+}: {
+  item: DynItem;
+  catalog: string[];
+  onRemove: () => void;
+  onInc: (delta: number) => void;
+  onChangeDesc: (t: string) => void;
+  onChangeQty: (q: number) => void;
+}) {
+  const [focused, setFocused] = useState(false);
+  const suggestions = useMemo(() => {
+    const q = (item.desc || '').trim().toLowerCase();
+    if (!q) return catalog.slice(0, 6);
+    return catalog
+      .filter((s) => s.toLowerCase().includes(q) && s.toLowerCase() !== q)
+      .slice(0, 6);
+  }, [catalog, item.desc]);
+
+  return (
+    <View style={styles.dynRow}>
+      <View style={styles.dynQtyBox}>
+        <Pressable onPress={() => onInc(-1)} style={styles.qtyBtn} hitSlop={6} disabled={item.qty <= 1}>
+          <Ionicons name="remove" size={16} color={item.qty <= 1 ? colors.textMuted : colors.text} />
+        </Pressable>
+        <TextInput
+          style={styles.qtyInput}
+          keyboardType="number-pad"
+          value={String(item.qty)}
+          onChangeText={(t) => {
+            const n = parseInt(t.replace(/[^0-9]/g, ''), 10);
+            onChangeQty(Number.isFinite(n) && n > 0 ? n : 1);
+          }}
+        />
+        <Pressable onPress={() => onInc(1)} style={styles.qtyBtn} hitSlop={6}>
+          <Ionicons name="add" size={16} color={colors.text} />
+        </Pressable>
+      </View>
+      <View style={{ flex: 1, position: 'relative' }}>
+        <TextInput
+          style={styles.dynDescInput}
+          placeholder="Descripción (ej. Albañil)"
+          placeholderTextColor={colors.textMuted}
+          value={item.desc}
+          onChangeText={onChangeDesc}
+          onFocus={() => setFocused(true)}
+          onBlur={() => setTimeout(() => setFocused(false), 120)}
+        />
+        {focused && suggestions.length > 0 ? (
+          <View style={styles.suggestionsBox}>
+            {suggestions.map((s) => (
+              <Pressable
+                key={s}
+                onPress={() => { onChangeDesc(s); setFocused(false); }}
+                style={({ pressed }) => [styles.suggestionItem, pressed && { backgroundColor: colors.primaryLight }]}
+              >
+                <Ionicons name="bookmark-outline" size={12} color={colors.primary} />
+                <Text style={styles.suggestionTxt} numberOfLines={1}>{s}</Text>
+              </Pressable>
+            ))}
+          </View>
+        ) : null}
+      </View>
+      <Pressable onPress={onRemove} style={styles.removeBtn} hitSlop={6}>
+        <Ionicons name="trash-outline" size={16} color={colors.error} />
+      </Pressable>
+    </View>
   );
 }
 
@@ -668,6 +1059,18 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
     <View style={{ marginBottom: spacing.sm }}>
       <Text style={styles.fieldLabel}>{label}</Text>
       {children}
+    </View>
+  );
+}
+
+function AutoRow({ icon, label, value }: { icon: keyof typeof Ionicons.glyphMap; label: string; value: string }) {
+  return (
+    <View style={styles.autoRow}>
+      <Ionicons name={icon} size={14} color={colors.primary} style={{ marginRight: 8 }} />
+      <View style={{ flex: 1 }}>
+        <Text style={styles.autoLabel}>{label}</Text>
+        <Text style={styles.autoValue} numberOfLines={2}>{value || '—'}</Text>
+      </View>
     </View>
   );
 }
@@ -766,17 +1169,18 @@ function MeasurementInput({ type, value, onChange }: {
 // ============================================================================
 // Helpers
 // ============================================================================
-function initials(name?: string | null): string {
-  if (!name) return '?';
-  const parts = name.trim().split(/\s+/).slice(0, 2);
-  return parts.map((p) => p[0]?.toUpperCase() || '').join('');
-}
-
 function parseFloatSafe(t: string): number | string {
   const cleaned = t.replace(',', '.').trim();
   if (cleaned === '' || cleaned === '-' || cleaned === '.') return cleaned;
   const n = Number(cleaned);
   return Number.isFinite(n) ? n : cleaned;
+}
+
+function parseFloatOrNull(t: string): number | null {
+  const cleaned = (t || '').replace(',', '.').trim();
+  if (!cleaned) return null;
+  const n = Number(cleaned);
+  return Number.isFinite(n) ? n : null;
 }
 
 function validateMeasurement(type: string | null | undefined, v: MeasurementValue): boolean {
@@ -797,11 +1201,6 @@ function validateMeasurement(type: string | null | undefined, v: MeasurementValu
   return false;
 }
 
-/**
- * Filtra el árbol completo dejando solo las ramas que terminan en una hoja del
- * scope. Si un nodo es hoja pero no está en el scope se omite, y si tras filtrar
- * sus hijos un nodo queda vacío y él mismo no es hoja autorizada, también se omite.
- */
 function filterTreeByLeafScope(
   tree: LocationNodeTree[],
   allowed: Set<string>,
@@ -843,28 +1242,6 @@ const styles = StyleSheet.create({
   projMeta: { fontSize: 12, color: colors.textMuted, marginTop: 2 },
   iconBtn: { padding: 8, borderRadius: radius.full, backgroundColor: colors.bg },
 
-  userCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
-    backgroundColor: colors.surface,
-    padding: spacing.md,
-    borderRadius: radius.md,
-    borderWidth: 1,
-    borderColor: colors.border,
-    marginBottom: spacing.md,
-    ...shadow.card,
-  },
-  avatar: {
-    width: 44, height: 44, borderRadius: radius.full,
-    backgroundColor: colors.primary,
-    alignItems: 'center', justifyContent: 'center',
-  },
-  avatarTxt: { color: colors.textInverse, fontWeight: '800', fontSize: 15 },
-  userName: { fontSize: 15, fontWeight: '800', color: colors.text },
-  userRole: { fontSize: 12, color: colors.primary, fontWeight: '700', marginTop: 2 },
-  userPuesto: { fontSize: 12, color: colors.textMuted, marginTop: 2 },
-
   section: {
     backgroundColor: colors.surface,
     borderRadius: radius.md,
@@ -882,6 +1259,17 @@ const styles = StyleSheet.create({
   },
   sectionTitle: { fontSize: 14, fontWeight: '800', color: colors.text },
   sectionSubtitle: { fontSize: 11, color: colors.textMuted, marginTop: 2 },
+
+  // Auto-data
+  autoGrid: { gap: 8 },
+  autoRow: {
+    flexDirection: 'row', alignItems: 'center',
+    backgroundColor: colors.bg,
+    borderRadius: radius.md, padding: 10,
+    borderWidth: 1, borderColor: colors.border,
+  },
+  autoLabel: { fontSize: 10, fontWeight: '800', color: colors.textMuted, letterSpacing: 0.4, textTransform: 'uppercase' },
+  autoValue: { fontSize: 13, fontWeight: '700', color: colors.text, marginTop: 2 },
 
   cascadeRow: {
     flexDirection: 'row',
@@ -920,7 +1308,99 @@ const styles = StyleSheet.create({
     color: colors.text,
     minHeight: 44,
   },
-  inputMulti: { minHeight: 80, textAlignVertical: 'top' },
+  inputMulti: { minHeight: 90, textAlignVertical: 'top' },
+
+  // Helper de histórico para Primera lectura
+  histHelperBox: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    marginTop: 6,
+    padding: 8,
+    backgroundColor: colors.primaryLight,
+    borderRadius: radius.sm,
+    borderLeftWidth: 3,
+    borderLeftColor: colors.primary,
+  },
+  histHelperTxt: { fontSize: 12, color: colors.textBody, flex: 1 },
+  histHelperVal: { fontWeight: '800', color: colors.primary },
+  histHelperMuted: { fontSize: 11, color: colors.textMuted, marginTop: 4, fontStyle: 'italic' },
+
+  // Dynamic list
+  dynRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: spacing.sm,
+  },
+  dynQtyBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.bg,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    overflow: 'hidden',
+    height: 44,
+  },
+  qtyBtn: {
+    width: 32, height: 44,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  qtyInput: {
+    width: 36, height: 44,
+    textAlign: 'center',
+    color: colors.text,
+    fontWeight: '800',
+    fontSize: 14,
+    paddingVertical: 0,
+  },
+  dynDescInput: {
+    backgroundColor: colors.bg,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    paddingHorizontal: 12,
+    paddingVertical: Platform.OS === 'ios' ? 12 : 10,
+    fontSize: 14,
+    color: colors.text,
+    height: 44,
+  },
+  removeBtn: {
+    width: 44, height: 44,
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: colors.bg,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  addItemBtn: {
+    marginTop: spacing.sm,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 10, paddingHorizontal: spacing.md,
+    backgroundColor: colors.primaryLight,
+    borderRadius: radius.md,
+    borderWidth: 1, borderColor: colors.primary, borderStyle: 'dashed',
+  },
+  addItemBtnTxt: { color: colors.primary, fontWeight: '800', fontSize: 13 },
+  emptyInlineTxt: { fontSize: 12, color: colors.textMuted, fontStyle: 'italic', paddingVertical: 4 },
+
+  suggestionsBox: {
+    position: 'absolute',
+    top: 48,
+    left: 0,
+    right: 0,
+    backgroundColor: colors.surface,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    paddingVertical: 4,
+    zIndex: 10,
+    ...shadow.card,
+  },
+  suggestionItem: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    paddingHorizontal: 10, paddingVertical: 8,
+  },
+  suggestionTxt: { fontSize: 13, color: colors.text, flex: 1 },
 
   photoTile: {
     width: 88, height: 88, borderRadius: radius.md, overflow: 'hidden',
@@ -990,7 +1470,8 @@ const styles = StyleSheet.create({
     maxHeight: 280,
   },
   successPreviewTxt: { fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' }), fontSize: 12, color: colors.text, lineHeight: 18 },
-  // Coordenadas objetivo (read-only para el especialista)
+
+  // Coordenadas objetivo
   coordsTargetGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   coordsTargetItem: {
     flex: 1, minWidth: '30%',

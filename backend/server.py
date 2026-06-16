@@ -207,11 +207,15 @@ class ReportIn(BaseModel):
     area_id: Optional[str] = None
     notes: Optional[str] = None
     avance: Optional[str] = None
+    observaciones: Optional[str] = None
     contratista: Optional[str] = None
     personnel: List[str] = Field(default_factory=list)
     equipment: List[str] = Field(default_factory=list)
     images: List[str] = Field(default_factory=list)  # base64
     files: List[dict] = Field(default_factory=list)  # [{filename, mime, data_base64}]
+    # Lecturas numéricas (P/U) – específicas del flujo Especialista v2.
+    primera_lectura: Optional[float] = None
+    ultima_lectura: Optional[float] = None
 
 
 class ReportOut(BaseModel):
@@ -225,11 +229,14 @@ class ReportOut(BaseModel):
     area_name: Optional[str] = None
     notes: Optional[str] = None
     avance: Optional[str] = None
+    observaciones: Optional[str] = None
     contratista: Optional[str] = None
     personnel: List[str] = Field(default_factory=list)
     equipment: List[str] = Field(default_factory=list)
     images: List[str] = Field(default_factory=list)
     files: List[dict] = Field(default_factory=list)
+    primera_lectura: Optional[float] = None
+    ultima_lectura: Optional[float] = None
     captured_by: str
     captured_by_name: str
     created_at: datetime
@@ -885,13 +892,20 @@ async def create_report(body: ReportIn, user: dict = Depends(current_user)):
             area_name = a["name"]
     elif user.get("area"):
         area_name = user["area"]
+    # Persistimos lecturas P/U también dentro de measurement_value para que el
+    # endpoint /history pueda devolverlas a la siguiente captura del nodo.
+    mv = dict(body.measurement_value or {})
+    if body.primera_lectura is not None:
+        mv["primera_lectura"] = body.primera_lectura
+    if body.ultima_lectura is not None:
+        mv["ultima_lectura"] = body.ultima_lectura
     doc = {
         "id": str(uuid.uuid4()),
         "project_id": body.project_id,
         "node_id": body.node_id,
         "node_path_names": path_names,
         "measurement_type": node["measurement_type"],
-        "measurement_value": body.measurement_value,
+        "measurement_value": mv,
         "node_target": {
             "lat": node.get("target_lat"),
             "lon": node.get("target_lon"),
@@ -901,11 +915,14 @@ async def create_report(body: ReportIn, user: dict = Depends(current_user)):
         "area_name": area_name,
         "notes": (body.notes or "").strip() or None,
         "avance": (body.avance or "").strip() or None,
+        "observaciones": (body.observaciones or "").strip() or None,
         "contratista": (body.contratista or "").strip() or None,
         "personnel": body.personnel,
         "equipment": body.equipment,
         "images": body.images,
         "files": body.files,
+        "primera_lectura": body.primera_lectura,
+        "ultima_lectura": body.ultima_lectura,
         "captured_by": user["id"],
         "captured_by_name": user["name"],
         "created_at": datetime.now(timezone.utc),
@@ -913,6 +930,54 @@ async def create_report(body: ReportIn, user: dict = Depends(current_user)):
     await db.reports.insert_one(doc)
     doc.pop("_id", None)
     return doc
+
+
+@api.get("/projects/{pid}/nodes/{nid}/history")
+async def node_history(pid: str, nid: str, user: dict = Depends(current_user)):
+    """Devuelve el último reporte del nodo para que el especialista pueda ver
+    la lectura previa registrada (helper "Última lectura registrada en este
+    nodo: [valor]"). Aplica el mismo RBAC que /reports.
+    """
+    await ensure_project_access(user, pid)
+    node = await db.location_nodes.find_one({"id": nid, "project_id": pid})
+    if not node:
+        raise HTTPException(404, "Nodo no existe en este proyecto")
+    if user["role"] == ROLE_ESPECIALISTA:
+        if nid not in (user.get("scope_node_ids") or []):
+            raise HTTPException(403, "Nodo no está en tu scope autorizado")
+    elif user["role"] == ROLE_SUB and user.get("scope_node_id"):
+        allowed = await descendants_ids(user["scope_node_id"])
+        if nid not in allowed:
+            raise HTTPException(403, "Nodo fuera de tu scope")
+
+    last = await db.reports.find_one(
+        {"project_id": pid, "node_id": nid},
+        sort=[("created_at", -1)],
+    )
+    if not last:
+        return {
+            "node_id": nid,
+            "measurement_type": node.get("measurement_type"),
+            "has_previous": False,
+            "last_report": None,
+        }
+    last.pop("_id", None)
+    mv = last.get("measurement_value") or {}
+    return {
+        "node_id": nid,
+        "measurement_type": node.get("measurement_type"),
+        "has_previous": True,
+        "last_report": {
+            "id": last.get("id"),
+            "created_at": last.get("created_at"),
+            "captured_by_name": last.get("captured_by_name"),
+            "measurement_value": mv,
+            "primera_lectura": mv.get("primera_lectura"),
+            "ultima_lectura": mv.get("ultima_lectura"),
+            "avance": last.get("avance"),
+            "notes": last.get("notes"),
+        },
+    }
 
 
 @api.get("/projects/{pid}/reports")

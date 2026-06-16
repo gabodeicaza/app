@@ -121,11 +121,14 @@ export interface Report {
   area_name?: string | null;
   notes?: string | null;
   avance?: string | null;
+  observaciones?: string | null;
   contratista?: string | null;
   personnel: string[];
   equipment: string[];
   images: string[];
   files: Array<{ filename: string; mime: string; data_base64: string }>;
+  primera_lectura?: number | null;
+  ultima_lectura?: number | null;
   captured_by: string;
   captured_by_name: string;
   created_at: string;
@@ -306,12 +309,31 @@ export const api = {
     area_id?: string | null;
     notes?: string | null;
     avance?: string | null;
+    observaciones?: string | null;
     contratista?: string | null;
     personnel?: string[];
     equipment?: string[];
     images?: string[];
     files?: Array<{ filename: string; mime: string; data_base64: string }>;
+    primera_lectura?: number | null;
+    ultima_lectura?: number | null;
   }) => request<Report>('POST', '/reports', body),
+  nodeHistory: (pid: string, nid: string) =>
+    request<{
+      node_id: string;
+      measurement_type: string | null;
+      has_previous: boolean;
+      last_report: null | {
+        id: string;
+        created_at: string;
+        captured_by_name: string;
+        measurement_value: Record<string, any>;
+        primera_lectura: number | null;
+        ultima_lectura: number | null;
+        avance: string | null;
+        notes: string | null;
+      };
+    }>('GET', `/projects/${pid}/nodes/${nid}/history`),
   listReports: (pid: string) => request<Report[]>('GET', `/projects/${pid}/reports`),
   feed: (pid: string, range: 'today' | 'week' | 'month' | 'all' = 'today', limit = 50) =>
     request<FeedResponse>('GET', `/projects/${pid}/reports/feed?range=${range}&limit=${limit}`),

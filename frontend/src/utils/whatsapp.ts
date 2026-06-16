@@ -63,10 +63,24 @@ export interface WhatsAppPayload {
   ubicacion: string;
   /** Texto libre ingresado por el especialista. */
   contratista: string;
-  personal: string;
-  equipo: string;
+  /** Listas serializadas (ej. ["3 Albañil", "1 Maestro"]). */
+  personal: string[];
+  equipo: string[];
+  /** Actividades del día (texto libre multiline). */
+  actividades?: string;
+  /** Observaciones del día (texto libre multiline). */
+  observaciones?: string;
+  /** Lecturas numéricas. */
+  primeraLectura?: number | null;
+  ultimaLectura?: number | null;
   /** Opcional, override de fecha; por defecto usa "hoy". */
   date?: Date;
+}
+
+function fmtNum(n: number | null | undefined): string | null {
+  if (n == null || !Number.isFinite(n)) return null;
+  // Acepta entero o decimal según corresponda.
+  return Number.isInteger(n) ? String(n) : String(n);
 }
 
 export function buildWhatsAppMessage(p: WhatsAppPayload): string {
@@ -80,17 +94,57 @@ export function buildWhatsAppMessage(p: WhatsAppPayload): string {
   }
   lines.push('');
   lines.push(`No de contrato: ${(p.contractNumber || '').trim()}`);
-  // Si no hay nodo padre (especialista capturando en un nodo raíz hoja),
-  // mostramos el nodo hoja sin prefijo.
   if ((p.parentNodeName || '').trim()) {
     lines.push(`${p.parentNodeName.trim()}: ${(p.leafNodeName || '').trim()}`);
   } else {
     lines.push((p.leafNodeName || '').trim());
   }
   lines.push(`Ubicación: ${(p.ubicacion || '').trim()}`);
+
+  // Lecturas (solo si vienen)
+  const pl = fmtNum(p.primeraLectura);
+  const ul = fmtNum(p.ultimaLectura);
+  if (pl != null || ul != null) {
+    lines.push('');
+    if (pl != null) lines.push(`Primera lectura: ${pl}`);
+    if (ul != null) lines.push(`Última lectura: ${ul}`);
+  }
+
+  // Actividades
+  const act = (p.actividades || '').trim();
+  if (act) {
+    lines.push('');
+    lines.push('Actividades:');
+    lines.push(act);
+  }
+
+  // Observaciones
+  const obs = (p.observaciones || '').trim();
+  if (obs) {
+    lines.push('');
+    lines.push('Observaciones:');
+    lines.push(obs);
+  }
+
+  // Contratista, Personal y Equipo
   lines.push('');
   lines.push(`Contratista: ${(p.contratista || '').trim()}`);
-  lines.push(`Personal: ${(p.personal || '').trim()}`);
-  lines.push(`Equipo: ${(p.equipo || '').trim()}`);
+
+  const personal = (p.personal || []).map((s) => s.trim()).filter(Boolean);
+  lines.push('Personal:');
+  if (personal.length) {
+    for (const item of personal) lines.push(`• ${item}`);
+  } else {
+    lines.push('—');
+  }
+
+  const equipo = (p.equipo || []).map((s) => s.trim()).filter(Boolean);
+  lines.push('Equipo:');
+  if (equipo.length) {
+    for (const item of equipo) lines.push(`• ${item}`);
+  } else {
+    lines.push('—');
+  }
+
   return lines.join('\n');
 }
