@@ -1,959 +1,600 @@
-// SynCo v2.0 — Pantalla del Especialista.
-// - Lee el árbol del proyecto y los nodos hoja autorizados (`scope_node_ids`).
-// - Renderiza un cascader dinámico hasta llegar a un nodo hoja autorizado.
-// - Formulario: Avance, Contratista, Personal, Equipo + valor de medición.
-// - Fotos: Base64 en RAM exclusivamente (Cero Huella Local). Cualquier base64
-//   se limpia al limpiar/enviar el formulario.
-// - Tras envío exitoso → modal de éxito con botón "Copiar para WhatsApp".
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+// SynCo v2.0 — Tab "Inicio" / Feed del Especialista.
+// Cumple con la descripción exacta solicitada por el usuario:
+//   • Fondo azul corporativo en la mitad superior.
+//   • Hero Card "MI ÁREA ASIGNADA" en blanco con datos del especialista.
+//   • Tres Stat Cards blancas (Total · Míos · De compañeros).
+//   • Chips horizontales de filtro temporal (Hoy / Semana / Mes / Todo).
+//   • Lista vertical de actividad con thumbnail a la izquierda, badge de
+//     área coloreado, título en negritas y meta debajo.
+//   • Pull-to-refresh y estados vacíos amigables.
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  ActivityIndicator, Alert, FlatList, Image, KeyboardAvoidingView, Modal, Platform,
-  Pressable, RefreshControl, ScrollView, StatusBar, StyleSheet, Text, TextInput, View,
+  ActivityIndicator, FlatList, Image, Platform, Pressable, RefreshControl,
+  ScrollView, StatusBar, StyleSheet, Text, View,
 } from 'react-native';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import * as Clipboard from 'expo-clipboard';
-import * as ImagePicker from 'expo-image-picker';
-import * as Linking from 'expo-linking';
 
 import { useAuth } from '@/src/auth-context';
-import { Button } from '@/src/components/Button';
-import { colors, radius, spacing, shadow } from '@/src/theme';
-import { confirm, notify } from '@/src/utils/confirm';
-import {
-  MEASUREMENT_LABELS, MeasurementType, roleLabel,
-} from '@/src/utils/roles';
-import { buildWhatsAppMessage, formatMeasurementValue } from '@/src/utils/whatsapp';
-import { api, LocationNodeTree, Project } from '@/src/api';
+import { colors, radius, shadow, spacing, areaTone } from '@/src/theme';
+import { confirm } from '@/src/utils/confirm';
+import { api, FeedItem, FeedResponse, Project } from '@/src/api';
 
-type MeasurementValue = Record<string, any>;
+type RangeKey = 'today' | 'week' | 'month' | 'all';
 
-interface CascadeLevel {
-  parentName: string | null; // null => raíz
-  options: LocationNodeTree[];
-  selectedId: string | null;
-}
+const RANGE_OPTIONS: Array<{ key: RangeKey; label: string }> = [
+  { key: 'today', label: 'Hoy' },
+  { key: 'week', label: 'Esta semana' },
+  { key: 'month', label: 'Este mes' },
+  { key: 'all', label: 'Todos' },
+];
 
-export default function SpecCaptureScreen() {
+export default function SpecFeedScreen() {
   const insets = useSafeAreaInsets();
   const { user, logout } = useAuth();
-
   const projectId = (user?.project_ids || [])[0] || '';
-  const allowedLeafIds = useMemo(
-    () => new Set<string>(user?.scope_node_ids || []),
-    [user?.scope_node_ids],
-  );
 
-  // ----- Estado remoto ------------------------------------------------------
   const [project, setProject] = useState<Project | null>(null);
-  const [tree, setTree] = useState<LocationNodeTree[]>([]);
+  const [feed, setFeed] = useState<FeedResponse | null>(null);
+  const [range, setRange] = useState<RangeKey>('today');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // ----- Cascade (path de nodos seleccionados) ------------------------------
-  // `path` contiene todos los nodos ya escogidos en orden, de raíz a hoja.
-  const [path, setPath] = useState<LocationNodeTree[]>([]);
-
-  // ----- Form ---------------------------------------------------------------
-  const [avance, setAvance] = useState('');
-  const [contratista, setContratista] = useState('');
-  const [personal, setPersonal] = useState('');
-  const [equipo, setEquipo] = useState('');
-  const [measurement, setMeasurement] = useState<MeasurementValue>({});
-  const [images, setImages] = useState<string[]>([]); // base64 sin prefijo, en RAM
-  const [submitting, setSubmitting] = useState(false);
-
-  // ----- Modal de cascada ---------------------------------------------------
-  const [pickerOpen, setPickerOpen] = useState(false);
-  const [pickerLevelIdx, setPickerLevelIdx] = useState(0); // qué nivel se está eligiendo
-
-  // ----- Modal de éxito (Modo WhatsApp) ------------------------------------
-  const [successOpen, setSuccessOpen] = useState(false);
-  const [waMessage, setWaMessage] = useState('');
-
-  // -------------------------------------------------------------------------
-  // Carga inicial: proyecto + árbol filtrado a lo autorizado.
-  const load = useCallback(async () => {
+  const load = useCallback(async (nextRange: RangeKey = range, silent = false) => {
     if (!projectId) {
       setLoading(false);
-      setError('Tu cuenta no está asociada a ningún proyecto. Pide a tu Coordinador General que te envíe una nueva invitación.');
+      setError('Tu cuenta no está asociada a ningún proyecto. Pide a tu Coordinador General una invitación.');
       return;
     }
     try {
       setError(null);
-      const [p, t] = await Promise.all([api.getProject(projectId), api.getTree(projectId)]);
-      setProject(p);
-      setTree(filterTreeByLeafScope(t, allowedLeafIds));
+      if (!silent) setLoading(true);
+      const [proj, f] = await Promise.all([
+        project ? Promise.resolve(project) : api.getProject(projectId),
+        api.feed(projectId, nextRange, 100),
+      ]);
+      setProject(proj);
+      setFeed(f);
     } catch (e: any) {
-      setError(e?.message || 'No se pudo cargar el proyecto');
+      setError(e?.message || 'No se pudo cargar el feed');
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [projectId, allowedLeafIds]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, range]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(range, false); /* initial */ }, [projectId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // -------------------------------------------------------------------------
-  // Cascade levels: opciones disponibles en cada paso.
-  const levels: CascadeLevel[] = useMemo(() => {
-    const out: CascadeLevel[] = [];
-    // Nivel 0: raíces del árbol filtrado.
-    out.push({
-      parentName: null,
-      options: tree,
-      selectedId: path[0]?.id ?? null,
-    });
-    // Niveles intermedios.
-    for (let i = 0; i < path.length; i++) {
-      const node = path[i];
-      if (!node.children || node.children.length === 0) break;
-      out.push({
-        parentName: node.name,
-        options: node.children,
-        selectedId: path[i + 1]?.id ?? null,
-      });
-    }
-    return out;
-  }, [tree, path]);
-
-  const leafNode: LocationNodeTree | null = useMemo(() => {
-    const last = path[path.length - 1];
-    if (last && last.is_leaf && allowedLeafIds.has(last.id)) return last;
-    return null;
-  }, [path, allowedLeafIds]);
-
-  const parentOfLeaf: LocationNodeTree | null = useMemo(() => {
-    if (!leafNode) return null;
-    return path.length >= 2 ? path[path.length - 2] : null;
-  }, [path, leafNode]);
-
-  // -------------------------------------------------------------------------
-  // Selección en el modal de cascada.
-  function openPicker(levelIdx: number) {
-    setPickerLevelIdx(levelIdx);
-    setPickerOpen(true);
-  }
-
-  function pickNode(node: LocationNodeTree) {
-    setPickerOpen(false);
-    setPath((prev) => {
-      const next = prev.slice(0, pickerLevelIdx);
-      next.push(node);
-      return next;
-    });
-    // Si el nodo elegido es hoja, reset measurement para que coincida con su tipo.
-    if (node.is_leaf) setMeasurement({});
-  }
-
-  function resetCascade() {
-    setPath([]);
-    setMeasurement({});
-  }
-
-  // -------------------------------------------------------------------------
-  // Cámara + galería (CERO HUELLA: base64 en memoria, no guardamos a disco).
-  async function takePhotoFromCamera() {
-    try {
-      let perm = await ImagePicker.getCameraPermissionsAsync();
-      if (perm.status !== 'granted') {
-        if (!perm.canAskAgain) {
-          await offerOpenSettings('Necesitas permitir el acceso a la cámara en la configuración de tu sistema para tomar fotos.');
-          return;
-        }
-        perm = await ImagePicker.requestCameraPermissionsAsync();
-        if (perm.status !== 'granted') return;
-      }
-      const res = await ImagePicker.launchCameraAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        quality: 0.7,
-        base64: true,
-        exif: false,
-        // Notar: NO llamamos MediaLibrary.saveToLibraryAsync para mantener Cero Huella.
-      });
-      if (res.canceled || !res.assets?.[0]?.base64) return;
-      setImages((prev) => [...prev, res.assets[0].base64!]);
-    } catch (e: any) {
-      notify('Cámara', e?.message || 'No se pudo abrir la cámara.');
-    }
-  }
-
-  async function pickPhotoFromLibrary() {
-    try {
-      let perm = await ImagePicker.getMediaLibraryPermissionsAsync();
-      if (perm.status !== 'granted') {
-        if (!perm.canAskAgain) {
-          await offerOpenSettings('Necesitas permitir el acceso a tu galería de fotos en la configuración para adjuntar imágenes.');
-          return;
-        }
-        perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
-        if (perm.status !== 'granted') return;
-      }
-      const res = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        quality: 0.7,
-        base64: true,
-        exif: false,
-        allowsMultipleSelection: Platform.OS !== 'ios', // iOS multi-pick puede pegar
-      });
-      if (res.canceled) return;
-      const newBase64s: string[] = [];
-      for (const a of res.assets || []) {
-        if (a.base64) newBase64s.push(a.base64);
-      }
-      if (newBase64s.length) setImages((prev) => [...prev, ...newBase64s]);
-    } catch (e: any) {
-      notify('Galería', e?.message || 'No se pudo abrir la galería.');
-    }
-  }
-
-  async function offerOpenSettings(message: string) {
-    const ok = await confirm('Permisos requeridos', message, { confirmText: 'Abrir ajustes' });
-    if (ok) Linking.openSettings();
-  }
-
-  function removeImage(idx: number) {
-    setImages((prev) => prev.filter((_, i) => i !== idx));
-  }
-
-  // -------------------------------------------------------------------------
-  // Envío.
-  const canSubmit = !!leafNode && !!project && validateMeasurement(leafNode.measurement_type, measurement);
-
-  async function onSubmit() {
-    if (!leafNode || !project) return;
-    if (!validateMeasurement(leafNode.measurement_type, measurement)) {
-      notify('Falta el valor de medición', `Captura el valor requerido (${MEASUREMENT_LABELS[leafNode.measurement_type as MeasurementType] || leafNode.measurement_type}) antes de finalizar.`);
-      return;
-    }
-    setSubmitting(true);
-    try {
-      const personnelArr = personal.trim() ? [personal.trim()] : [];
-      const equipmentArr = equipo.trim() ? [equipo.trim()] : [];
-      await api.createReport({
-        project_id: project.id,
-        node_id: leafNode.id,
-        measurement_value: measurement,
-        // El backend usa automáticamente user.area_id si no se envía area_id.
-        notes: avance.trim() || null,
-        avance: avance.trim() || null,
-        contratista: contratista.trim() || null,
-        personnel: personnelArr,
-        equipment: equipmentArr,
-        images: images, // base64
-      });
-
-      // Construir mensaje WhatsApp dinámico.
-      const areaOrPuesto = (user?.puesto || user?.area || '').trim();
-      const ubicacion = formatMeasurementValue(leafNode.measurement_type || '', measurement);
-      const msg = buildWhatsAppMessage({
-        userName: user?.name || '',
-        areaOrPuesto,
-        contractNumber: project.contract_number,
-        parentNodeName: parentOfLeaf?.name || '',
-        leafNodeName: leafNode.name,
-        ubicacion,
-        contratista,
-        personal,
-        equipo,
-      });
-      setWaMessage(msg);
-      setSuccessOpen(true);
-    } catch (e: any) {
-      Alert.alert('Error al enviar', e?.message || 'No se pudo registrar el reporte');
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  function clearFormAndCloseSuccess() {
-    // Cero Huella: borrar fotos en RAM al limpiar formulario.
-    setAvance('');
-    setContratista('');
-    setPersonal('');
-    setEquipo('');
-    setMeasurement({});
-    setImages([]);
-    resetCascade();
-    setSuccessOpen(false);
-  }
-
-  async function copyWhatsAppToClipboard() {
-    try {
-      await Clipboard.setStringAsync(waMessage);
-      notify('Copiado', 'Reporte copiado al portapapeles, listo para pegar en WhatsApp.');
-    } catch (e: any) {
-      notify('Error', e?.message || 'No se pudo copiar');
-    }
+  function onPickRange(r: RangeKey) {
+    setRange(r);
+    load(r, true);
   }
 
   async function onLogout() {
-    const ok = await confirm('Cerrar sesión', '¿Seguro que deseas salir? Cualquier foto sin enviar se descartará.', { confirmText: 'Salir', destructive: true });
+    const ok = await confirm('Cerrar sesión', '¿Seguro que quieres salir?', { confirmText: 'Salir', destructive: true });
     if (!ok) return;
-    setImages([]); // limpia base64 en RAM antes de salir
     await logout();
     router.replace('/(auth)/login');
   }
 
-  // -------------------------------------------------------------------------
-  if (loading) {
-    return (
-      <View style={[styles.center, { paddingTop: insets.top }]}>
-        <ActivityIndicator color={colors.primary} />
-      </View>
-    );
-  }
-
-  if (error) {
-    return (
-      <View style={[styles.center, { paddingTop: insets.top, padding: spacing.lg }]}>
-        <Ionicons name="alert-circle-outline" size={40} color={colors.error} />
-        <Text style={styles.errorTitle}>No se pudo cargar</Text>
-        <Text style={styles.errorMsg}>{error}</Text>
-        <Button label="Reintentar" onPress={load} fullWidth />
-        <View style={{ height: spacing.sm }} />
-        <Button label="Cerrar sesión" variant="ghost" onPress={onLogout} fullWidth />
-      </View>
-    );
-  }
-
-  const noAllowedLeaves = allowedLeafIds.size === 0;
-  const noTree = !tree.length;
+  const stats = feed?.stats || { total: 0, mine: 0, others: 0 };
+  const reports = feed?.reports || [];
 
   return (
-    <KeyboardAvoidingView
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      style={{ flex: 1, backgroundColor: colors.bg }}
-    >
-      <StatusBar barStyle="dark-content" />
-      {/* Header */}
-      <View style={[styles.header, { paddingTop: insets.top + spacing.sm }]}>
-        <View style={{ flex: 1 }}>
-          <Text style={styles.projName} numberOfLines={1}>{project?.name || 'Proyecto'}</Text>
-          <Text style={styles.projMeta} numberOfLines={1}>
-            {project?.contract_number ? `Contrato ${project.contract_number}` : ''}
-            {project?.constructora ? `  ·  ${project.constructora}` : ''}
+    <View style={{ flex: 1, backgroundColor: colors.bg }}>
+      <StatusBar barStyle="light-content" />
+      {/* Fondo azul que cubre la zona superior */}
+      <View style={[styles.blueTop, { height: 240 + insets.top }]} />
+
+      {/* Header transparente sobre el azul */}
+      <View style={[styles.header, { paddingTop: insets.top + spacing.xs }]}>
+        <Pressable hitSlop={10} style={styles.headerBtn} onPress={onLogout}>
+          <Ionicons name="menu" size={22} color="#fff" />
+        </Pressable>
+        <View style={{ flex: 1, alignItems: 'center' }}>
+          <Text style={styles.headerTitle}>SynCo</Text>
+          <Text style={styles.headerSubtitle} numberOfLines={1}>
+            {project?.name || 'Cargando proyecto…'}
           </Text>
         </View>
-        <Pressable style={styles.iconBtn} onPress={onLogout} hitSlop={8}>
-          <Ionicons name="log-out-outline" size={20} color={colors.textBody} />
+        <Pressable hitSlop={10} style={styles.headerBtn}>
+          <Ionicons name="notifications-outline" size={22} color="#fff" />
         </Pressable>
       </View>
 
       <ScrollView
-        contentContainerStyle={{ padding: spacing.md, paddingBottom: spacing.xl * 2 }}
-        keyboardShouldPersistTaps="handled"
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} />}
+        style={{ flex: 1 }}
+        contentContainerStyle={{ paddingBottom: spacing.xl }}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={() => { setRefreshing(true); load(range, true); }}
+            tintColor="#fff"
+            colors={[colors.primary]}
+          />
+        }
       >
-        {/* Tarjeta de usuario */}
-        <View style={styles.userCard}>
-          <View style={styles.avatar}>
-            <Text style={styles.avatarTxt}>{initials(user?.name)}</Text>
-          </View>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.userName}>Ing. {user?.name}</Text>
-            <Text style={styles.userRole}>{roleLabel(user?.role, user?.area)}</Text>
-            {user?.puesto ? <Text style={styles.userPuesto}>{user.puesto}</Text> : null}
-          </View>
-        </View>
-
-        {/* Cascada */}
-        <SectionCard
-          icon="git-branch-outline"
-          title="Ubicación"
-          subtitle="Selecciona dónde estás capturando."
-        >
-          {noAllowedLeaves ? (
-            <EmptyState
-              icon="warning-outline"
-              title="Sin nodos asignados"
-              msg="Tu invitación no incluye nodos hoja para capturar. Pide a tu Coordinador General que actualice tu scope."
-            />
-          ) : noTree ? (
-            <EmptyState
-              icon="git-network-outline"
-              title="Aún no hay árbol"
-              msg="El Coordinador General todavía no creó nodos visibles para tu scope."
-            />
-          ) : (
-            <View style={{ gap: spacing.sm }}>
-              {levels.map((lvl, idx) => {
-                const selected = lvl.options.find((o) => o.id === lvl.selectedId) || null;
-                const label = idx === 0 ? 'Nivel raíz' : (lvl.parentName ? `Dentro de “${lvl.parentName}”` : `Nivel ${idx + 1}`);
-                return (
-                  <Pressable
-                    key={`${idx}-${lvl.parentName || 'root'}`}
-                    onPress={() => openPicker(idx)}
-                    style={({ pressed }) => [styles.cascadeRow, pressed && { opacity: 0.85 }]}
-                  >
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.cascadeLabel}>{label}</Text>
-                      <Text style={[styles.cascadeValue, !selected && { color: colors.textMuted }]} numberOfLines={1}>
-                        {selected ? selected.name : 'Seleccionar…'}
-                      </Text>
-                    </View>
-                    {selected?.is_leaf && allowedLeafIds.has(selected.id) ? (
-                      <View style={styles.leafBadge}>
-                        <Ionicons name="flag" size={11} color={colors.textInverse} />
-                        <Text style={styles.leafBadgeTxt}>Hoja</Text>
-                      </View>
-                    ) : null}
-                    <Ionicons name="chevron-down" size={18} color={colors.textMuted} />
-                  </Pressable>
-                );
-              })}
-              {path.length > 0 ? (
-                <Pressable onPress={resetCascade} hitSlop={8} style={{ alignSelf: 'flex-start', paddingVertical: 6 }}>
-                  <Text style={styles.linkBtn}>Reiniciar selección</Text>
-                </Pressable>
-              ) : null}
+        {/* Hero Card: MI ÁREA ASIGNADA */}
+        <View style={[styles.heroWrap, { marginTop: spacing.sm }]}>
+          <View style={styles.heroCard}>
+            <View style={styles.heroHeaderRow}>
+              <View style={styles.heroIcon}>
+                <Ionicons name="location" size={18} color="#fff" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.heroLabel}>MI ÁREA ASIGNADA</Text>
+                <Text style={styles.heroTitle} numberOfLines={1}>
+                  {user?.area || 'Sin área asignada'}
+                </Text>
+              </View>
+              <View style={styles.heroLeavesPill}>
+                <Ionicons name="flag" size={11} color={colors.primary} />
+                <Text style={styles.heroLeavesTxt}>
+                  {(user?.scope_node_ids || []).length} hojas
+                </Text>
+              </View>
             </View>
-          )}
-        </SectionCard>
-
-        {/* Medición */}
-        {leafNode ? (
-          <SectionCard
-            icon="speedometer-outline"
-            title={`Medición · ${MEASUREMENT_LABELS[leafNode.measurement_type as MeasurementType] || leafNode.measurement_type}`}
-            subtitle="Captura el valor que define la ubicación de este nodo hoja."
-          >
-            <MeasurementInput
-              type={leafNode.measurement_type as MeasurementType}
-              value={measurement}
-              onChange={setMeasurement}
-            />
-          </SectionCard>
-        ) : null}
-
-        {/* Form principal */}
-        {leafNode ? (
-          <SectionCard icon="document-text-outline" title="Reporte" subtitle="Avance, personal, equipo y contratista.">
-            <Field label="Avance">
-              <TextInput
-                placeholder="Ej. Colado de zapata Z-4 al 60%"
-                placeholderTextColor={colors.textMuted}
-                style={[styles.input, styles.inputMulti]}
-                multiline
-                numberOfLines={3}
-                value={avance}
-                onChangeText={setAvance}
-              />
-            </Field>
-
-            <Field label="Contratista">
-              <TextInput
-                placeholder="Ej. CYPSA"
-                placeholderTextColor={colors.textMuted}
-                style={styles.input}
-                value={contratista}
-                onChangeText={setContratista}
-              />
-            </Field>
-
-            <Field label="Personal">
-              <TextInput
-                placeholder="Ej. 3 albañiles, 1 cabo"
-                placeholderTextColor={colors.textMuted}
-                style={styles.input}
-                value={personal}
-                onChangeText={setPersonal}
-              />
-            </Field>
-
-            <Field label="Equipo">
-              <TextInput
-                placeholder="Ej. Retro CAT 320, vibrador 1.5HP"
-                placeholderTextColor={colors.textMuted}
-                style={styles.input}
-                value={equipo}
-                onChangeText={setEquipo}
-              />
-            </Field>
-          </SectionCard>
-        ) : null}
-
-        {/* Fotos */}
-        {leafNode ? (
-          <SectionCard
-            icon="camera-outline"
-            title={`Fotos (${images.length})`}
-            subtitle="Cero Huella Local: las imágenes viven solo en RAM hasta enviar."
-          >
-            <View style={{ flexDirection: 'row', gap: spacing.sm, flexWrap: 'wrap' }}>
-              {images.map((b64, i) => (
-                <View key={i} style={styles.photoTile}>
-                  <Image source={{ uri: `data:image/jpeg;base64,${b64}` }} style={styles.photoImg} />
-                  <Pressable onPress={() => removeImage(i)} style={styles.photoRemove} hitSlop={6}>
-                    <Ionicons name="close" size={14} color={colors.textInverse} />
-                  </Pressable>
-                </View>
-              ))}
-              <Pressable onPress={takePhotoFromCamera} style={[styles.photoTile, styles.photoAdd]}>
-                <Ionicons name="camera" size={22} color={colors.primary} />
-                <Text style={styles.photoAddTxt}>Cámara</Text>
-              </Pressable>
-              <Pressable onPress={pickPhotoFromLibrary} style={[styles.photoTile, styles.photoAdd]}>
-                <Ionicons name="images-outline" size={22} color={colors.primary} />
-                <Text style={styles.photoAddTxt}>Galería</Text>
-              </Pressable>
-            </View>
-          </SectionCard>
-        ) : null}
-
-        {/* CTA */}
-        {leafNode ? (
-          <View style={{ marginTop: spacing.md }}>
-            <Button
-              label={submitting ? 'Enviando…' : 'Finalizar reporte'}
-              onPress={onSubmit}
-              loading={submitting}
-              disabled={!canSubmit || submitting}
-              fullWidth
-              icon={<Ionicons name="checkmark-circle" size={18} color="#fff" />}
-            />
-            {!canSubmit && !submitting ? (
-              <Text style={styles.helpHint}>
-                Captura el valor de medición requerido para habilitar el envío.
+            {user?.puesto ? (
+              <Text style={styles.heroPuesto}>{user.puesto}</Text>
+            ) : null}
+            {project?.contract_number ? (
+              <Text style={styles.heroMeta}>
+                Contrato {project.contract_number}
+                {project.constructora ? `  ·  ${project.constructora}` : ''}
               </Text>
             ) : null}
           </View>
-        ) : (
-          path.length > 0 && !leafNode ? (
-            <Text style={styles.helpHint}>Continúa la selección hasta llegar a un nodo hoja autorizado.</Text>
-          ) : null
-        )}
-      </ScrollView>
+        </View>
 
-      {/* Picker modal */}
-      <Modal visible={pickerOpen} animationType="slide" transparent onRequestClose={() => setPickerOpen(false)}>
-        <Pressable style={styles.modalBackdrop} onPress={() => setPickerOpen(false)} />
-        <View style={[styles.modalSheet, { paddingBottom: insets.bottom + spacing.md }]}>
-          <View style={styles.sheetHandle} />
-          <Text style={styles.sheetTitle}>
-            {pickerLevelIdx === 0 ? 'Selecciona nodo raíz' : `Dentro de "${levels[pickerLevelIdx]?.parentName || ''}"`}
-          </Text>
-          <FlatList
-            data={levels[pickerLevelIdx]?.options || []}
-            keyExtractor={(n) => n.id}
-            renderItem={({ item }) => {
-              const isLeaf = item.is_leaf && allowedLeafIds.has(item.id);
-              const hasChildren = (item.children?.length || 0) > 0;
-              return (
-                <Pressable onPress={() => pickNode(item)} style={({ pressed }) => [styles.pickerOption, pressed && { backgroundColor: colors.primaryLight }]}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.pickerOptionName}>{item.name}</Text>
-                    <Text style={styles.pickerOptionMeta}>
-                      {isLeaf ? `Hoja · ${MEASUREMENT_LABELS[item.measurement_type as MeasurementType] || item.measurement_type}` : `${item.children?.length || 0} hijo(s)`}
-                    </Text>
-                  </View>
-                  {isLeaf ? (
-                    <View style={styles.leafBadge}>
-                      <Ionicons name="flag" size={11} color={colors.textInverse} />
-                      <Text style={styles.leafBadgeTxt}>Hoja</Text>
-                    </View>
-                  ) : hasChildren ? (
-                    <Ionicons name="chevron-forward" size={16} color={colors.textMuted} />
-                  ) : null}
-                </Pressable>
-              );
-            }}
-            ItemSeparatorComponent={() => <View style={styles.sep} />}
-            ListEmptyComponent={<Text style={styles.emptyTxt}>Sin opciones disponibles.</Text>}
-            style={{ maxHeight: 380 }}
+        {/* Stat Cards */}
+        <View style={styles.statsRow}>
+          <StatCard
+            label="Total"
+            value={stats.total}
+            icon="albums-outline"
+            tint={colors.primary}
+          />
+          <StatCard
+            label="Míos"
+            value={stats.mine}
+            icon="person"
+            tint="#0EA5E9"
+          />
+          <StatCard
+            label="Compañeros"
+            value={stats.others}
+            icon="people-outline"
+            tint="#10B981"
           />
         </View>
-      </Modal>
 
-      {/* Modal de éxito (Modo WhatsApp) */}
-      <Modal visible={successOpen} animationType="fade" transparent onRequestClose={() => setSuccessOpen(false)}>
-        <View style={styles.successBackdrop}>
-          <View style={[styles.successCard, { marginTop: insets.top + spacing.xl }]}>
-            <View style={styles.successHeader}>
-              <View style={styles.successIcon}>
-                <Ionicons name="checkmark" size={28} color={colors.textInverse} />
-              </View>
-              <Text style={styles.successTitle}>Reporte enviado</Text>
-              <Text style={styles.successSubtitle}>
-                Tus datos y fotos se guardaron en la base. Copia el texto y pégalo en WhatsApp.
-              </Text>
-            </View>
-            <ScrollView style={styles.successPreview} contentContainerStyle={{ padding: spacing.md }}>
-              <Text style={styles.successPreviewTxt}>{waMessage}</Text>
-            </ScrollView>
-            <View style={{ gap: spacing.sm }}>
-              <Button
-                label="Copiar para WhatsApp"
-                onPress={copyWhatsAppToClipboard}
-                fullWidth
-                icon={<Ionicons name="logo-whatsapp" size={18} color="#fff" />}
-              />
-              <Button
-                label="Nueva captura"
-                variant="secondary"
-                onPress={clearFormAndCloseSuccess}
-                fullWidth
-              />
-            </View>
-          </View>
+        {/* Filtros temporales */}
+        <View style={styles.timeFiltersWrap}>
+          <Text style={styles.sectionLabel}>Filtrar actividad</Text>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={{ paddingHorizontal: spacing.md, gap: spacing.sm }}
+          >
+            {RANGE_OPTIONS.map((opt) => {
+              const active = range === opt.key;
+              return (
+                <Pressable
+                  key={opt.key}
+                  onPress={() => onPickRange(opt.key)}
+                  style={[styles.chip, active && styles.chipActive]}
+                >
+                  <Text style={[styles.chipTxt, active && styles.chipTxtActive]}>
+                    {opt.label}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </ScrollView>
         </View>
-      </Modal>
-    </KeyboardAvoidingView>
+
+        {/* Lista de actividad */}
+        <View style={styles.feedHeaderRow}>
+          <Text style={styles.feedTitle}>Actividad reciente</Text>
+          {feed && reports.length > 0 ? (
+            <Text style={styles.feedCount}>{reports.length}</Text>
+          ) : null}
+        </View>
+
+        {loading ? (
+          <View style={styles.centerPad}>
+            <ActivityIndicator color={colors.primary} />
+          </View>
+        ) : error ? (
+          <View style={styles.errorBox}>
+            <Ionicons name="alert-circle-outline" size={24} color={colors.error} />
+            <Text style={styles.errorTxt}>{error}</Text>
+            <Pressable onPress={() => load(range, false)} style={styles.retryBtn}>
+              <Text style={styles.retryTxt}>Reintentar</Text>
+            </Pressable>
+          </View>
+        ) : reports.length === 0 ? (
+          <EmptyFeed range={range} onNew={() => router.push('/(spec)/nuevo' as any)} />
+        ) : (
+          <FlatList
+            data={reports}
+            keyExtractor={(it) => it.id}
+            scrollEnabled={false}
+            contentContainerStyle={{ paddingHorizontal: spacing.md, gap: spacing.sm, paddingBottom: spacing.md }}
+            renderItem={({ item }) => <FeedCard item={item} />}
+          />
+        )}
+      </ScrollView>
+    </View>
   );
 }
 
 // ============================================================================
 // Componentes auxiliares
 // ============================================================================
-function SectionCard({ icon, title, subtitle, children }: {
-  icon: keyof typeof Ionicons.glyphMap;
-  title: string;
-  subtitle?: string;
-  children: React.ReactNode;
+function StatCard({ label, value, icon, tint }: {
+  label: string; value: number; icon: keyof typeof Ionicons.glyphMap; tint: string;
 }) {
   return (
-    <View style={styles.section}>
-      <View style={styles.sectionHead}>
-        <View style={styles.sectionIcon}>
-          <Ionicons name={icon} size={16} color={colors.primary} />
-        </View>
-        <View style={{ flex: 1 }}>
-          <Text style={styles.sectionTitle}>{title}</Text>
-          {subtitle ? <Text style={styles.sectionSubtitle}>{subtitle}</Text> : null}
-        </View>
+    <View style={styles.statCard}>
+      <View style={[styles.statIcon, { backgroundColor: tint + '1A' }]}>
+        <Ionicons name={icon} size={16} color={tint} />
       </View>
-      <View>{children}</View>
+      <Text style={styles.statValue}>{value}</Text>
+      <Text style={styles.statLabel}>{label}</Text>
     </View>
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function FeedCard({ item }: { item: FeedItem }) {
+  const tone = areaTone(item.area_color || undefined);
+  const path = item.node_path_names || [];
+  const leafName = path[path.length - 1] || 'Sin ubicación';
+  const parentName = path.length >= 2 ? path[path.length - 2] : '';
+  const subtitle = parentName ? `${parentName} · ${leafName}` : leafName;
+  const ago = timeAgo(item.created_at);
+  const measure = formatMeasurement(item.measurement_type, item.measurement_value);
+
   return (
-    <View style={{ marginBottom: spacing.sm }}>
-      <Text style={styles.fieldLabel}>{label}</Text>
-      {children}
-    </View>
-  );
-}
-
-function EmptyState({ icon, title, msg }: { icon: keyof typeof Ionicons.glyphMap; title: string; msg: string }) {
-  return (
-    <View style={{ alignItems: 'center', paddingVertical: spacing.lg }}>
-      <Ionicons name={icon} size={32} color={colors.textMuted} />
-      <Text style={[styles.fieldLabel, { marginTop: 8 }]}>{title}</Text>
-      <Text style={styles.emptyTxt}>{msg}</Text>
-    </View>
-  );
-}
-
-// ----- Inputs de medición ---------------------------------------------------
-function MeasurementInput({ type, value, onChange }: {
-  type: MeasurementType;
-  value: MeasurementValue;
-  onChange: (v: MeasurementValue) => void;
-}) {
-  if (type === 'coord_latlon') {
-    return (
-      <View style={{ flexDirection: 'row', gap: spacing.sm }}>
-        <View style={{ flex: 1 }}>
-          <Field label="Latitud">
-            <TextInput
-              keyboardType="numeric"
-              placeholder="19.432608"
-              placeholderTextColor={colors.textMuted}
-              style={styles.input}
-              value={value.lat != null ? String(value.lat) : ''}
-              onChangeText={(t) => onChange({ ...value, lat: parseFloatSafe(t) })}
-            />
-          </Field>
-        </View>
-        <View style={{ flex: 1 }}>
-          <Field label="Longitud">
-            <TextInput
-              keyboardType="numeric"
-              placeholder="-99.133209"
-              placeholderTextColor={colors.textMuted}
-              style={styles.input}
-              value={value.lon != null ? String(value.lon) : ''}
-              onChangeText={(t) => onChange({ ...value, lon: parseFloatSafe(t) })}
-            />
-          </Field>
-        </View>
+    <Pressable
+      style={({ pressed }) => [styles.feedCard, pressed && { opacity: 0.85 }]}
+      onPress={() => { /* preview no implementado todavía */ }}
+    >
+      {/* Thumbnail */}
+      <View style={styles.thumbWrap}>
+        {item.thumbnail_base64 ? (
+          <Image
+            source={{ uri: `data:image/jpeg;base64,${item.thumbnail_base64}` }}
+            style={styles.thumb}
+          />
+        ) : (
+          <View style={[styles.thumb, styles.thumbPlaceholder]}>
+            <Ionicons name="image-outline" size={26} color={colors.textMuted} />
+          </View>
+        )}
+        {item.images_count > 1 ? (
+          <View style={styles.thumbBadge}>
+            <Ionicons name="copy" size={9} color="#fff" />
+            <Text style={styles.thumbBadgeTxt}>{item.images_count}</Text>
+          </View>
+        ) : null}
       </View>
-    );
-  }
-  if (type === 'cadenamiento') {
-    return (
-      <Field label="Cadenamiento (formato 5+100 o 5+100.50)">
-        <TextInput
-          placeholder="5+100"
-          placeholderTextColor={colors.textMuted}
-          style={styles.input}
-          autoCapitalize="none"
-          value={value.cadenamiento || ''}
-          onChangeText={(t) => onChange({ cadenamiento: t })}
-        />
-      </Field>
-    );
-  }
-  if (type === 'eje') {
-    return (
-      <Field label="Eje">
-        <TextInput
-          placeholder="A, B, 1-2…"
-          placeholderTextColor={colors.textMuted}
-          style={styles.input}
-          autoCapitalize="characters"
-          value={value.eje || ''}
-          onChangeText={(t) => onChange({ eje: t })}
-        />
-      </Field>
-    );
-  }
-  if (type === 'nivel') {
-    return (
-      <Field label="Nivel (m)">
-        <TextInput
-          placeholder="12.45"
-          placeholderTextColor={colors.textMuted}
-          keyboardType="numeric"
-          style={styles.input}
-          value={value.nivel != null ? String(value.nivel) : ''}
-          onChangeText={(t) => onChange({ nivel: parseFloatSafe(t) })}
-        />
-      </Field>
-    );
-  }
-  return null;
+
+      {/* Contenido */}
+      <View style={{ flex: 1, minWidth: 0 }}>
+        <View style={styles.feedTopRow}>
+          {item.area_name ? (
+            <View style={[styles.areaBadge, { backgroundColor: tone.bg, borderColor: tone.border }]}>
+              <View style={[styles.areaDot, { backgroundColor: tone.text }]} />
+              <Text style={[styles.areaBadgeTxt, { color: tone.text }]} numberOfLines={1}>
+                {item.area_name}
+              </Text>
+            </View>
+          ) : (
+            <View style={[styles.areaBadge, styles.areaBadgeNeutral]}>
+              <Text style={styles.areaBadgeTxtNeutral}>Sin área</Text>
+            </View>
+          )}
+          {item.is_mine ? (
+            <View style={styles.minePill}>
+              <Text style={styles.minePillTxt}>Mío</Text>
+            </View>
+          ) : null}
+        </View>
+        <Text style={styles.feedCardTitle} numberOfLines={1}>{leafName}</Text>
+        <Text style={styles.feedCardSub} numberOfLines={1}>{subtitle}</Text>
+        <View style={styles.feedMetaRow}>
+          <Ionicons name="time-outline" size={12} color={colors.textMuted} />
+          <Text style={styles.feedMeta} numberOfLines={1}>{ago}</Text>
+          <Text style={styles.feedMetaDot}>·</Text>
+          <Ionicons name="person-outline" size={12} color={colors.textMuted} />
+          <Text style={styles.feedMeta} numberOfLines={1}>
+            {item.captured_by_name || '—'}
+          </Text>
+        </View>
+        {measure ? (
+          <View style={styles.measureRow}>
+            <Ionicons name="speedometer-outline" size={12} color={colors.primary} />
+            <Text style={styles.measureTxt} numberOfLines={1}>{measure}</Text>
+          </View>
+        ) : null}
+        {item.avance ? (
+          <Text style={styles.avanceTxt} numberOfLines={2}>{item.avance}</Text>
+        ) : null}
+      </View>
+
+      <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+    </Pressable>
+  );
+}
+
+function EmptyFeed({ range, onNew }: { range: RangeKey; onNew: () => void }) {
+  const lbl = RANGE_OPTIONS.find((r) => r.key === range)?.label.toLowerCase() || '';
+  return (
+    <View style={styles.emptyBox}>
+      <View style={styles.emptyIcon}>
+        <Ionicons name="reader-outline" size={28} color={colors.primary} />
+      </View>
+      <Text style={styles.emptyTitle}>Sin reportes en {lbl}</Text>
+      <Text style={styles.emptyMsg}>
+        Cuando tú o tus compañeros capturen actividad, aparecerá aquí.
+      </Text>
+      <Pressable style={styles.emptyBtn} onPress={onNew}>
+        <Ionicons name="add" size={18} color="#fff" />
+        <Text style={styles.emptyBtnTxt}>Crear nuevo reporte</Text>
+      </Pressable>
+    </View>
+  );
 }
 
 // ============================================================================
 // Helpers
 // ============================================================================
-function initials(name?: string | null): string {
-  if (!name) return '?';
-  const parts = name.trim().split(/\s+/).slice(0, 2);
-  return parts.map((p) => p[0]?.toUpperCase() || '').join('');
+function timeAgo(iso?: string | null): string {
+  if (!iso) return '—';
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return '—';
+  const diff = Math.max(0, Date.now() - t);
+  const m = Math.floor(diff / 60000);
+  if (m < 1) return 'Hace instantes';
+  if (m < 60) return `Hace ${m} min`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `Hace ${h} h`;
+  const d = Math.floor(h / 24);
+  if (d < 7) return `Hace ${d} d`;
+  const date = new Date(iso);
+  return date.toLocaleDateString('es-MX', { day: '2-digit', month: 'short' });
 }
 
-function parseFloatSafe(t: string): number | string {
-  const cleaned = t.replace(',', '.').trim();
-  if (cleaned === '' || cleaned === '-' || cleaned === '.') return cleaned;
-  const n = Number(cleaned);
-  return Number.isFinite(n) ? n : cleaned;
-}
-
-function validateMeasurement(type: string | null | undefined, v: MeasurementValue): boolean {
-  if (!type) return false;
+function formatMeasurement(type?: string | null, v?: Record<string, any> | null): string {
+  if (!type || !v) return '';
   if (type === 'coord_latlon') {
-    return typeof v.lat === 'number' && typeof v.lon === 'number'
-      && v.lat >= -90 && v.lat <= 90 && v.lon >= -180 && v.lon <= 180;
-  }
-  if (type === 'cadenamiento') {
-    return typeof v.cadenamiento === 'string' && /^\d+\+\d{1,4}(\.\d+)?$/.test(v.cadenamiento);
-  }
-  if (type === 'eje') {
-    return typeof v.eje === 'string' && v.eje.trim().length > 0;
-  }
-  if (type === 'nivel') {
-    return typeof v.nivel === 'number' && Number.isFinite(v.nivel);
-  }
-  return false;
-}
-
-/**
- * Filtra el árbol completo dejando solo las ramas que terminan en una hoja del
- * scope. Si un nodo es hoja pero no está en el scope se omite, y si tras filtrar
- * sus hijos un nodo queda vacío y él mismo no es hoja autorizada, también se omite.
- */
-function filterTreeByLeafScope(
-  tree: LocationNodeTree[],
-  allowed: Set<string>,
-): LocationNodeTree[] {
-  if (allowed.size === 0) return [];
-  const recur = (nodes: LocationNodeTree[]): LocationNodeTree[] => {
-    const out: LocationNodeTree[] = [];
-    for (const n of nodes || []) {
-      const filteredChildren = recur(n.children || []);
-      const isAllowedLeaf = n.is_leaf && allowed.has(n.id);
-      if (isAllowedLeaf || filteredChildren.length > 0) {
-        out.push({ ...n, children: filteredChildren });
-      }
+    if (typeof v.lat === 'number' && typeof v.lon === 'number') {
+      return `${v.lat.toFixed(5)}, ${v.lon.toFixed(5)}`;
     }
-    return out;
-  };
-  return recur(tree);
+  }
+  if (type === 'cadenamiento' && v.cadenamiento) return `Cad. ${v.cadenamiento}`;
+  if (type === 'eje' && v.eje) return `Eje ${v.eje}`;
+  if (type === 'nivel' && typeof v.nivel === 'number') return `Nivel ${v.nivel} m`;
+  return '';
 }
 
 // ============================================================================
 // Styles
 // ============================================================================
 const styles = StyleSheet.create({
-  center: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: colors.bg, gap: spacing.sm },
-  errorTitle: { fontSize: 16, fontWeight: '800', color: colors.text, marginTop: spacing.sm },
-  errorMsg: { textAlign: 'center', color: colors.textBody, marginBottom: spacing.md },
-
+  blueTop: {
+    position: 'absolute',
+    top: 0, left: 0, right: 0,
+    backgroundColor: colors.primary,
+  },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: spacing.md,
     paddingBottom: spacing.sm,
-    backgroundColor: colors.surface,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.border,
     gap: spacing.sm,
   },
-  projName: { fontSize: 16, fontWeight: '800', color: colors.text },
-  projMeta: { fontSize: 12, color: colors.textMuted, marginTop: 2 },
-  iconBtn: { padding: 8, borderRadius: radius.full, backgroundColor: colors.bg },
-
-  userCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
-    backgroundColor: colors.surface,
-    padding: spacing.md,
-    borderRadius: radius.md,
-    borderWidth: 1,
-    borderColor: colors.border,
-    marginBottom: spacing.md,
-    ...shadow.card,
-  },
-  avatar: {
-    width: 44, height: 44, borderRadius: radius.full,
-    backgroundColor: colors.primary,
+  headerBtn: {
+    width: 36, height: 36, borderRadius: radius.full,
+    backgroundColor: 'rgba(255,255,255,0.15)',
     alignItems: 'center', justifyContent: 'center',
   },
-  avatarTxt: { color: colors.textInverse, fontWeight: '800', fontSize: 15 },
-  userName: { fontSize: 15, fontWeight: '800', color: colors.text },
-  userRole: { fontSize: 12, color: colors.primary, fontWeight: '700', marginTop: 2 },
-  userPuesto: { fontSize: 12, color: colors.textMuted, marginTop: 2 },
+  headerTitle: { color: '#fff', fontSize: 16, fontWeight: '800', letterSpacing: 0.4 },
+  headerSubtitle: { color: 'rgba(255,255,255,0.85)', fontSize: 11, marginTop: 1, maxWidth: '80%' },
 
-  section: {
-    backgroundColor: colors.surface,
-    borderRadius: radius.md,
-    borderWidth: 1,
-    borderColor: colors.border,
-    padding: spacing.md,
-    marginBottom: spacing.md,
-    ...shadow.card,
-  },
-  sectionHead: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginBottom: spacing.sm },
-  sectionIcon: {
-    width: 28, height: 28, borderRadius: radius.full,
-    backgroundColor: colors.primaryLight,
-    alignItems: 'center', justifyContent: 'center',
-  },
-  sectionTitle: { fontSize: 14, fontWeight: '800', color: colors.text },
-  sectionSubtitle: { fontSize: 11, color: colors.textMuted, marginTop: 2 },
-
-  cascadeRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
-    paddingVertical: 12,
-    paddingHorizontal: spacing.sm,
-    backgroundColor: colors.bg,
-    borderRadius: radius.md,
-    borderWidth: 1,
-    borderColor: colors.border,
-    minHeight: 56,
-  },
-  cascadeLabel: { fontSize: 11, color: colors.textMuted, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.4 },
-  cascadeValue: { fontSize: 15, color: colors.text, fontWeight: '700', marginTop: 2 },
-
-  leafBadge: {
-    flexDirection: 'row', alignItems: 'center', gap: 4,
-    backgroundColor: colors.primary,
-    paddingHorizontal: 8, paddingVertical: 3,
-    borderRadius: radius.full,
-  },
-  leafBadgeTxt: { color: colors.textInverse, fontSize: 10, fontWeight: '800' },
-
-  linkBtn: { color: colors.primary, fontWeight: '700', fontSize: 13 },
-
-  fieldLabel: { fontSize: 12, color: colors.textBody, fontWeight: '700', marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.3 },
-  input: {
-    backgroundColor: colors.bg,
-    borderRadius: radius.md,
-    borderWidth: 1,
-    borderColor: colors.border,
-    paddingHorizontal: 12,
-    paddingVertical: Platform.OS === 'ios' ? 12 : 10,
-    fontSize: 15,
-    color: colors.text,
-    minHeight: 44,
-  },
-  inputMulti: { minHeight: 80, textAlignVertical: 'top' },
-
-  photoTile: {
-    width: 88, height: 88, borderRadius: radius.md, overflow: 'hidden',
-    borderWidth: 1, borderColor: colors.border,
-  },
-  photoImg: { width: '100%', height: '100%' },
-  photoRemove: {
-    position: 'absolute', top: 4, right: 4,
-    width: 22, height: 22, borderRadius: radius.full,
-    backgroundColor: 'rgba(0,0,0,0.6)',
-    alignItems: 'center', justifyContent: 'center',
-  },
-  photoAdd: {
-    alignItems: 'center', justifyContent: 'center',
-    backgroundColor: colors.primaryLight,
-    borderColor: colors.primary, borderStyle: 'dashed',
-    gap: 4,
-  },
-  photoAddTxt: { color: colors.primary, fontSize: 11, fontWeight: '700' },
-
-  helpHint: { marginTop: spacing.sm, color: colors.textMuted, fontSize: 12, textAlign: 'center' },
-
-  // Picker modal
-  modalBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: colors.overlay },
-  modalSheet: {
-    position: 'absolute', bottom: 0, left: 0, right: 0,
-    backgroundColor: colors.surface,
-    borderTopLeftRadius: 20, borderTopRightRadius: 20,
-    paddingHorizontal: spacing.md, paddingTop: spacing.sm,
-  },
-  sheetHandle: {
-    alignSelf: 'center', width: 40, height: 4, borderRadius: 2,
-    backgroundColor: colors.border, marginBottom: spacing.sm,
-  },
-  sheetTitle: { fontSize: 15, fontWeight: '800', color: colors.text, marginBottom: spacing.sm },
-  pickerOption: {
-    flexDirection: 'row', alignItems: 'center', gap: spacing.sm,
-    paddingVertical: 12, paddingHorizontal: spacing.sm,
-    borderRadius: radius.md,
-  },
-  pickerOptionName: { fontSize: 14, fontWeight: '700', color: colors.text },
-  pickerOptionMeta: { fontSize: 11, color: colors.textMuted, marginTop: 2 },
-  sep: { height: 1, backgroundColor: colors.border, marginLeft: spacing.sm },
-  emptyTxt: { textAlign: 'center', color: colors.textMuted, padding: spacing.md, fontSize: 12 },
-
-  // Success
-  successBackdrop: { flex: 1, backgroundColor: colors.overlay, padding: spacing.md, justifyContent: 'flex-start' },
-  successCard: {
+  // Hero
+  heroWrap: { paddingHorizontal: spacing.md },
+  heroCard: {
     backgroundColor: colors.surface,
     borderRadius: radius.lg,
     padding: spacing.md,
-    gap: spacing.md,
+    gap: 4,
+    ...shadow.card,
   },
-  successHeader: { alignItems: 'center', gap: 6 },
-  successIcon: {
+  heroHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  heroIcon: {
+    width: 36, height: 36, borderRadius: radius.full,
+    backgroundColor: colors.primary,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  heroLabel: { fontSize: 10, fontWeight: '800', color: colors.textMuted, letterSpacing: 1.2 },
+  heroTitle: { fontSize: 17, fontWeight: '800', color: colors.text, marginTop: 1 },
+  heroPuesto: { fontSize: 13, color: colors.textBody, marginTop: 4, marginLeft: 36 + spacing.sm },
+  heroMeta: { fontSize: 11, color: colors.textMuted, marginTop: 2, marginLeft: 36 + spacing.sm },
+  heroLeavesPill: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    backgroundColor: colors.primaryLight,
+    paddingHorizontal: 8, paddingVertical: 4,
+    borderRadius: radius.full,
+  },
+  heroLeavesTxt: { color: colors.primary, fontSize: 10, fontWeight: '800' },
+
+  // Stat row
+  statsRow: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+    paddingHorizontal: spacing.md,
+    marginTop: spacing.md,
+  },
+  statCard: {
+    flex: 1,
+    backgroundColor: colors.surface,
+    borderRadius: radius.md,
+    padding: spacing.sm + 2,
+    alignItems: 'flex-start',
+    gap: 4,
+    ...shadow.card,
+  },
+  statIcon: {
+    width: 28, height: 28, borderRadius: radius.full,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  statValue: { fontSize: 22, fontWeight: '800', color: colors.text },
+  statLabel: { fontSize: 11, color: colors.textMuted, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.4 },
+
+  // Time filters
+  timeFiltersWrap: { marginTop: spacing.md },
+  sectionLabel: {
+    fontSize: 11, fontWeight: '800', color: colors.textMuted,
+    letterSpacing: 1, textTransform: 'uppercase',
+    paddingHorizontal: spacing.md, marginBottom: 8,
+  },
+  chip: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: radius.full,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    minHeight: 36,
+    justifyContent: 'center',
+  },
+  chipActive: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
+  },
+  chipTxt: { fontSize: 13, fontWeight: '700', color: colors.textBody },
+  chipTxtActive: { color: '#fff' },
+
+  // Feed header
+  feedHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: spacing.md,
+    marginTop: spacing.lg,
+    marginBottom: spacing.sm,
+  },
+  feedTitle: { fontSize: 15, fontWeight: '800', color: colors.text },
+  feedCount: {
+    fontSize: 11, fontWeight: '800', color: colors.primary,
+    backgroundColor: colors.primaryLight,
+    paddingHorizontal: 8, paddingVertical: 3, borderRadius: radius.full,
+  },
+
+  // Feed card
+  feedCard: {
+    flexDirection: 'row',
+    backgroundColor: colors.surface,
+    borderRadius: radius.md,
+    padding: spacing.sm + 2,
+    gap: spacing.sm,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: colors.border,
+    ...shadow.card,
+  },
+  thumbWrap: {
+    width: 72, height: 72, borderRadius: radius.md, overflow: 'hidden',
+    backgroundColor: colors.bg,
+  },
+  thumb: { width: '100%', height: '100%' },
+  thumbPlaceholder: { alignItems: 'center', justifyContent: 'center', backgroundColor: colors.primaryLight },
+  thumbBadge: {
+    position: 'absolute', bottom: 4, right: 4,
+    flexDirection: 'row', alignItems: 'center', gap: 2,
+    backgroundColor: 'rgba(15,23,42,0.7)',
+    paddingHorizontal: 5, paddingVertical: 2,
+    borderRadius: radius.full,
+  },
+  thumbBadgeTxt: { color: '#fff', fontSize: 9, fontWeight: '800' },
+
+  feedTopRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 2 },
+  areaBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: radius.full,
+    borderWidth: 1,
+    maxWidth: 160,
+  },
+  areaBadgeNeutral: {
+    backgroundColor: colors.bg,
+    borderColor: colors.border,
+  },
+  areaDot: { width: 6, height: 6, borderRadius: 3 },
+  areaBadgeTxt: { fontSize: 10, fontWeight: '800', letterSpacing: 0.3 },
+  areaBadgeTxtNeutral: { fontSize: 10, fontWeight: '800', color: colors.textMuted },
+  minePill: {
+    backgroundColor: colors.success + '22',
+    paddingHorizontal: 6, paddingVertical: 2, borderRadius: radius.full,
+  },
+  minePillTxt: { color: colors.success, fontSize: 9, fontWeight: '800', letterSpacing: 0.4 },
+
+  feedCardTitle: { fontSize: 14, fontWeight: '800', color: colors.text },
+  feedCardSub: { fontSize: 11, color: colors.textMuted, marginTop: 1 },
+  feedMetaRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    marginTop: 4,
+  },
+  feedMeta: { fontSize: 11, color: colors.textMuted },
+  feedMetaDot: { color: colors.textMuted, fontSize: 11, marginHorizontal: 2 },
+  measureRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 4,
+  },
+  measureTxt: { fontSize: 11, fontWeight: '700', color: colors.primary },
+  avanceTxt: { fontSize: 11, color: colors.textBody, marginTop: 4, fontStyle: 'italic' },
+
+  // States
+  centerPad: { padding: spacing.xl, alignItems: 'center' },
+  errorBox: { padding: spacing.lg, alignItems: 'center', gap: spacing.sm, marginHorizontal: spacing.md, marginTop: spacing.md, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border },
+  errorTxt: { textAlign: 'center', color: colors.textBody, fontSize: 13 },
+  retryBtn: { backgroundColor: colors.primary, paddingHorizontal: 16, paddingVertical: 8, borderRadius: radius.md },
+  retryTxt: { color: '#fff', fontWeight: '800', fontSize: 13 },
+
+  emptyBox: {
+    marginHorizontal: spacing.md,
+    backgroundColor: colors.surface,
+    borderRadius: radius.lg,
+    borderWidth: 1, borderColor: colors.border,
+    padding: spacing.lg,
+    alignItems: 'center',
+    gap: 6,
+    ...shadow.card,
+  },
+  emptyIcon: {
     width: 56, height: 56, borderRadius: radius.full,
-    backgroundColor: colors.success,
+    backgroundColor: colors.primaryLight,
     alignItems: 'center', justifyContent: 'center',
     marginBottom: 4,
   },
-  successTitle: { fontSize: 18, fontWeight: '800', color: colors.text },
-  successSubtitle: { fontSize: 12, color: colors.textBody, textAlign: 'center' },
-  successPreview: {
-    backgroundColor: colors.bg,
+  emptyTitle: { fontSize: 15, fontWeight: '800', color: colors.text },
+  emptyMsg: { fontSize: 12, color: colors.textBody, textAlign: 'center', lineHeight: 18 },
+  emptyBtn: {
+    marginTop: spacing.sm,
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: colors.primary,
+    paddingHorizontal: 14, paddingVertical: 10,
     borderRadius: radius.md,
-    borderWidth: 1, borderColor: colors.border,
-    maxHeight: 280,
   },
-  successPreviewTxt: { fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' }), fontSize: 12, color: colors.text, lineHeight: 18 },
+  emptyBtnTxt: { color: '#fff', fontWeight: '800', fontSize: 13 },
 });
+
+// Suprime ESLint warning para web platform-specific styles si los hubiese.
+void Platform;

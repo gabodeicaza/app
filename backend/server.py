@@ -863,6 +863,108 @@ async def list_reports(pid: str, user: dict = Depends(current_user)):
     return items
 
 
+# ---- FEED endpoint (Specialist Dashboard) ---------------------------------
+def _feed_range_start(rng: str) -> Optional[datetime]:
+    """Devuelve el inicio del rango en UTC.
+
+    today  → hoy 00:00 UTC
+    week   → últimos 7 días (now - 7d)
+    month  → últimos 30 días (now - 30d)
+    all/None → None (sin filtro temporal)
+    """
+    now = datetime.now(timezone.utc)
+    rng = (rng or "today").lower()
+    if rng == "today":
+        return now.replace(hour=0, minute=0, second=0, microsecond=0)
+    if rng == "week":
+        return now - timedelta(days=7)
+    if rng == "month":
+        return now - timedelta(days=30)
+    return None
+
+
+@api.get("/projects/{pid}/reports/feed")
+async def reports_feed(
+    pid: str,
+    range: str = "today",
+    limit: int = 50,
+    user: dict = Depends(current_user),
+):
+    """Feed consolidado para Especialistas / Sub-Coordinadores.
+
+    Devuelve estadísticas (total, mine, others) y la lista de reportes recientes
+    livianos (solo primera imagen como thumbnail, conteo del resto).
+    Aplica el mismo scope RBAC que list_reports.
+    """
+    await ensure_project_access(user, pid)
+    q: dict = {"project_id": pid}
+    if user["role"] == ROLE_SUB and user.get("scope_node_id"):
+        allowed = await descendants_ids(user["scope_node_id"])
+        q["node_id"] = {"$in": allowed}
+    elif user["role"] == ROLE_ESPECIALISTA:
+        scope = user.get("scope_node_ids") or []
+        q["node_id"] = {"$in": scope}
+
+    start = _feed_range_start(range)
+    if start is not None:
+        q["created_at"] = {"$gte": start}
+
+    # Conteos agregados por captured_by (con un solo round trip).
+    pipeline = [
+        {"$match": q},
+        {"$group": {"_id": "$captured_by", "count": {"$sum": 1}}},
+    ]
+    groups = await db.reports.aggregate(pipeline).to_list(length=10000)
+    total = sum(int(g.get("count", 0)) for g in groups)
+    mine = sum(int(g.get("count", 0)) for g in groups if g.get("_id") == user["id"])
+    others = total - mine
+
+    # Lista de items livianos (orden desc, limit).
+    safe_limit = max(1, min(int(limit or 50), 200))
+    cursor = db.reports.find(q).sort("created_at", -1).limit(safe_limit)
+    raw_items = await cursor.to_list(length=safe_limit)
+
+    # Mapa de áreas (para color y nombre real).
+    area_ids = {it.get("area_id") for it in raw_items if it.get("area_id")}
+    areas_by_id: dict = {}
+    if area_ids:
+        async for a in db.areas.find({"id": {"$in": list(area_ids)}}):
+            areas_by_id[a["id"]] = {"name": a.get("name"), "color": a.get("color")}
+
+    items_out = []
+    for it in raw_items:
+        imgs = it.get("images") or []
+        area_id = it.get("area_id")
+        area_info = areas_by_id.get(area_id) if area_id else None
+        items_out.append({
+            "id": it["id"],
+            "project_id": it["project_id"],
+            "node_id": it["node_id"],
+            "node_path_names": it.get("node_path_names") or [],
+            "measurement_type": it.get("measurement_type"),
+            "measurement_value": it.get("measurement_value") or {},
+            "area_id": area_id,
+            "area_name": (area_info or {}).get("name") or it.get("area_name"),
+            "area_color": (area_info or {}).get("color"),
+            "avance": it.get("avance"),
+            "contratista": it.get("contratista"),
+            "personnel": it.get("personnel") or [],
+            "equipment": it.get("equipment") or [],
+            "captured_by": it.get("captured_by"),
+            "captured_by_name": it.get("captured_by_name"),
+            "is_mine": it.get("captured_by") == user["id"],
+            "images_count": len(imgs),
+            "thumbnail_base64": imgs[0] if imgs else None,
+            "created_at": it.get("created_at"),
+        })
+
+    return {
+        "range": range,
+        "stats": {"total": total, "mine": mine, "others": others},
+        "reports": items_out,
+    }
+
+
 @api.get("/reports/{rid}")
 async def get_report(rid: str, user: dict = Depends(current_user)):
     r = await db.reports.find_one({"id": rid})

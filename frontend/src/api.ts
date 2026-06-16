@@ -127,6 +127,34 @@ export interface Report {
   created_at: string;
 }
 
+export interface FeedItem {
+  id: string;
+  project_id: string;
+  node_id: string;
+  node_path_names: string[];
+  measurement_type: string;
+  measurement_value: Record<string, any>;
+  area_id?: string | null;
+  area_name?: string | null;
+  area_color?: string | null;
+  avance?: string | null;
+  contratista?: string | null;
+  personnel: string[];
+  equipment: string[];
+  captured_by: string;
+  captured_by_name: string;
+  is_mine: boolean;
+  images_count: number;
+  thumbnail_base64?: string | null;
+  created_at: string;
+}
+
+export interface FeedResponse {
+  range: string;
+  stats: { total: number; mine: number; others: number };
+  reports: FeedItem[];
+}
+
 // ---- API client -----------------------------------------------------------
 export const api = {
   // Auth
@@ -210,6 +238,8 @@ export const api = {
     files?: Array<{ filename: string; mime: string; data_base64: string }>;
   }) => request<Report>('POST', '/reports', body),
   listReports: (pid: string) => request<Report[]>('GET', `/projects/${pid}/reports`),
+  feed: (pid: string, range: 'today' | 'week' | 'month' | 'all' = 'today', limit = 50) =>
+    request<FeedResponse>('GET', `/projects/${pid}/reports/feed?range=${range}&limit=${limit}`),
   getReport: (rid: string) => request<Report>('GET', `/reports/${rid}`),
   deleteReport: (rid: string) => request<{ ok: boolean }>('DELETE', `/reports/${rid}`),
 
