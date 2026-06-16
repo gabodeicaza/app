@@ -167,6 +167,17 @@ export interface Announcement {
   updated_at: string;
 }
 
+export interface Message {
+  id: string;
+  project_id: string;
+  user_id: string;
+  user_name: string;
+  user_role: string;
+  user_area?: string | null;
+  text: string;
+  created_at: string;
+}
+
 // ---- API client -----------------------------------------------------------
 export const api = {
   // Auth
@@ -263,6 +274,19 @@ export const api = {
     request<Announcement>('PATCH', `/announcements/${aid}`, payload),
   deleteAnnouncement: (aid: string) =>
     request<{ ok: boolean }>('DELETE', `/announcements/${aid}`),
+
+  // ---- Messages (chat) ----------------------------------------------------
+  listMessages: (pid: string, params: { since?: string; before?: string; limit?: number } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.since) qs.set('since', params.since);
+    if (params.before) qs.set('before', params.before);
+    qs.set('limit', String(params.limit ?? 100));
+    return request<Message[]>('GET', `/projects/${pid}/messages?${qs.toString()}`);
+  },
+  sendMessage: (pid: string, text: string) =>
+    request<Message>('POST', `/projects/${pid}/messages`, { text }),
+  deleteMessage: (mid: string) =>
+    request<{ ok: boolean }>('DELETE', `/messages/${mid}`),
   deleteReport: (rid: string) => request<{ ok: boolean }>('DELETE', `/reports/${rid}`),
 
   // Users (admin)

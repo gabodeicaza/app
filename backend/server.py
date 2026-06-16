@@ -55,7 +55,7 @@ VALID_ROLES = {ROLE_COORD, ROLE_SUB, ROLE_ESPECIALISTA}
 MEASUREMENT_TYPES = {"coord_latlon", "cadenamiento", "eje", "nivel"}
 
 # Colecciones del esquema v2
-COLLECTIONS_V2 = ["users", "projects", "location_nodes", "areas", "invitations", "reports", "announcements"]
+COLLECTIONS_V2 = ["users", "projects", "location_nodes", "areas", "invitations", "reports", "announcements", "messages"]
 
 # Colecciones legacy a eliminar en startup
 COLLECTIONS_LEGACY = [
@@ -345,6 +345,7 @@ async def startup_event():
     await db.location_nodes.create_index([("project_id", 1), ("parent_id", 1)])
     await db.reports.create_index([("project_id", 1), ("created_at", -1)])
     await db.announcements.create_index([("project_id", 1), ("pinned", -1), ("created_at", -1)])
+    await db.messages.create_index([("project_id", 1), ("created_at", -1)])
     log.info("[startup] SynCo v2.0 ready")
 
 
@@ -1109,6 +1110,98 @@ async def delete_announcement(aid: str, user: dict = Depends(require_role(ROLE_C
         raise HTTPException(404, "Noticia no existe")
     await ensure_project_access(user, a["project_id"])
     await db.announcements.delete_one({"id": aid})
+    return {"ok": True}
+
+
+# === MESSAGES (Chat por proyecto) ==========================================
+class MessageIn(BaseModel):
+    text: str
+
+
+def _message_out(doc: dict) -> dict:
+    doc.pop("_id", None)
+    return doc
+
+
+@api.get("/projects/{pid}/messages")
+async def list_messages(
+    pid: str,
+    since: Optional[str] = None,
+    before: Optional[str] = None,
+    limit: int = 100,
+    user: dict = Depends(current_user),
+):
+    """Lista mensajes del chat general de un proyecto.
+
+    Parámetros:
+      since  → ISO datetime; sólo devuelve los más nuevos (delta-fetch polling)
+      before → ISO datetime; usado para paginar hacia atrás (lazy-load)
+      limit  → 1..200
+
+    Orden de la respuesta: ascendente por created_at (más antiguo primero,
+    listo para render en una lista no invertida).
+    """
+    await ensure_project_access(user, pid)
+    q: dict = {"project_id": pid}
+    if since:
+        try:
+            ts = datetime.fromisoformat(since.replace("Z", "+00:00"))
+            q["created_at"] = {"$gt": ts}
+        except Exception:
+            pass
+    if before:
+        try:
+            ts = datetime.fromisoformat(before.replace("Z", "+00:00"))
+            q.setdefault("created_at", {})["$lt"] = ts
+        except Exception:
+            pass
+
+    safe_limit = max(1, min(int(limit or 100), 200))
+    # Tomamos los más recientes primero (para limit) y luego invertimos.
+    cursor = db.messages.find(q).sort("created_at", -1).limit(safe_limit)
+    raw = await cursor.to_list(length=safe_limit)
+    raw.reverse()
+    return [_message_out(it) for it in raw]
+
+
+@api.post("/projects/{pid}/messages")
+async def create_message(
+    pid: str,
+    body: MessageIn,
+    user: dict = Depends(current_user),
+):
+    """Publica un mensaje en el chat general. Cualquier miembro del proyecto puede escribir."""
+    await ensure_project_access(user, pid)
+    text = (body.text or "").strip()
+    if not text:
+        raise HTTPException(400, "Mensaje vacío")
+    if len(text) > 2000:
+        raise HTTPException(400, "Mensaje máximo 2000 caracteres")
+    doc = {
+        "id": str(uuid.uuid4()),
+        "project_id": pid,
+        "user_id": user["id"],
+        "user_name": user["name"],
+        "user_role": user["role"],
+        "user_area": user.get("area"),
+        "text": text,
+        "created_at": datetime.now(timezone.utc),
+    }
+    await db.messages.insert_one(doc)
+    return _message_out(doc)
+
+
+@api.delete("/messages/{mid}")
+async def delete_message(mid: str, user: dict = Depends(current_user)):
+    """El autor o cualquier Coordinador General del proyecto puede eliminar."""
+    m = await db.messages.find_one({"id": mid})
+    if not m:
+        raise HTTPException(404, "Mensaje no existe")
+    is_author = m["user_id"] == user["id"]
+    is_coord = user["role"] == ROLE_COORD and m["project_id"] in (user.get("project_ids") or [])
+    if not (is_author or is_coord):
+        raise HTTPException(403, "Sin permiso para eliminar este mensaje")
+    await db.messages.delete_one({"id": mid})
     return {"ok": True}
 
 
