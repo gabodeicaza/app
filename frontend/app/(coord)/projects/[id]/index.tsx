@@ -95,6 +95,12 @@ export default function ProjectDetailScreen() {
               onPress={() => router.push({ pathname: '/(coord)/projects/[id]/announcements' as any, params: { id: pid } })}
             />
             <ActionTile
+              icon="calendar-outline"
+              title="Calendario"
+              subtitle="Programa eventos, visitas e hitos del proyecto"
+              onPress={() => router.push({ pathname: '/(coord)/projects/[id]/events' as any, params: { id: pid } })}
+            />
+            <ActionTile
               icon="document-text-outline"
               title="Reportes capturados"
               subtitle="Auditoría de mediciones"

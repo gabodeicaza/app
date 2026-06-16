@@ -76,6 +76,10 @@ export interface LocationNode {
   order: number;
   is_leaf: boolean;
   measurement_type: 'coord_latlon' | 'cadenamiento' | 'eje' | 'nivel' | null;
+  // Coordenadas objetivo (sólo cuando es hoja con measurement_type = 'coord_latlon')
+  target_lat?: number | null;
+  target_lon?: number | null;
+  target_elev?: number | null;
 }
 
 export interface LocationNodeTree extends LocationNode {
@@ -163,6 +167,7 @@ export interface Announcement {
   pinned: boolean;
   author_id: string;
   author_name: string;
+  author_role?: string;
   created_at: string;
   updated_at: string;
 }
@@ -170,12 +175,53 @@ export interface Announcement {
 export interface Message {
   id: string;
   project_id: string;
+  channel_id?: string;
   user_id: string;
   user_name: string;
   user_role: string;
   user_area?: string | null;
   text: string;
   created_at: string;
+}
+
+export interface ChannelPeer {
+  id: string;
+  name: string;
+  role: string;
+}
+
+export interface Channel {
+  id: string;
+  project_id: string;
+  type: 'general' | 'area' | 'direct';
+  name: string;
+  area_id?: string | null;
+  color?: string | null;
+  member_ids?: string[] | null;
+  peer?: ChannelPeer | null;
+  last_message?: {
+    id?: string;
+    text?: string | null;
+    user_id?: string;
+    user_name?: string;
+    created_at?: string;
+  } | null;
+  created_at: string;
+}
+
+export interface ProjectEvent {
+  id: string;
+  project_id: string;
+  title: string;
+  description?: string | null;
+  location?: string | null;
+  start_at: string;
+  end_at?: string | null;
+  author_id: string;
+  author_name: string;
+  author_role?: string;
+  created_at: string;
+  updated_at: string;
 }
 
 // ---- API client -----------------------------------------------------------
@@ -217,12 +263,18 @@ export const api = {
     order?: number;
     is_leaf?: boolean;
     measurement_type?: 'coord_latlon' | 'cadenamiento' | 'eje' | 'nivel' | null;
+    target_lat?: number | null;
+    target_lon?: number | null;
+    target_elev?: number | null;
   }) => request<LocationNode>('POST', `/projects/${pid}/nodes`, body),
   updateNode: (nid: string, body: {
     name?: string;
     order?: number;
     is_leaf?: boolean;
     measurement_type?: 'coord_latlon' | 'cadenamiento' | 'eje' | 'nivel' | null;
+    target_lat?: number | null;
+    target_lon?: number | null;
+    target_elev?: number | null;
   }) => request<LocationNode>('PATCH', `/nodes/${nid}`, body),
   deleteNode: (nid: string) => request<{ ok: boolean; deleted_count: number }>('DELETE', `/nodes/${nid}`),
 
@@ -287,6 +339,39 @@ export const api = {
     request<Message>('POST', `/projects/${pid}/messages`, { text }),
   deleteMessage: (mid: string) =>
     request<{ ok: boolean }>('DELETE', `/messages/${mid}`),
+
+  // ---- Channels (canales: General / Áreas / Directos) --------------------
+  listChannels: (pid: string) =>
+    request<Channel[]>('GET', `/projects/${pid}/channels`),
+  getChannel: (cid: string) =>
+    request<Channel>('GET', `/channels/${cid}`),
+  listChannelMessages: (cid: string, params: { since?: string; before?: string; limit?: number } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.since) qs.set('since', params.since);
+    if (params.before) qs.set('before', params.before);
+    qs.set('limit', String(params.limit ?? 100));
+    return request<Message[]>('GET', `/channels/${cid}/messages?${qs.toString()}`);
+  },
+  sendChannelMessage: (cid: string, text: string) =>
+    request<Message>('POST', `/channels/${cid}/messages`, { text }),
+  createDirectChannel: (pid: string, target_user_id: string) =>
+    request<Channel>('POST', `/projects/${pid}/channels/direct`, { target_user_id }),
+  listProjectMembers: (pid: string) =>
+    request<User[]>('GET', `/projects/${pid}/members`),
+
+  // ---- Events (Calendario) ------------------------------------------------
+  listEvents: (pid: string, range: 'upcoming' | 'past' | 'all' = 'upcoming', limit = 500) =>
+    request<ProjectEvent[]>('GET', `/projects/${pid}/events?range=${range}&limit=${limit}`),
+  createEvent: (pid: string, payload: {
+    title: string; start_at: string; end_at?: string | null;
+    description?: string | null; location?: string | null;
+  }) => request<ProjectEvent>('POST', `/projects/${pid}/events`, payload),
+  updateEvent: (eid: string, payload: Partial<{
+    title: string; start_at: string; end_at: string | null;
+    description: string | null; location: string | null;
+  }>) => request<ProjectEvent>('PATCH', `/events/${eid}`, payload),
+  deleteEvent: (eid: string) =>
+    request<{ ok: boolean }>('DELETE', `/events/${eid}`),
   deleteReport: (rid: string) => request<{ ok: boolean }>('DELETE', `/reports/${rid}`),
 
   // Users (admin)

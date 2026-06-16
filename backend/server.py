@@ -55,7 +55,7 @@ VALID_ROLES = {ROLE_COORD, ROLE_SUB, ROLE_ESPECIALISTA}
 MEASUREMENT_TYPES = {"coord_latlon", "cadenamiento", "eje", "nivel"}
 
 # Colecciones del esquema v2
-COLLECTIONS_V2 = ["users", "projects", "location_nodes", "areas", "invitations", "reports", "announcements", "messages"]
+COLLECTIONS_V2 = ["users", "projects", "location_nodes", "areas", "invitations", "reports", "announcements", "messages", "events", "channels"]
 
 # Colecciones legacy a eliminar en startup
 COLLECTIONS_LEGACY = [
@@ -124,6 +124,12 @@ class LocationNodeIn(BaseModel):
     order: int = 0
     is_leaf: bool = False
     measurement_type: Optional[Literal["coord_latlon", "cadenamiento", "eje", "nivel"]] = None
+    # Coordenadas objetivo dictadas por el Coordinador desde oficina (sólo aplican
+    # a nodos hoja con measurement_type == "coord_latlon"). El Especialista las
+    # ve en modo solo-lectura al capturar.
+    target_lat: Optional[float] = None
+    target_lon: Optional[float] = None
+    target_elev: Optional[float] = None
 
 
 class LocationNodeOut(BaseModel):
@@ -135,6 +141,9 @@ class LocationNodeOut(BaseModel):
     order: int
     is_leaf: bool
     measurement_type: Optional[str] = None
+    target_lat: Optional[float] = None
+    target_lon: Optional[float] = None
+    target_elev: Optional[float] = None
     path: List[str] = Field(default_factory=list)  # cadena de ids desde raíz hasta self
 
 
@@ -346,6 +355,32 @@ async def startup_event():
     await db.reports.create_index([("project_id", 1), ("created_at", -1)])
     await db.announcements.create_index([("project_id", 1), ("pinned", -1), ("created_at", -1)])
     await db.messages.create_index([("project_id", 1), ("created_at", -1)])
+    await db.messages.create_index([("channel_id", 1), ("created_at", -1)])
+    await db.events.create_index([("project_id", 1), ("start_at", 1)])
+    await db.channels.create_index([("project_id", 1), ("type", 1)])
+    await db.channels.create_index([("project_id", 1), ("type", 1), ("area_id", 1)])
+    await db.channels.create_index([("project_id", 1), ("type", 1), ("member_ids", 1)])
+
+    # --- Migración one-shot: asegurar canal General + asignar channel_id a
+    # mensajes legacy creados antes del refactor de canales.
+    try:
+        legacy_msgs = await db.messages.count_documents({"channel_id": {"$exists": False}})
+        if legacy_msgs:
+            log.info(f"[migrate] {legacy_msgs} mensajes legacy sin channel_id → asignando a General de cada proyecto")
+            project_ids = await db.messages.distinct("project_id", {"channel_id": {"$exists": False}})
+            for pid in project_ids:
+                if not pid:
+                    continue
+                await _ensure_default_channels(pid)
+                g = await db.channels.find_one({"project_id": pid, "type": "general"})
+                if g:
+                    await db.messages.update_many(
+                        {"project_id": pid, "channel_id": {"$exists": False}},
+                        {"$set": {"channel_id": g["id"]}},
+                    )
+            log.info("[migrate] mensajes legacy migrados al canal General")
+    except Exception as e:
+        log.warning(f"[migrate] error migrando mensajes legacy: {e}")
     log.info("[startup] SynCo v2.0 ready")
 
 
@@ -510,11 +545,13 @@ async def create_node(pid: str, body: LocationNodeIn, user: dict = Depends(requi
         if parent.get("is_leaf"):
             await db.location_nodes.update_one(
                 {"id": parent["id"]},
-                {"$set": {"is_leaf": False, "measurement_type": None}},
+                {"$set": {"is_leaf": False, "measurement_type": None, "target_lat": None, "target_lon": None, "target_elev": None}},
             )
     if body.is_leaf and body.measurement_type not in MEASUREMENT_TYPES:
         raise HTTPException(400, "Nodos hoja requieren measurement_type válido")
     nid = str(uuid.uuid4())
+    # Coordenadas objetivo: sólo aplican a hojas coord_latlon.
+    is_coord_leaf = body.is_leaf and body.measurement_type == "coord_latlon"
     doc = {
         "id": nid,
         "project_id": pid,
@@ -524,6 +561,9 @@ async def create_node(pid: str, body: LocationNodeIn, user: dict = Depends(requi
         "order": body.order,
         "is_leaf": body.is_leaf,
         "measurement_type": body.measurement_type if body.is_leaf else None,
+        "target_lat": body.target_lat if is_coord_leaf else None,
+        "target_lon": body.target_lon if is_coord_leaf else None,
+        "target_elev": body.target_elev if is_coord_leaf else None,
         "created_at": datetime.now(timezone.utc),
     }
     await db.location_nodes.insert_one(doc)
@@ -536,6 +576,9 @@ class NodePatch(BaseModel):
     order: Optional[int] = None
     is_leaf: Optional[bool] = None
     measurement_type: Optional[Literal["coord_latlon", "cadenamiento", "eje", "nivel"]] = None
+    target_lat: Optional[float] = None
+    target_lon: Optional[float] = None
+    target_elev: Optional[float] = None
 
 
 @api.patch("/nodes/{nid}")
@@ -561,12 +604,27 @@ async def update_node(nid: str, body: NodePatch, user: dict = Depends(require_ro
         else:
             upd["is_leaf"] = False
             upd["measurement_type"] = None
+            upd["target_lat"] = None
+            upd["target_lon"] = None
+            upd["target_elev"] = None
     elif body.measurement_type is not None:
         if not node.get("is_leaf"):
             raise HTTPException(400, "measurement_type solo aplica a hojas")
         if body.measurement_type not in MEASUREMENT_TYPES:
             raise HTTPException(400, "measurement_type inválido")
         upd["measurement_type"] = body.measurement_type
+        # Si cambia el tipo y deja de ser coord_latlon, limpia coords objetivo.
+        if body.measurement_type != "coord_latlon":
+            upd["target_lat"] = None
+            upd["target_lon"] = None
+            upd["target_elev"] = None
+    # Coordenadas objetivo (sólo válidas en hojas coord_latlon — usar valor final).
+    final_is_leaf = upd.get("is_leaf", node.get("is_leaf"))
+    final_mtype = upd.get("measurement_type", node.get("measurement_type"))
+    is_coord_leaf = bool(final_is_leaf and final_mtype == "coord_latlon")
+    for fld, val in (("target_lat", body.target_lat), ("target_lon", body.target_lon), ("target_elev", body.target_elev)):
+        if val is not None and is_coord_leaf:
+            upd[fld] = val
     if upd:
         await db.location_nodes.update_one({"id": nid}, {"$set": upd})
     out = await db.location_nodes.find_one({"id": nid})
@@ -831,6 +889,11 @@ async def create_report(body: ReportIn, user: dict = Depends(current_user)):
         "node_path_names": path_names,
         "measurement_type": node["measurement_type"],
         "measurement_value": body.measurement_value,
+        "node_target": {
+            "lat": node.get("target_lat"),
+            "lon": node.get("target_lon"),
+            "elev": node.get("target_elev"),
+        } if node.get("measurement_type") == "coord_latlon" else None,
         "area_id": body.area_id or user.get("area_id"),
         "area_name": area_name,
         "notes": (body.notes or "").strip() or None,
@@ -998,7 +1061,17 @@ async def delete_report(rid: str, user: dict = Depends(current_user)):
 
 # === USERS (admin) ==========================================================
 @api.get("/projects/{pid}/users")
-async def list_project_users(pid: str, user: dict = Depends(require_role(ROLE_COORD))):
+async def list_project_users(pid: str, user: dict = Depends(current_user)):
+    """Lista usuarios miembros del proyecto. Cualquier miembro puede consultarla
+    (usado para el selector de Mensajes Directos)."""
+    await ensure_project_access(user, pid)
+    items = await db.users.find({"project_ids": pid}).to_list(length=1000)
+    return [user_to_out(u) for u in items]
+
+
+@api.get("/projects/{pid}/members")
+async def list_project_members(pid: str, user: dict = Depends(current_user)):
+    """Alias semántico de /users — lista miembros del proyecto."""
     await ensure_project_access(user, pid)
     items = await db.users.find({"project_ids": pid}).to_list(length=1000)
     return [user_to_out(u) for u in items]
@@ -1038,9 +1111,9 @@ async def list_announcements(pid: str, user: dict = Depends(current_user)):
 async def create_announcement(
     pid: str,
     body: AnnouncementIn,
-    user: dict = Depends(require_role(ROLE_COORD)),
+    user: dict = Depends(current_user),
 ):
-    """Solo Coordinador General puede publicar."""
+    """Cualquier miembro del proyecto puede publicar una noticia."""
     await ensure_project_access(user, pid)
     title = (body.title or "").strip()
     text = (body.body or "").strip()
@@ -1061,6 +1134,7 @@ async def create_announcement(
         "pinned": bool(body.pinned),
         "author_id": user["id"],
         "author_name": user["name"],
+        "author_role": user["role"],
         "created_at": now,
         "updated_at": now,
     }
@@ -1072,12 +1146,17 @@ async def create_announcement(
 async def update_announcement(
     aid: str,
     body: AnnouncementPatch,
-    user: dict = Depends(require_role(ROLE_COORD)),
+    user: dict = Depends(current_user),
 ):
+    """Editable por el autor o por cualquier Coordinador General."""
     a = await db.announcements.find_one({"id": aid})
     if not a:
         raise HTTPException(404, "Noticia no existe")
     await ensure_project_access(user, a["project_id"])
+    is_author = a.get("author_id") == user["id"]
+    is_coord = user["role"] == ROLE_COORD
+    if not (is_author or is_coord):
+        raise HTTPException(403, "Sólo el autor o un Coordinador puede editar")
     update: dict = {}
     if body.title is not None:
         t = body.title.strip()
@@ -1094,6 +1173,9 @@ async def update_announcement(
             raise HTTPException(400, "Cuerpo máximo 4000 caracteres")
         update["body"] = b
     if body.pinned is not None:
+        # Sólo Coordinador puede fijar/desfijar (afecta visibilidad global).
+        if not is_coord:
+            raise HTTPException(403, "Sólo el Coordinador puede fijar noticias")
         update["pinned"] = bool(body.pinned)
     if not update:
         return _announcement_out(a)
@@ -1104,16 +1186,21 @@ async def update_announcement(
 
 
 @api.delete("/announcements/{aid}")
-async def delete_announcement(aid: str, user: dict = Depends(require_role(ROLE_COORD))):
+async def delete_announcement(aid: str, user: dict = Depends(current_user)):
+    """Eliminable por el autor o por cualquier Coordinador General."""
     a = await db.announcements.find_one({"id": aid})
     if not a:
         raise HTTPException(404, "Noticia no existe")
     await ensure_project_access(user, a["project_id"])
+    is_author = a.get("author_id") == user["id"]
+    is_coord = user["role"] == ROLE_COORD
+    if not (is_author or is_coord):
+        raise HTTPException(403, "Sólo el autor o un Coordinador puede eliminar")
     await db.announcements.delete_one({"id": aid})
     return {"ok": True}
 
 
-# === MESSAGES (Chat por proyecto) ==========================================
+# === CHANNELS + MESSAGES (Chat con canales: General / Áreas / Directos) =====
 class MessageIn(BaseModel):
     text: str
 
@@ -1123,26 +1210,233 @@ def _message_out(doc: dict) -> dict:
     return doc
 
 
-@api.get("/projects/{pid}/messages")
-async def list_messages(
-    pid: str,
+def _channel_out(doc: dict) -> dict:
+    doc.pop("_id", None)
+    return doc
+
+
+# Tipos de canal soportados
+CHANNEL_TYPES = ("general", "area", "direct")
+
+
+async def _ensure_default_channels(pid: str) -> None:
+    """Crea (idempotentemente) el canal General y un canal por cada área del proyecto."""
+    proj = await db.projects.find_one({"id": pid})
+    if not proj:
+        return
+    # General
+    g = await db.channels.find_one({"project_id": pid, "type": "general"})
+    now = datetime.now(timezone.utc)
+    if not g:
+        await db.channels.insert_one({
+            "id": str(uuid.uuid4()),
+            "project_id": pid,
+            "type": "general",
+            "name": "General",
+            "area_id": None,
+            "color": None,
+            "member_ids": None,
+            "created_at": now,
+        })
+    # Per-area
+    areas = await db.areas.find({"project_id": pid}).to_list(length=200)
+    for area in areas:
+        existing = await db.channels.find_one({
+            "project_id": pid, "type": "area", "area_id": area["id"],
+        })
+        if not existing:
+            await db.channels.insert_one({
+                "id": str(uuid.uuid4()),
+                "project_id": pid,
+                "type": "area",
+                "name": area["name"],
+                "area_id": area["id"],
+                "color": area.get("color"),
+                "member_ids": None,
+                "created_at": now,
+            })
+        else:
+            # Sincroniza nombre/color con el área (por si Coord la renombró)
+            patch = {}
+            if existing.get("name") != area["name"]:
+                patch["name"] = area["name"]
+            if existing.get("color") != area.get("color"):
+                patch["color"] = area.get("color")
+            if patch:
+                await db.channels.update_one({"id": existing["id"]}, {"$set": patch})
+
+
+def _can_access_channel(user: dict, ch: dict) -> bool:
+    pid = ch["project_id"]
+    project_ids = user.get("project_ids") or []
+    if user["role"] == ROLE_COORD:
+        # Coord global access — pero igual valida pertenencia básica al proyecto
+        return pid in project_ids
+    if pid not in project_ids:
+        return False
+    if ch["type"] == "general":
+        return True
+    if ch["type"] == "area":
+        # Especialistas con area_id que coincide. Sub-coords no pertenecen a un área.
+        return user.get("area_id") and user.get("area_id") == ch.get("area_id")
+    if ch["type"] == "direct":
+        return user["id"] in (ch.get("member_ids") or [])
+    return False
+
+
+async def _general_channel_id(pid: str) -> str:
+    await _ensure_default_channels(pid)
+    g = await db.channels.find_one({"project_id": pid, "type": "general"})
+    return g["id"] if g else ""
+
+
+@api.get("/projects/{pid}/channels")
+async def list_channels(pid: str, user: dict = Depends(current_user)):
+    """Lista los canales accesibles del proyecto para el usuario actual.
+    Crea automáticamente los canales por defecto (General + uno por área) si faltan.
+    Cada canal trae su último mensaje (preview) para la lista estilo Slack/WhatsApp."""
+    await ensure_project_access(user, pid)
+    await _ensure_default_channels(pid)
+    raw = await db.channels.find({"project_id": pid}).to_list(length=500)
+    out: list = []
+    for ch in raw:
+        if not _can_access_channel(user, ch):
+            continue
+        # Para directos: nombre dinámico = nombre del otro usuario
+        display_name = ch.get("name") or ""
+        peer = None
+        if ch["type"] == "direct":
+            other_id = next(
+                (mid for mid in (ch.get("member_ids") or []) if mid != user["id"]),
+                None,
+            )
+            if other_id:
+                other = await db.users.find_one({"id": other_id})
+                if other:
+                    display_name = other.get("name") or display_name
+                    peer = {
+                        "id": other.get("id"),
+                        "name": other.get("name"),
+                        "role": other.get("role"),
+                    }
+        # Último mensaje
+        last_doc = await db.messages.find({"channel_id": ch["id"]}).sort("created_at", -1).limit(1).to_list(length=1)
+        last_msg = None
+        if last_doc:
+            lm = last_doc[0]
+            last_msg = {
+                "id": lm["id"],
+                "text": (lm.get("text") or "")[:140],
+                "user_id": lm.get("user_id"),
+                "user_name": lm.get("user_name"),
+                "created_at": lm.get("created_at"),
+            }
+        out.append({
+            "id": ch["id"],
+            "project_id": ch["project_id"],
+            "type": ch["type"],
+            "name": display_name,
+            "area_id": ch.get("area_id"),
+            "color": ch.get("color"),
+            "member_ids": ch.get("member_ids"),
+            "peer": peer,
+            "last_message": last_msg,
+            "created_at": ch.get("created_at"),
+        })
+    # Orden: general primero, luego áreas, luego directos por last_message desc
+    type_order = {"general": 0, "area": 1, "direct": 2}
+
+    def _sort_key(c):
+        t = type_order.get(c["type"], 9)
+        last_dt = (c.get("last_message") or {}).get("created_at")
+        # Más reciente primero dentro del mismo grupo
+        ts = last_dt.timestamp() if isinstance(last_dt, datetime) else 0
+        return (t, -ts, (c.get("name") or "").lower())
+
+    out.sort(key=_sort_key)
+    return out
+
+
+class DirectChannelIn(BaseModel):
+    target_user_id: str
+
+
+@api.post("/projects/{pid}/channels/direct")
+async def create_direct_channel(pid: str, body: DirectChannelIn, user: dict = Depends(current_user)):
+    """Crea (o devuelve si ya existe) un canal directo 1-a-1 entre el usuario actual y target_user_id."""
+    await ensure_project_access(user, pid)
+    if body.target_user_id == user["id"]:
+        raise HTTPException(400, "No puedes iniciar un chat contigo mismo")
+    target = await db.users.find_one({"id": body.target_user_id})
+    if not target:
+        raise HTTPException(404, "Usuario no existe")
+    if pid not in (target.get("project_ids") or []):
+        raise HTTPException(404, "Ese usuario no pertenece al proyecto")
+    members = sorted([user["id"], body.target_user_id])
+    existing = await db.channels.find_one({
+        "project_id": pid, "type": "direct", "member_ids": members,
+    })
+    if existing:
+        existing.pop("_id", None)
+        # Devuelve con nombre del peer
+        existing["name"] = target.get("name") or "DM"
+        existing["peer"] = {
+            "id": target.get("id"), "name": target.get("name"), "role": target.get("role"),
+        }
+        return existing
+    doc = {
+        "id": str(uuid.uuid4()),
+        "project_id": pid,
+        "type": "direct",
+        "name": "DM",  # se reemplaza por el nombre del peer en la respuesta
+        "area_id": None,
+        "color": None,
+        "member_ids": members,
+        "created_at": datetime.now(timezone.utc),
+    }
+    await db.channels.insert_one(doc)
+    doc.pop("_id", None)
+    doc["name"] = target.get("name") or "DM"
+    doc["peer"] = {
+        "id": target.get("id"), "name": target.get("name"), "role": target.get("role"),
+    }
+    return doc
+
+
+@api.get("/channels/{cid}")
+async def get_channel(cid: str, user: dict = Depends(current_user)):
+    ch = await db.channels.find_one({"id": cid})
+    if not ch:
+        raise HTTPException(404, "Canal no existe")
+    if not _can_access_channel(user, ch):
+        raise HTTPException(403, "Sin acceso a este canal")
+    ch.pop("_id", None)
+    if ch["type"] == "direct":
+        other_id = next((mid for mid in (ch.get("member_ids") or []) if mid != user["id"]), None)
+        if other_id:
+            other = await db.users.find_one({"id": other_id})
+            if other:
+                ch["name"] = other.get("name") or ch.get("name")
+                ch["peer"] = {
+                    "id": other.get("id"), "name": other.get("name"), "role": other.get("role"),
+                }
+    return ch
+
+
+@api.get("/channels/{cid}/messages")
+async def list_channel_messages(
+    cid: str,
     since: Optional[str] = None,
     before: Optional[str] = None,
     limit: int = 100,
     user: dict = Depends(current_user),
 ):
-    """Lista mensajes del chat general de un proyecto.
-
-    Parámetros:
-      since  → ISO datetime; sólo devuelve los más nuevos (delta-fetch polling)
-      before → ISO datetime; usado para paginar hacia atrás (lazy-load)
-      limit  → 1..200
-
-    Orden de la respuesta: ascendente por created_at (más antiguo primero,
-    listo para render en una lista no invertida).
-    """
-    await ensure_project_access(user, pid)
-    q: dict = {"project_id": pid}
+    ch = await db.channels.find_one({"id": cid})
+    if not ch:
+        raise HTTPException(404, "Canal no existe")
+    if not _can_access_channel(user, ch):
+        raise HTTPException(403, "Sin acceso a este canal")
+    q: dict = {"channel_id": cid}
     if since:
         try:
             ts = datetime.fromisoformat(since.replace("Z", "+00:00"))
@@ -1155,23 +1449,20 @@ async def list_messages(
             q.setdefault("created_at", {})["$lt"] = ts
         except Exception:
             pass
-
     safe_limit = max(1, min(int(limit or 100), 200))
-    # Tomamos los más recientes primero (para limit) y luego invertimos.
     cursor = db.messages.find(q).sort("created_at", -1).limit(safe_limit)
     raw = await cursor.to_list(length=safe_limit)
     raw.reverse()
     return [_message_out(it) for it in raw]
 
 
-@api.post("/projects/{pid}/messages")
-async def create_message(
-    pid: str,
-    body: MessageIn,
-    user: dict = Depends(current_user),
-):
-    """Publica un mensaje en el chat general. Cualquier miembro del proyecto puede escribir."""
-    await ensure_project_access(user, pid)
+@api.post("/channels/{cid}/messages")
+async def post_channel_message(cid: str, body: MessageIn, user: dict = Depends(current_user)):
+    ch = await db.channels.find_one({"id": cid})
+    if not ch:
+        raise HTTPException(404, "Canal no existe")
+    if not _can_access_channel(user, ch):
+        raise HTTPException(403, "Sin acceso a este canal")
     text = (body.text or "").strip()
     if not text:
         raise HTTPException(400, "Mensaje vacío")
@@ -1179,7 +1470,8 @@ async def create_message(
         raise HTTPException(400, "Mensaje máximo 2000 caracteres")
     doc = {
         "id": str(uuid.uuid4()),
-        "project_id": pid,
+        "channel_id": cid,
+        "project_id": ch["project_id"],
         "user_id": user["id"],
         "user_name": user["name"],
         "user_role": user["role"],
@@ -1189,6 +1481,37 @@ async def create_message(
     }
     await db.messages.insert_one(doc)
     return _message_out(doc)
+
+
+# ---- Endpoints LEGACY: redirigen al canal General para mantener compatibilidad
+@api.get("/projects/{pid}/messages")
+async def list_messages_legacy(
+    pid: str,
+    since: Optional[str] = None,
+    before: Optional[str] = None,
+    limit: int = 100,
+    user: dict = Depends(current_user),
+):
+    """Compat: lista mensajes del canal General del proyecto."""
+    await ensure_project_access(user, pid)
+    cid = await _general_channel_id(pid)
+    if not cid:
+        return []
+    return await list_channel_messages(cid, since=since, before=before, limit=limit, user=user)
+
+
+@api.post("/projects/{pid}/messages")
+async def create_message_legacy(
+    pid: str,
+    body: MessageIn,
+    user: dict = Depends(current_user),
+):
+    """Compat: publica en el canal General del proyecto."""
+    await ensure_project_access(user, pid)
+    cid = await _general_channel_id(pid)
+    if not cid:
+        raise HTTPException(500, "No se pudo asegurar el canal general")
+    return await post_channel_message(cid, body, user)
 
 
 @api.delete("/messages/{mid}")
@@ -1202,6 +1525,167 @@ async def delete_message(mid: str, user: dict = Depends(current_user)):
     if not (is_author or is_coord):
         raise HTTPException(403, "Sin permiso para eliminar este mensaje")
     await db.messages.delete_one({"id": mid})
+    return {"ok": True}
+
+
+# === EVENTS (Calendario compartido) ========================================
+class EventIn(BaseModel):
+    title: str
+    description: Optional[str] = None
+    location: Optional[str] = None
+    start_at: str  # ISO 8601
+    end_at: Optional[str] = None
+
+
+class EventPatch(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    location: Optional[str] = None
+    start_at: Optional[str] = None
+    end_at: Optional[str] = None
+
+
+def _event_out(doc: dict) -> dict:
+    doc.pop("_id", None)
+    return doc
+
+
+def _parse_iso(s: str) -> datetime:
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except Exception:
+        raise HTTPException(400, f"Fecha inválida: {s}")
+
+
+@api.get("/projects/{pid}/events")
+async def list_events(
+    pid: str,
+    range: str = "upcoming",  # upcoming | past | all
+    limit: int = 500,
+    user: dict = Depends(current_user),
+):
+    """Lista eventos. Cualquier miembro del proyecto puede leer."""
+    await ensure_project_access(user, pid)
+    q: dict = {"project_id": pid}
+    now = datetime.now(timezone.utc)
+    if range == "upcoming":
+        # eventos desde inicio del día actual (UTC) en adelante
+        start_today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        q["start_at"] = {"$gte": start_today}
+    elif range == "past":
+        q["start_at"] = {"$lt": now.replace(hour=0, minute=0, second=0, microsecond=0)}
+    # 'all' → sin filtro
+
+    sort_dir = 1 if range != "past" else -1
+    safe_limit = max(1, min(int(limit or 500), 1000))
+    cursor = db.events.find(q).sort("start_at", sort_dir).limit(safe_limit)
+    items = await cursor.to_list(length=safe_limit)
+    return [_event_out(it) for it in items]
+
+
+@api.post("/projects/{pid}/events")
+async def create_event(
+    pid: str,
+    body: EventIn,
+    user: dict = Depends(current_user),
+):
+    """Cualquier miembro del proyecto puede crear eventos."""
+    await ensure_project_access(user, pid)
+    title = (body.title or "").strip()
+    if not title:
+        raise HTTPException(400, "Título requerido")
+    if len(title) > 140:
+        raise HTTPException(400, "Título máximo 140 caracteres")
+    start = _parse_iso(body.start_at)
+    end = _parse_iso(body.end_at) if body.end_at else None
+    if end and end < start:
+        raise HTTPException(400, "La fecha de fin no puede ser anterior al inicio")
+    desc = (body.description or "").strip() or None
+    loc = (body.location or "").strip() or None
+    if desc and len(desc) > 2000:
+        raise HTTPException(400, "Descripción máximo 2000 caracteres")
+    if loc and len(loc) > 200:
+        raise HTTPException(400, "Ubicación máximo 200 caracteres")
+    now = datetime.now(timezone.utc)
+    doc = {
+        "id": str(uuid.uuid4()),
+        "project_id": pid,
+        "title": title,
+        "description": desc,
+        "location": loc,
+        "start_at": start,
+        "end_at": end,
+        "author_id": user["id"],
+        "author_name": user["name"],
+        "author_role": user["role"],
+        "created_at": now,
+        "updated_at": now,
+    }
+    await db.events.insert_one(doc)
+    return _event_out(doc)
+
+
+@api.patch("/events/{eid}")
+async def update_event(
+    eid: str,
+    body: EventPatch,
+    user: dict = Depends(current_user),
+):
+    """Editable por el autor o por cualquier Coordinador General."""
+    e = await db.events.find_one({"id": eid})
+    if not e:
+        raise HTTPException(404, "Evento no existe")
+    await ensure_project_access(user, e["project_id"])
+    is_author = e.get("author_id") == user["id"]
+    is_coord = user["role"] == ROLE_COORD
+    if not (is_author or is_coord):
+        raise HTTPException(403, "Sólo el autor o un Coordinador puede editar")
+    update: dict = {}
+    if body.title is not None:
+        t = body.title.strip()
+        if not t:
+            raise HTTPException(400, "Título no puede estar vacío")
+        if len(t) > 140:
+            raise HTTPException(400, "Título máximo 140 caracteres")
+        update["title"] = t
+    if body.description is not None:
+        d = body.description.strip()
+        if d and len(d) > 2000:
+            raise HTTPException(400, "Descripción máximo 2000 caracteres")
+        update["description"] = d or None
+    if body.location is not None:
+        loc = body.location.strip()
+        if loc and len(loc) > 200:
+            raise HTTPException(400, "Ubicación máximo 200 caracteres")
+        update["location"] = loc or None
+    if body.start_at is not None:
+        update["start_at"] = _parse_iso(body.start_at)
+    if body.end_at is not None:
+        update["end_at"] = _parse_iso(body.end_at) if body.end_at else None
+    start_final = update.get("start_at", e["start_at"])
+    end_final = update.get("end_at", e.get("end_at"))
+    if end_final and end_final < start_final:
+        raise HTTPException(400, "La fecha de fin no puede ser anterior al inicio")
+    if not update:
+        return _event_out(e)
+    update["updated_at"] = datetime.now(timezone.utc)
+    await db.events.update_one({"id": eid}, {"$set": update})
+    e = await db.events.find_one({"id": eid})
+    return _event_out(e)
+
+
+@api.delete("/events/{eid}")
+async def delete_event(eid: str, user: dict = Depends(current_user)):
+    """Eliminable por el autor o por cualquier Coordinador General."""
+    e = await db.events.find_one({"id": eid})
+    if not e:
+        raise HTTPException(404, "Evento no existe")
+    await ensure_project_access(user, e["project_id"])
+    is_author = e.get("author_id") == user["id"]
+    is_coord = user["role"] == ROLE_COORD
+    if not (is_author or is_coord):
+        raise HTTPException(403, "Sólo el autor o un Coordinador puede eliminar")
+    await db.events.delete_one({"id": eid})
     return {"ok": True}
 
 

@@ -90,14 +90,21 @@ export default function TreeBuilderScreen() {
     }
   }
 
-  async function onSave(payload: { name: string; is_leaf: boolean; measurement_type: MeasurementType | null }) {
+  async function onSave(payload: { name: string; is_leaf: boolean; measurement_type: MeasurementType | null; target_lat: number | null; target_lon: number | null; target_elev: number | null }) {
     if (!editor) return;
     try {
+      const isCoordLeaf = payload.is_leaf && payload.measurement_type === 'coord_latlon';
+      const targets = {
+        target_lat: isCoordLeaf ? payload.target_lat : null,
+        target_lon: isCoordLeaf ? payload.target_lon : null,
+        target_elev: isCoordLeaf ? payload.target_elev : null,
+      };
       if (editor.kind === 'edit') {
         await api.updateNode(editor.node.id, {
           name: payload.name,
           is_leaf: payload.is_leaf,
           measurement_type: payload.is_leaf ? payload.measurement_type : null,
+          ...targets,
         });
       } else {
         const parent_id = editor.kind === 'create_child' ? editor.parent.id : null;
@@ -107,6 +114,7 @@ export default function TreeBuilderScreen() {
           name: payload.name,
           is_leaf: payload.is_leaf,
           measurement_type: payload.is_leaf ? payload.measurement_type : null,
+          ...targets,
         });
         if (parent_id) setExpanded((e) => ({ ...e, [parent_id]: true }));
       }
@@ -314,12 +322,15 @@ function NodeEditorModal({
   visible: boolean;
   editor: EditorMode | null;
   onClose: () => void;
-  onSave: (p: { name: string; is_leaf: boolean; measurement_type: MeasurementType | null }) => Promise<void>;
+  onSave: (p: { name: string; is_leaf: boolean; measurement_type: MeasurementType | null; target_lat: number | null; target_lon: number | null; target_elev: number | null }) => Promise<void>;
 }) {
   const insets = useSafeAreaInsets();
   const [name, setName] = useState('');
   const [isLeaf, setIsLeaf] = useState(false);
   const [mtype, setMtype] = useState<MeasurementType | null>(null);
+  const [tLat, setTLat] = useState('');
+  const [tLon, setTLon] = useState('');
+  const [tElev, setTElev] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -329,8 +340,13 @@ function NodeEditorModal({
       setName(editor.node.name);
       setIsLeaf(editor.node.is_leaf);
       setMtype((editor.node.measurement_type as MeasurementType | null) || null);
+      const n: any = editor.node;
+      setTLat(n.target_lat != null ? String(n.target_lat) : '');
+      setTLon(n.target_lon != null ? String(n.target_lon) : '');
+      setTElev(n.target_elev != null ? String(n.target_elev) : '');
     } else {
       setName(''); setIsLeaf(false); setMtype(null);
+      setTLat(''); setTLon(''); setTElev('');
     }
     setErr(null);
   }, [visible, editor]);
@@ -342,14 +358,42 @@ function NodeEditorModal({
     return 'Nuevo nodo raíz';
   }, [editor]);
 
+  // Helper para parsear coordenada (admite punto o coma como separador decimal).
+  function parseCoord(raw: string): number | null {
+    const s = (raw || '').trim().replace(',', '.');
+    if (!s) return null;
+    const n = Number(s);
+    return Number.isFinite(n) ? n : NaN as any;
+  }
+
   async function submit() {
     setErr(null);
     const n = name.trim();
     if (!n) { setErr('El nombre es obligatorio'); return; }
     if (isLeaf && !mtype) { setErr('Selecciona el tipo de medición para el nodo hoja'); return; }
+    let parsedLat: number | null = null;
+    let parsedLon: number | null = null;
+    let parsedElev: number | null = null;
+    if (isLeaf && mtype === 'coord_latlon') {
+      parsedLat = parseCoord(tLat);
+      parsedLon = parseCoord(tLon);
+      parsedElev = parseCoord(tElev);
+      if (Number.isNaN(parsedLat as any)) { setErr('Latitud inválida'); return; }
+      if (Number.isNaN(parsedLon as any)) { setErr('Longitud inválida'); return; }
+      if (Number.isNaN(parsedElev as any)) { setErr('Elevación inválida'); return; }
+      if (parsedLat != null && (parsedLat < -90 || parsedLat > 90)) { setErr('Latitud fuera de rango (-90 a 90)'); return; }
+      if (parsedLon != null && (parsedLon < -180 || parsedLon > 180)) { setErr('Longitud fuera de rango (-180 a 180)'); return; }
+    }
     setBusy(true);
     try {
-      await onSave({ name: n, is_leaf: isLeaf, measurement_type: isLeaf ? mtype : null });
+      await onSave({
+        name: n,
+        is_leaf: isLeaf,
+        measurement_type: isLeaf ? mtype : null,
+        target_lat: parsedLat,
+        target_lon: parsedLon,
+        target_elev: parsedElev,
+      });
     } finally {
       setBusy(false);
     }
@@ -428,6 +472,68 @@ function NodeEditorModal({
                       </Pressable>
                     ))}
                   </View>
+
+                  {mtype === 'coord_latlon' ? (
+                    <View style={styles.coordCard}>
+                      <View style={styles.coordHeader}>
+                        <Ionicons name="location" size={16} color={colors.primary} />
+                        <Text style={styles.coordHeaderText}>Coordenadas objetivo (oficina)</Text>
+                      </View>
+                      <Text style={styles.coordHelp}>
+                        Valores dictados por el Coordinador. El Especialista los verá en modo solo-lectura al capturar este nodo.
+                      </Text>
+                      <View style={styles.coordRow}>
+                        <View style={styles.coordField}>
+                          <Text style={styles.coordLabel}>Latitud (X)</Text>
+                          <View style={styles.inputWrap}>
+                            <Ionicons name="locate-outline" size={16} color={colors.textMuted} />
+                            <TextInput
+                              value={tLat}
+                              onChangeText={setTLat}
+                              placeholder="19.432608"
+                              placeholderTextColor={colors.textMuted}
+                              style={styles.input}
+                              keyboardType="numbers-and-punctuation"
+                              autoCorrect={false}
+                              editable={!busy}
+                            />
+                          </View>
+                        </View>
+                        <View style={styles.coordField}>
+                          <Text style={styles.coordLabel}>Longitud (Y)</Text>
+                          <View style={styles.inputWrap}>
+                            <Ionicons name="locate-outline" size={16} color={colors.textMuted} />
+                            <TextInput
+                              value={tLon}
+                              onChangeText={setTLon}
+                              placeholder="-99.133209"
+                              placeholderTextColor={colors.textMuted}
+                              style={styles.input}
+                              keyboardType="numbers-and-punctuation"
+                              autoCorrect={false}
+                              editable={!busy}
+                            />
+                          </View>
+                        </View>
+                      </View>
+                      <View style={styles.coordField}>
+                        <Text style={styles.coordLabel}>Elevación / Cota (Z)</Text>
+                        <View style={styles.inputWrap}>
+                          <Ionicons name="trending-up-outline" size={16} color={colors.textMuted} />
+                          <TextInput
+                            value={tElev}
+                            onChangeText={setTElev}
+                            placeholder="2240.50 (msnm)"
+                            placeholderTextColor={colors.textMuted}
+                            style={styles.input}
+                            keyboardType="numbers-and-punctuation"
+                            autoCorrect={false}
+                            editable={!busy}
+                          />
+                        </View>
+                      </View>
+                    </View>
+                  ) : null}
                 </View>
               ) : null}
 
@@ -567,5 +673,18 @@ const styles = StyleSheet.create({
   },
   mOptionOn: { borderColor: colors.primary, backgroundColor: colors.primaryLight },
   mOptionText: { flex: 1, fontSize: 14, color: colors.text, fontWeight: '700' },
+  // Coord targets card (lat/lon/elev) — visible cuando measurement_type = coord_latlon
+  coordCard: {
+    marginTop: 12,
+    borderWidth: 1, borderColor: colors.primary,
+    backgroundColor: colors.primaryLight,
+    borderRadius: radius.md, padding: 12, gap: 10,
+  },
+  coordHeader: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  coordHeaderText: { fontSize: 12, fontWeight: '800', color: colors.primary, letterSpacing: 0.3, textTransform: 'uppercase' },
+  coordHelp: { fontSize: 11, color: colors.textBody, lineHeight: 15 },
+  coordRow: { flexDirection: 'row', gap: 10 },
+  coordField: { flex: 1, gap: 6 },
+  coordLabel: { fontSize: 11, fontWeight: '700', color: colors.textBody },
   errorBoxInline: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: colors.errorBg, padding: 10, borderRadius: radius.md },
 });
