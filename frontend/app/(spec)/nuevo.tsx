@@ -97,6 +97,9 @@ export default function SpecCaptureScreen() {
   const [nodeHistory, setNodeHistory] = useState<NodeHistorySnapshot | null>(null);
   const [nodeHistoryLoading, setNodeHistoryLoading] = useState(false);
 
+  // Contratista derivado del proyecto (solo lectura)
+  const contratistaDisplay = (project?.constructora || '').trim();
+
   // ----- Modal cascada -----------------------------------------------------
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerLevelIdx, setPickerLevelIdx] = useState(0);
@@ -171,6 +174,21 @@ export default function SpecCaptureScreen() {
     if (path.length === 0) return 'Sin seleccionar';
     return path.map((n) => n.name).join(' / ');
   }, [path]);
+
+  // -------------------------------------------------------------------------
+  // Pre-cargar Lat/Lon desde target_lat/target_lon del nodo cuando aplique.
+  // Estos campos son SOLO LECTURA para el Especialista: los precarga el Coordinador.
+  useEffect(() => {
+    if (!leafNode) return;
+    if (leafNode.measurement_type !== 'coord_latlon') return;
+    const tLat = (leafNode as any).target_lat;
+    const tLon = (leafNode as any).target_lon;
+    setMeasurement((prev) => ({
+      ...prev,
+      lat: typeof tLat === 'number' ? tLat : prev.lat,
+      lon: typeof tLon === 'number' ? tLon : prev.lon,
+    }));
+  }, [leafNode]);
 
   // -------------------------------------------------------------------------
   // Cargar historial del nodo cuando se selecciona una hoja.
@@ -1096,26 +1114,28 @@ function MeasurementInput({ type, value, onChange }: {
     return (
       <View style={{ flexDirection: 'row', gap: spacing.sm }}>
         <View style={{ flex: 1 }}>
-          <Field label="Latitud">
+          <Field label="Latitud (X) · precargada">
             <TextInput
+              editable={false}
+              selectTextOnFocus={false}
               keyboardType="numeric"
-              placeholder="19.432608"
+              placeholder="Asignada por Coordinador"
               placeholderTextColor={colors.textMuted}
-              style={styles.input}
+              style={[styles.input, styles.inputDisabled]}
               value={value.lat != null ? String(value.lat) : ''}
-              onChangeText={(t) => onChange({ ...value, lat: parseFloatSafe(t) })}
             />
           </Field>
         </View>
         <View style={{ flex: 1 }}>
-          <Field label="Longitud">
+          <Field label="Longitud (Y) · precargada">
             <TextInput
+              editable={false}
+              selectTextOnFocus={false}
               keyboardType="numeric"
-              placeholder="-99.133209"
+              placeholder="Asignada por Coordinador"
               placeholderTextColor={colors.textMuted}
-              style={styles.input}
+              style={[styles.input, styles.inputDisabled]}
               value={value.lon != null ? String(value.lon) : ''}
-              onChangeText={(t) => onChange({ ...value, lon: parseFloatSafe(t) })}
             />
           </Field>
         </View>
