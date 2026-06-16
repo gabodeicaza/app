@@ -59,7 +59,8 @@ export default function ProjectDetailScreen() {
           reader.readAsDataURL(blob);
         });
         const base64 = dataUri.split(',')[1] || '';
-        const FileSystem: any = await import('expo-file-system');
+        // Expo SDK 54: writeAsStringAsync se movió al paquete legacy.
+        const FileSystem: any = await import('expo-file-system/legacy');
         const Sharing: any = await import('expo-sharing');
         const dest = `${FileSystem.cacheDirectory || ''}${filename}`;
         await FileSystem.writeAsStringAsync(dest, base64, { encoding: FileSystem.EncodingType?.Base64 || 'base64' });
