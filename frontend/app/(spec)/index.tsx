@@ -43,6 +43,8 @@ export default function SpecFeedScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [periodSheetVisible, setPeriodSheetVisible] = useState(false);
+  const [pdfBusy, setPdfBusy] = useState(false);
 
   const load = useCallback(async (nextRange: RangeKey = range, silent = false) => {
     if (!projectId) {
@@ -80,6 +82,20 @@ export default function SpecFeedScreen() {
     if (!ok) return;
     await logout();
     router.replace('/(auth)/login');
+  }
+
+  async function onSelectPeriod(period: ReportPeriod) {
+    setPeriodSheetVisible(false);
+    if (!projectId) return;
+    try {
+      setPdfBusy(true);
+      const { blob, filename } = await api.downloadReportsPdf(projectId, period);
+      await downloadBlob(blob, filename, 'application/pdf');
+    } catch (e: any) {
+      Alert.alert('No se pudo generar el PDF', e?.message || 'Inténtalo nuevamente.');
+    } finally {
+      setPdfBusy(false);
+    }
   }
 
   const stats = feed?.stats || { total: 0, mine: 0, others: 0 };
@@ -173,6 +189,31 @@ export default function SpecFeedScreen() {
           />
         </View>
 
+        {/* Botón Mis Reportes (PDF) */}
+        <View style={styles.pdfBtnWrap}>
+          <Pressable
+            onPress={() => setPeriodSheetVisible(true)}
+            disabled={pdfBusy || !projectId}
+            style={({ pressed }) => [
+              styles.pdfBtn,
+              (pdfBusy || !projectId) && styles.pdfBtnDisabled,
+              pressed && !pdfBusy && { opacity: 0.85 },
+            ]}
+          >
+            {pdfBusy ? (
+              <ActivityIndicator color="#fff" size="small" />
+            ) : (
+              <Ionicons name="document-text" size={18} color="#fff" />
+            )}
+            <Text style={styles.pdfBtnTxt}>
+              {pdfBusy ? 'Generando PDF…' : 'Mis Reportes (PDF)'}
+            </Text>
+            {!pdfBusy ? (
+              <Ionicons name="download-outline" size={16} color="#fff" style={{ marginLeft: 'auto' }} />
+            ) : null}
+          </Pressable>
+        </View>
+
         {/* Filtros temporales */}
         <View style={styles.timeFiltersWrap}>
           <Text style={styles.sectionLabel}>Filtrar actividad</Text>
@@ -230,6 +271,14 @@ export default function SpecFeedScreen() {
           />
         )}
       </ScrollView>
+
+      {/* Bottom sheet de selección de período para PDF */}
+      <PeriodSheet
+        visible={periodSheetVisible}
+        title="Mis Reportes (PDF)"
+        onClose={() => setPeriodSheetVisible(false)}
+        onSelect={onSelectPeriod}
+      />
     </View>
   );
 }
@@ -457,6 +506,30 @@ const styles = StyleSheet.create({
   },
   statValue: { fontSize: 22, fontWeight: '800', color: colors.text },
   statLabel: { fontSize: 11, color: colors.textMuted, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.4 },
+
+  // PDF Button
+  pdfBtnWrap: {
+    paddingHorizontal: spacing.md,
+    marginTop: spacing.md,
+  },
+  pdfBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    backgroundColor: colors.primary,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 12,
+    borderRadius: radius.md,
+    minHeight: 48,
+    ...shadow.card,
+  },
+  pdfBtnDisabled: { opacity: 0.55 },
+  pdfBtnTxt: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '800',
+    letterSpacing: 0.3,
+  },
 
   // Time filters
   timeFiltersWrap: { marginTop: spacing.md },
