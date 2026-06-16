@@ -13,6 +13,7 @@ import io
 import uuid
 import logging
 import secrets
+import asyncio
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Literal
@@ -1877,18 +1878,101 @@ async def export_reports_xlsx(pid: str, user: dict = Depends(require_role(ROLE_C
     )
 
 
-# === PDF EXPORT (Motor paramétrico unificado) ================================
+# === PDF EXPORT (Motor paramétrico unificado v2) =============================
 # Reglas:
 #   - COORDINADOR: ve TODOS los reportes del proyecto.
 #   - ESPECIALISTA: sólo ve los reportes que ÉL capturó (captured_by == user.id).
-#   - SUB-COORDINADOR: ve sólo reportes cuyos nodos caen dentro de su scope_node_ids
-#                     (incluyendo todos los descendientes).
+#   - SUB-COORDINADOR: ve sólo reportes cuyos nodos caen dentro de su scope_node_ids.
 #   - Período: today | yesterday | week | month (ventana móvil sobre created_at).
-#   - Layout: A4 horizontal. Portada con logo Dirac + fecha + autor + periodo.
-#   - Cuerpo: jerarquía estricta del árbol. Por reporte: foto centrada
-#            EXACTAMENTE 10 cm x 13.37 cm, debajo: Ruta / X,Y,Z / Avance / Observaciones.
+#   - "Mes" = Mes-a-la-fecha (día 1 → ahora). NO últimos 30 días.
+#   - Render reportlab CPU-bound se ejecuta en thread aparte (asyncio.to_thread)
+#     para no bloquear el event loop de uvicorn en "week"/"month".
+#   - Cálculo de Avance: por cada reporte → (Última lectura - Primera lectura),
+#     donde Primera lectura = último valor capturado en el reporte anterior del
+#     mismo nodo (o 0 si es el primer reporte histórico).
+#   - Layout exacto por reporte: Fecha · Nombre · Actividad · No. De Contrato ·
+#     Contratista · Ubicación · Reporte de avance · Personal · Equipo · Observaciones.
 
 LOGO_PATH = Path(__file__).resolve().parent / "assets" / "logo_dirac.png"
+
+_MESES_ES = [
+    "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
+    "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre",
+]
+
+_MEASUREMENT_LABELS_ES = {
+    "coord_latlon": "Coordenadas (Lat/Lon)",
+    "cadenamiento": "Cadenamiento",
+    "eje": "Eje",
+    "nivel": "Nivel",
+}
+
+
+def _measurement_label(mtype: str) -> str:
+    return _MEASUREMENT_LABELS_ES.get(mtype or "", mtype or "—")
+
+
+def _fmt_fecha_es(dt: datetime) -> str:
+    """Formato ej. '16 de Junio del 2026'."""
+    try:
+        return f"{dt.day} de {_MESES_ES[dt.month - 1]} del {dt.year}"
+    except Exception:
+        return dt.strftime("%Y-%m-%d") if isinstance(dt, datetime) else "—"
+
+
+def _extract_numeric_reading(report: dict) -> Optional[float]:
+    """Extrae el valor numérico capturado en el reporte según measurement_type.
+    Retorna None si no se puede convertir a número (ej. 'eje', coordenadas)."""
+    if not report:
+        return None
+    mtype = report.get("measurement_type")
+    val = report.get("measurement_value") or {}
+    try:
+        if mtype == "nivel":
+            v = val.get("nivel") if "nivel" in val else val.get("value")
+            return float(v) if v is not None else None
+        if mtype == "cadenamiento":
+            v = val.get("cadenamiento") or val.get("value")
+            if isinstance(v, str) and "+" in v:
+                parts = v.split("+", 1)
+                km = float(parts[0])
+                m = float(parts[1])
+                return km * 1000.0 + m
+            return float(v) if v is not None else None
+        # eje / coord_latlon → no numérico
+        return None
+    except Exception:
+        return None
+
+
+def _fmt_reading(v: Optional[float]) -> str:
+    if v is None:
+        return "—"
+    if abs(v - round(v)) < 1e-9:
+        return f"{int(round(v))}"
+    return f"{v:.3f}"
+
+
+def _format_measurement_for_display(report: dict) -> str:
+    """Cuando no hay valor numérico (ej. eje, coord), devolvemos representación legible."""
+    mtype = (report or {}).get("measurement_type")
+    val = (report or {}).get("measurement_value") or {}
+    if mtype == "eje":
+        return str(val.get("eje") or val.get("value") or "—")
+    if mtype == "coord_latlon":
+        lat = val.get("lat"); lon = val.get("lon")
+        if lat is None or lon is None:
+            return "—"
+        try:
+            return f"{float(lat):.6f}, {float(lon):.6f}"
+        except Exception:
+            return f"{lat}, {lon}"
+    if mtype == "cadenamiento":
+        return str(val.get("cadenamiento") or val.get("value") or "—")
+    if mtype == "nivel":
+        v = val.get("nivel") if "nivel" in val else val.get("value")
+        return _fmt_reading(float(v)) if v is not None else "—"
+    return "—"
 
 
 def _period_range(period: str) -> tuple:
@@ -1906,9 +1990,9 @@ def _period_range(period: str) -> tuple:
         start = now - timedelta(days=7)
         return start, now, "Última semana"
     if p in ("month", "mes", "mensual"):
-        start = now - timedelta(days=30)
-        return start, now, "Último mes"
-    # Por defecto: hoy
+        # REGLA ESTRICTA: Mes-a-la-fecha — día 1 del mes actual 00:00 UTC → ahora.
+        start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        return start, now, "Mes a la fecha"
     start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     return start, now, "Hoy"
 
@@ -1927,7 +2011,9 @@ async def export_reports_pdf(
     period: str = Query("today", description="today|yesterday|week|month"),
     user: dict = Depends(current_user),
 ):
-    """Motor PDF paramétrico (Coord = todos / Esp = propios / Sub = scope)."""
+    """Motor PDF paramétrico (Coord = todos / Esp = propios / Sub = scope).
+    Render bloqueante (reportlab) ejecutado en thread aparte para no congelar
+    el event loop ante muchas fotos en periodos largos (week / month)."""
     try:
         import base64
         from reportlab.lib.pagesizes import A4, landscape
@@ -1966,13 +2052,7 @@ async def export_reports_pdf(
                     descendants.add(d)
             allowed_node_ids = descendants
 
-    # --- Query de reportes ---------------------------------------------------
-    # RBAC ESTRICTO:
-    #   - Coordinador General: acceso global (sin filtro por usuario).
-    #   - Cualquier otro rol (Especialista, Sub-Coordinador, Analyst, etc.):
-    #     filtro OBLIGATORIO por captured_by == user.id para que solo descargue
-    #     sus propios reportes. Esto blinda el endpoint contra fugas de datos
-    #     entre usuarios y permite que specialist/analyst usen "Mis Reportes".
+    # --- Query reportes del período -----------------------------------------
     q: dict = {
         "project_id": pid,
         "created_at": {"$gte": start_dt, "$lte": end_dt},
@@ -1989,237 +2069,255 @@ async def export_reports_pdf(
     for nid, lst in reports_by_node.items():
         lst.sort(key=lambda r: r.get("created_at") or datetime.min)
 
-    # --- Resolución de rutas (cache) ----------------------------------------
+    # --- Primera lectura inicial por nodo (último reporte ANTERIOR al periodo)
+    # Si no hay histórico previo → primera = 0.0
+    prev_reading_by_node: dict = {}
+    for nid in reports_by_node.keys():
+        pre_q: dict = {
+            "project_id": pid,
+            "node_id": nid,
+            "created_at": {"$lt": start_dt},
+        }
+        if role != ROLE_COORD:
+            pre_q["captured_by"] = user["id"]
+        prev = await db.reports.find(pre_q).sort("created_at", -1).limit(1).to_list(length=1)
+        prev_reading_by_node[nid] = _extract_numeric_reading(prev[0]) if prev else None
+
+    # --- Rutas de nodos (cache) ---------------------------------------------
     path_cache: dict = {}
-    async def _path(nid: str) -> str:
-        if nid in path_cache:
-            return path_cache[nid]
-        names = await node_path_names(nid)
-        s = " › ".join(names)
-        path_cache[nid] = s
-        return s
-
-    # Pre-cargar rutas de nodos con reportes
     for nid in list(reports_by_node.keys()):
-        await _path(nid)
+        names = await node_path_names(nid)
+        path_cache[nid] = " › ".join(names)
 
-    # --- Generar PDF ---------------------------------------------------------
-    buf = io.BytesIO()
-    PAGE = landscape(A4)  # 29.7 x 21 cm
-    PW, PH = PAGE
-    c = _canvas.Canvas(buf, pagesize=PAGE)
+    # Snapshot inmutable para el thread bloqueante
+    project_name = proj.get("name", "Proyecto")
+    project_contract = proj.get("contract_number") or "—"
+    project_constructora = proj.get("constructora") or "—"
+    user_name = user.get("name", "")
+    user_email = user.get("email", "")
+    role_label = (
+        "Coordinador" if role == ROLE_COORD
+        else ("Especialista" if role == ROLE_ESPECIALISTA else "Sub-Coordinador")
+    )
 
-    BRAND = HexColor("#1E3A8A")
-    MUTED = HexColor("#64748B")
-    BORDER = HexColor("#E2E8F0")
-    TEXT = HexColor("#0F172A")
+    # ========================================================================
+    # GENERACIÓN BLOQUEANTE (CPU-bound) → asyncio.to_thread
+    # ========================================================================
+    def _build_pdf_blocking() -> bytes:
+        buf = io.BytesIO()
+        PAGE = landscape(A4)  # 29.7 x 21 cm
+        PW, PH = PAGE
+        c = _canvas.Canvas(buf, pagesize=PAGE)
 
-    def draw_header(page_num: int):
-        # Logo
+        BRAND = HexColor("#1E3A8A")
+        MUTED = HexColor("#64748B")
+        BORDER = HexColor("#E2E8F0")
+        TEXT = HexColor("#0F172A")
+
+        def draw_header(page_num: int):
+            if LOGO_PATH.exists():
+                try:
+                    logo = ImageReader(str(LOGO_PATH))
+                    c.drawImage(logo, 1.2 * cm, PH - 1.9 * cm, width=3.0 * cm, height=1.2 * cm,
+                                preserveAspectRatio=True, mask='auto')
+                except Exception:
+                    pass
+            c.setFillColor(BRAND)
+            c.setFont("Helvetica-Bold", 11)
+            c.drawString(4.0 * cm, PH - 1.2 * cm, f"SynCo · {project_name}")
+            c.setFillColor(MUTED)
+            c.setFont("Helvetica", 8)
+            c.drawString(4.0 * cm, PH - 1.6 * cm,
+                         f"Reporte {period_label} · Exportado {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
+            c.setStrokeColor(BORDER)
+            c.setLineWidth(0.5)
+            c.line(1.2 * cm, PH - 2.0 * cm, PW - 1.2 * cm, PH - 2.0 * cm)
+            c.setFillColor(MUTED)
+            c.setFont("Helvetica", 7)
+            c.drawRightString(PW - 1.2 * cm, 0.8 * cm, f"Página {page_num}")
+
+        # --- PORTADA --------------------------------------------------------
+        page_num = 1
         if LOGO_PATH.exists():
             try:
                 logo = ImageReader(str(LOGO_PATH))
-                # Logo Dirac (~2.73:1). Caja ajustada al ratio nativo + preserveAspectRatio.
-                c.drawImage(logo, 1.2 * cm, PH - 1.9 * cm, width=3.0 * cm, height=1.2 * cm,
+                c.drawImage(logo, (PW - 8 * cm) / 2, PH - 6.5 * cm, width=8 * cm, height=3 * cm,
                             preserveAspectRatio=True, mask='auto')
             except Exception:
                 pass
         c.setFillColor(BRAND)
+        c.setFont("Helvetica-Bold", 28)
+        c.drawCentredString(PW / 2, PH - 8.5 * cm, "Reporte de Avance")
+        c.setFillColor(TEXT)
+        c.setFont("Helvetica-Bold", 18)
+        c.drawCentredString(PW / 2, PH - 9.8 * cm, project_name)
+        c.setFillColor(MUTED)
+        c.setFont("Helvetica", 12)
+        c.drawCentredString(PW / 2, PH - 11.2 * cm, f"Período: {period_label}")
+        c.drawCentredString(PW / 2, PH - 12.0 * cm,
+                            f"{start_dt.strftime('%Y-%m-%d %H:%M')} – {end_dt.strftime('%Y-%m-%d %H:%M')} UTC")
         c.setFont("Helvetica-Bold", 11)
-        c.drawString(4.0 * cm, PH - 1.2 * cm, f"SynCo · {proj.get('name','')}")
+        c.setFillColor(TEXT)
+        c.drawCentredString(PW / 2, PH - 13.5 * cm, f"{role_label}: {user_name}")
+        c.setFont("Helvetica", 10)
         c.setFillColor(MUTED)
-        c.setFont("Helvetica", 8)
-        c.drawString(4.0 * cm, PH - 1.6 * cm, f"Reporte {period_label} · Exportado {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
-        # Línea inferior
-        c.setStrokeColor(BORDER)
-        c.setLineWidth(0.5)
-        c.line(1.2 * cm, PH - 2.0 * cm, PW - 1.2 * cm, PH - 2.0 * cm)
-        # Pie
-        c.setFillColor(MUTED)
+        c.drawCentredString(PW / 2, PH - 14.2 * cm, user_email)
+        total_reportes = sum(len(v) for v in reports_by_node.values())
+        c.drawCentredString(PW / 2, PH - 15.5 * cm, f"Total de reportes incluidos: {total_reportes}")
         c.setFont("Helvetica", 7)
         c.drawRightString(PW - 1.2 * cm, 0.8 * cm, f"Página {page_num}")
-
-    # --- PORTADA -------------------------------------------------------------
-    page_num = 1
-    # Sin header de página en la portada
-    if LOGO_PATH.exists():
-        try:
-            logo = ImageReader(str(LOGO_PATH))
-            # Portada: caja 8x3cm (ratio 2.67) compatible con logo Dirac nativo (~2.73:1).
-            c.drawImage(logo, (PW - 8 * cm) / 2, PH - 6.5 * cm, width=8 * cm, height=3 * cm,
-                        preserveAspectRatio=True, mask='auto')
-        except Exception:
-            pass
-    c.setFillColor(BRAND)
-    c.setFont("Helvetica-Bold", 28)
-    c.drawCentredString(PW / 2, PH - 8.5 * cm, "Reporte de Avance")
-    c.setFillColor(TEXT)
-    c.setFont("Helvetica-Bold", 18)
-    c.drawCentredString(PW / 2, PH - 9.8 * cm, proj.get("name", "Proyecto"))
-    c.setFillColor(MUTED)
-    c.setFont("Helvetica", 12)
-    c.drawCentredString(PW / 2, PH - 11.2 * cm, f"Período: {period_label}")
-    c.drawCentredString(PW / 2, PH - 12.0 * cm,
-                        f"{start_dt.strftime('%Y-%m-%d %H:%M')} – {end_dt.strftime('%Y-%m-%d %H:%M')} UTC")
-    c.setFont("Helvetica-Bold", 11)
-    c.setFillColor(TEXT)
-    label_author = "Coordinador" if role == ROLE_COORD else ("Especialista" if role == ROLE_ESPECIALISTA else "Sub-Coordinador")
-    c.drawCentredString(PW / 2, PH - 13.5 * cm, f"{label_author}: {user.get('name','')}")
-    c.setFont("Helvetica", 10)
-    c.setFillColor(MUTED)
-    c.drawCentredString(PW / 2, PH - 14.2 * cm, user.get("email", ""))
-    # Resumen
-    total_reportes = sum(len(v) for v in reports_by_node.values())
-    c.drawCentredString(PW / 2, PH - 15.5 * cm, f"Total de reportes incluidos: {total_reportes}")
-    # Pie portada
-    c.setFont("Helvetica", 7)
-    c.drawRightString(PW - 1.2 * cm, 0.8 * cm, f"Página {page_num}")
-    c.showPage()
-    page_num += 1
-
-    # --- Si no hay reportes, agregamos una página vacía informativa ----------
-    if total_reportes == 0:
-        draw_header(page_num)
-        c.setFillColor(MUTED)
-        c.setFont("Helvetica-Oblique", 14)
-        c.drawCentredString(PW / 2, PH / 2, "No hay reportes para el período seleccionado.")
         c.showPage()
-        c.save()
-        buf.seek(0)
-        safe_name = re.sub(r"[^A-Za-z0-9_-]+", "_", proj.get("name", "proyecto"))[:60] or "proyecto"
-        fname = f"synco_{safe_name}_{period}_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M')}.pdf"
-        return StreamingResponse(buf, media_type="application/pdf",
-                                 headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+        page_num += 1
 
-    # --- CUERPO: una página por reporte (orden jerárquico) -------------------
-    PHOTO_W = 10.0 * cm
-    PHOTO_H = 13.37 * cm
+        if total_reportes == 0:
+            draw_header(page_num)
+            c.setFillColor(MUTED)
+            c.setFont("Helvetica-Oblique", 14)
+            c.drawCentredString(PW / 2, PH / 2, "No hay reportes para el período seleccionado.")
+            c.showPage()
+            c.save()
+            return buf.getvalue()
 
-    def render_text_block(x: float, y: float, max_w: float, lines: list, font="Helvetica", size=9, leading=12):
-        c.setFont(font, size)
-        c.setFillColor(TEXT)
-        cy = y
-        for ln in lines:
-            if cy < 1.5 * cm:
-                break
-            # wrap simple por ancho de pixel
-            words = (ln or "").split(" ")
-            current = ""
-            for w in words:
-                test = (current + " " + w).strip()
-                if c.stringWidth(test, font, size) > max_w:
+        # --- CUERPO ---------------------------------------------------------
+        PHOTO_W = 10.0 * cm
+        PHOTO_H = 13.37 * cm
+
+        def render_text_block(x, y, max_w, lines, font="Helvetica", size=9, leading=12):
+            c.setFont(font, size)
+            c.setFillColor(TEXT)
+            cy = y
+            for ln in lines:
+                if cy < 1.5 * cm:
+                    break
+                words = (ln or "").split(" ")
+                current = ""
+                for w in words:
+                    test = (current + " " + w).strip()
+                    if c.stringWidth(test, font, size) > max_w:
+                        c.drawString(x, cy, current)
+                        cy -= leading
+                        current = w
+                        if cy < 1.5 * cm:
+                            return cy
+                    else:
+                        current = test
+                if current:
                     c.drawString(x, cy, current)
                     cy -= leading
-                    current = w
-                    if cy < 1.5 * cm:
-                        return cy
+            return cy
+
+        for n in leaf_nodes:
+            node_reps = reports_by_node.get(n["id"]) or []
+            if not node_reps:
+                continue
+            node_path = path_cache.get(n["id"]) or n.get("name", "")
+            mtype = n.get("measurement_type") or "—"
+            actividad = f"Supervisión de obra / {_measurement_label(mtype)}"
+
+            # Acumulado de "Primera lectura" — arranca con el último valor previo
+            # al periodo (o 0 si es el primer reporte histórico del nodo).
+            primera_acc = prev_reading_by_node.get(n["id"])
+            if primera_acc is None:
+                primera_acc = 0.0
+
+            for r in node_reps:
+                draw_header(page_num)
+
+                # === Foto centrada 10 x 13.37 cm =========================
+                photo_x = (PW - PHOTO_W) / 2
+                photo_y = PH - 2.3 * cm - PHOTO_H
+                c.setStrokeColor(BORDER)
+                c.setLineWidth(0.8)
+                c.rect(photo_x, photo_y, PHOTO_W, PHOTO_H)
+                img_b64 = None
+                imgs = r.get("images") or []
+                if imgs:
+                    img_b64 = _strip_b64_prefix(imgs[0])
+                if img_b64:
+                    try:
+                        raw = base64.b64decode(img_b64)
+                        img = ImageReader(io.BytesIO(raw))
+                        c.drawImage(img, photo_x, photo_y, width=PHOTO_W, height=PHOTO_H,
+                                    preserveAspectRatio=True, mask='auto')
+                    except Exception:
+                        c.setFillColor(MUTED)
+                        c.setFont("Helvetica-Oblique", 10)
+                        c.drawCentredString(PW / 2, photo_y + PHOTO_H / 2, "(imagen no legible)")
                 else:
-                    current = test
-            if current:
-                c.drawString(x, cy, current)
-                cy -= leading
-        return cy
-
-    def fmt_coord(v) -> str:
-        if v is None or v == "":
-            return "—"
-        try:
-            return f"{float(v):.6f}"
-        except Exception:
-            return str(v)
-
-    for n in leaf_nodes:
-        node_reps = reports_by_node.get(n["id"]) or []
-        if not node_reps:
-            continue
-        node_path = path_cache.get(n["id"]) or n.get("name", "")
-        target_lat = n.get("target_lat")
-        target_lon = n.get("target_lon")
-        target_elev = n.get("target_elev")
-        for r in node_reps:
-            draw_header(page_num)
-
-            # === Foto centrada 10 x 13.37 cm =================================
-            photo_x = (PW - PHOTO_W) / 2
-            photo_y = PH - 2.3 * cm - PHOTO_H  # debajo del header
-            # Marco
-            c.setStrokeColor(BORDER)
-            c.setLineWidth(0.8)
-            c.rect(photo_x, photo_y, PHOTO_W, PHOTO_H)
-            img_b64 = None
-            imgs = r.get("images") or []
-            if imgs:
-                img_b64 = _strip_b64_prefix(imgs[0])
-            if img_b64:
-                try:
-                    raw = base64.b64decode(img_b64)
-                    img = ImageReader(io.BytesIO(raw))
-                    c.drawImage(img, photo_x, photo_y, width=PHOTO_W, height=PHOTO_H,
-                                preserveAspectRatio=True, mask='auto')
-                except Exception:
                     c.setFillColor(MUTED)
                     c.setFont("Helvetica-Oblique", 10)
-                    c.drawCentredString(PW / 2, photo_y + PHOTO_H / 2, "(imagen no legible)")
-            else:
+                    c.drawCentredString(PW / 2, photo_y + PHOTO_H / 2, "(sin fotografía)")
+
+                # === Bloque de datos a la derecha de la foto ==============
+                data_x = photo_x + PHOTO_W + 0.8 * cm
+                data_w = PW - data_x - 1.2 * cm
+                cy = PH - 2.6 * cm
+
+                # Calculo Primera / Última / Avance
+                ultima_val = _extract_numeric_reading(r)
+                if ultima_val is None:
+                    primera_str = _fmt_reading(primera_acc)
+                    ultima_str = _format_measurement_for_display(r)
+                    avance_str = "—"
+                else:
+                    primera_str = _fmt_reading(primera_acc)
+                    ultima_str = _fmt_reading(ultima_val)
+                    avance_str = _fmt_reading(ultima_val - primera_acc)
+                    primera_acc = ultima_val  # avanza acumulado
+
+                ts = r.get("created_at")
+                fecha_str = _fmt_fecha_es(ts) if isinstance(ts, datetime) else "—"
+                nombre = r.get("captured_by_name") or "—"
+                contratista = (r.get("contratista") or "").strip() or project_constructora or "N/A"
+                personal_list = [p for p in (r.get("personnel") or []) if p]
+                equipo_list = [e for e in (r.get("equipment") or []) if e]
+                personal_str = ", ".join(personal_list) if personal_list else "N/A"
+                equipo_str = ", ".join(equipo_list) if equipo_list else "N/A"
+                obs_str = (r.get("notes") or "").strip() or "N/A"
+
+                def field(label: str, value, font="Helvetica", size=9.5, leading=12):
+                    nonlocal cy
+                    c.setFillColor(BRAND)
+                    c.setFont("Helvetica-Bold", 9)
+                    c.drawString(data_x, cy, label.upper())
+                    cy -= 0.42 * cm
+                    cy = render_text_block(data_x, cy, data_w, [str(value)],
+                                           font=font, size=size, leading=leading)
+                    cy -= 0.20 * cm
+
+                field("Fecha", fecha_str)
+                field("Nombre", nombre)
+                field("Actividad", actividad)
+                field("No. De Contrato", project_contract)
+                field("Contratista", contratista)
+                field("Ubicación", node_path)
+                field("Reporte de avance",
+                      f"Primera lectura: {primera_str}    |    Última lectura: {ultima_str}    |    Avance: {avance_str}")
+                field("Personal", personal_str)
+                field("Equipo", equipo_str)
+                field("Observaciones", obs_str)
+
+                # Pie del reporte
                 c.setFillColor(MUTED)
-                c.setFont("Helvetica-Oblique", 10)
-                c.drawCentredString(PW / 2, photo_y + PHOTO_H / 2, "(sin fotografía)")
+                c.setFont("Helvetica-Oblique", 8)
+                c.drawString(photo_x, photo_y - 0.5 * cm, f"Capturado por: {nombre}")
 
-            # === Bloque de datos a la derecha de la foto =====================
-            data_x = photo_x + PHOTO_W + 0.8 * cm
-            data_w = PW - data_x - 1.2 * cm
-            cy = PH - 2.6 * cm
+                c.showPage()
+                page_num += 1
 
-            c.setFillColor(BRAND)
-            c.setFont("Helvetica-Bold", 10)
-            c.drawString(data_x, cy, "RUTA")
-            cy -= 0.45 * cm
-            cy = render_text_block(data_x, cy, data_w, [node_path], font="Helvetica-Bold", size=10, leading=13)
+        c.save()
+        return buf.getvalue()
 
-            cy -= 0.25 * cm
-            c.setFillColor(BRAND)
-            c.setFont("Helvetica-Bold", 10)
-            c.drawString(data_x, cy, "COORDENADAS OBJETIVO (X, Y, Z)")
-            cy -= 0.45 * cm
-            coord_str = f"X (Lat): {fmt_coord(target_lat)}    Y (Lon): {fmt_coord(target_lon)}    Z (Elev): {fmt_coord(target_elev)}"
-            cy = render_text_block(data_x, cy, data_w, [coord_str], size=9.5, leading=12)
-
-            cy -= 0.25 * cm
-            c.setFillColor(BRAND)
-            c.setFont("Helvetica-Bold", 10)
-            c.drawString(data_x, cy, "AVANCE")
-            cy -= 0.45 * cm
-            avance = r.get("avance") or "—"
-            cy = render_text_block(data_x, cy, data_w, [str(avance)], size=10, leading=13)
-
-            cy -= 0.25 * cm
-            c.setFillColor(BRAND)
-            c.setFont("Helvetica-Bold", 10)
-            c.drawString(data_x, cy, "OBSERVACIONES")
-            cy -= 0.45 * cm
-            notes = r.get("notes") or "—"
-            cy = render_text_block(data_x, cy, data_w, [str(notes)], size=9.5, leading=12)
-
-            # === Pie del reporte: capturado por + fecha ======================
-            captured_by = r.get("captured_by_name") or "—"
-            ts = r.get("created_at")
-            ts_str = ts.strftime("%Y-%m-%d %H:%M UTC") if isinstance(ts, datetime) else ""
-            c.setFillColor(MUTED)
-            c.setFont("Helvetica-Oblique", 8)
-            c.drawString(photo_x, photo_y - 0.5 * cm, f"Capturado por: {captured_by}  ·  {ts_str}")
-
-            c.showPage()
-            page_num += 1
-
-    c.save()
-    buf.seek(0)
+    # Render bloqueante en thread aparte → libera event loop
+    pdf_bytes = await asyncio.to_thread(_build_pdf_blocking)
     safe_name = re.sub(r"[^A-Za-z0-9_-]+", "_", proj.get("name", "proyecto"))[:60] or "proyecto"
     fname = f"synco_{safe_name}_{period}_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M')}.pdf"
     return StreamingResponse(
-        buf,
+        io.BytesIO(pdf_bytes),
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{fname}"'},
     )
+
 
 
 # === MOUNT ==================================================================
