@@ -6,6 +6,8 @@ import { Ionicons } from '@expo/vector-icons';
 import { api, Project } from '@/src/api';
 import { colors, radius, spacing } from '@/src/theme';
 import { confirm } from '@/src/utils/confirm';
+import { PeriodSheet, ReportPeriod } from '@/src/components/PeriodSheet';
+import { downloadBlob } from '@/src/utils/downloadBlob';
 
 export default function ProjectDetailScreen() {
   const insets = useSafeAreaInsets();
@@ -15,6 +17,8 @@ export default function ProjectDetailScreen() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
+  const [pdfSheetOpen, setPdfSheetOpen] = useState(false);
+  const [exportingPdf, setExportingPdf] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -74,6 +78,19 @@ export default function ProjectDetailScreen() {
       Alert.alert('Error al exportar', e?.message || 'No se pudo generar el Excel');
     } finally {
       setExporting(false);
+    }
+  }
+
+  async function onPickPdfPeriod(period: ReportPeriod) {
+    setPdfSheetOpen(false);
+    try {
+      setExportingPdf(true);
+      const { blob, filename } = await api.downloadReportsPdf(pid, period);
+      await downloadBlob(blob, filename, 'application/pdf');
+    } catch (e: any) {
+      Alert.alert('Error al exportar', e?.message || 'No se pudo generar el PDF');
+    } finally {
+      setExportingPdf(false);
     }
   }
 
@@ -145,6 +162,14 @@ export default function ProjectDetailScreen() {
               disabled={exporting}
               busy={exporting}
             />
+            <ActionTile
+              icon="document-attach-outline"
+              title={exportingPdf ? 'Generando PDF…' : 'Exportar reportes a PDF'}
+              subtitle="PDF horizontal con jerarquía completa (Hoy · Ayer · Semana · Mes)"
+              onPress={() => setPdfSheetOpen(true)}
+              disabled={exportingPdf}
+              busy={exportingPdf}
+            />
 
             <Pressable onPress={onArchive} style={styles.archiveBtn}>
               <Ionicons name="archive-outline" size={16} color={colors.error} />
@@ -153,6 +178,12 @@ export default function ProjectDetailScreen() {
           </>
         )}
       </ScrollView>
+      <PeriodSheet
+        visible={pdfSheetOpen}
+        title="Selecciona el período"
+        onClose={() => setPdfSheetOpen(false)}
+        onSelect={onPickPdfPeriod}
+      />
     </View>
   );
 }

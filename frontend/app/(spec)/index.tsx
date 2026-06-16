@@ -9,7 +9,7 @@
 //   • Pull-to-refresh y estados vacíos amigables.
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  ActivityIndicator, FlatList, Image, Platform, Pressable, RefreshControl,
+  ActivityIndicator, Alert, FlatList, Image, Platform, Pressable, RefreshControl,
   ScrollView, StatusBar, StyleSheet, Text, View,
 } from 'react-native';
 import { router } from 'expo-router';
@@ -20,6 +20,8 @@ import { useAuth } from '@/src/auth-context';
 import { colors, radius, shadow, spacing, areaTone } from '@/src/theme';
 import { confirm } from '@/src/utils/confirm';
 import { api, FeedItem, FeedResponse, Project } from '@/src/api';
+import { PeriodSheet, ReportPeriod } from '@/src/components/PeriodSheet';
+import { downloadBlob } from '@/src/utils/downloadBlob';
 
 type RangeKey = 'today' | 'week' | 'month' | 'all';
 

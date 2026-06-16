@@ -1877,6 +1877,343 @@ async def export_reports_xlsx(pid: str, user: dict = Depends(require_role(ROLE_C
     )
 
 
+# === PDF EXPORT (Motor paramétrico unificado) ================================
+# Reglas:
+#   - COORDINADOR: ve TODOS los reportes del proyecto.
+#   - ESPECIALISTA: sólo ve los reportes que ÉL capturó (captured_by == user.id).
+#   - SUB-COORDINADOR: ve sólo reportes cuyos nodos caen dentro de su scope_node_ids
+#                     (incluyendo todos los descendientes).
+#   - Período: today | yesterday | week | month (ventana móvil sobre created_at).
+#   - Layout: A4 horizontal. Portada con logo Dirac + fecha + autor + periodo.
+#   - Cuerpo: jerarquía estricta del árbol. Por reporte: foto centrada
+#            EXACTAMENTE 10 cm x 13.37 cm, debajo: Ruta / X,Y,Z / Avance / Observaciones.
+
+LOGO_PATH = Path(__file__).resolve().parent / "assets" / "logo_dirac.png"
+
+
+def _period_range(period: str) -> tuple:
+    """Devuelve (start_utc, end_utc, etiqueta_legible)."""
+    now = datetime.now(timezone.utc)
+    p = (period or "today").lower().strip()
+    if p in ("today", "hoy"):
+        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        return start, now, "Hoy"
+    if p in ("yesterday", "ayer"):
+        end = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        start = end - timedelta(days=1)
+        return start, end, "Ayer"
+    if p in ("week", "semana", "semanal"):
+        start = now - timedelta(days=7)
+        return start, now, "Última semana"
+    if p in ("month", "mes", "mensual"):
+        start = now - timedelta(days=30)
+        return start, now, "Último mes"
+    # Por defecto: hoy
+    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    return start, now, "Hoy"
+
+
+def _strip_b64_prefix(s: str) -> str:
+    if not isinstance(s, str):
+        return ""
+    if s.startswith("data:") and "," in s:
+        return s.split(",", 1)[1]
+    return s
+
+
+@api.get("/projects/{pid}/export/reports.pdf")
+async def export_reports_pdf(
+    pid: str,
+    period: str = Query("today", description="today|yesterday|week|month"),
+    user: dict = Depends(current_user),
+):
+    """Motor PDF paramétrico (Coord = todos / Esp = propios / Sub = scope)."""
+    try:
+        import base64
+        from reportlab.lib.pagesizes import A4, landscape
+        from reportlab.lib.units import cm
+        from reportlab.lib.colors import HexColor
+        from reportlab.lib.utils import ImageReader
+        from reportlab.pdfgen import canvas as _canvas
+    except Exception as e:
+        raise HTTPException(500, f"reportlab no instalado: {e}")
+
+    await ensure_project_access(user, pid)
+    proj = await db.projects.find_one({"id": pid})
+    if not proj:
+        raise HTTPException(404, "Proyecto no existe")
+
+    start_dt, end_dt, period_label = _period_range(period)
+
+    # --- Carga árbol y nodos -------------------------------------------------
+    nodes_raw = await db.location_nodes.find({"project_id": pid}).to_list(length=10000)
+    nodes_by_id = {n["id"]: n for n in nodes_raw}
+    root_ids = [n["id"] for n in nodes_raw if not n.get("parent_id")]
+    root_ids.sort(key=lambda nid: (nodes_by_id[nid].get("order", 0), nodes_by_id[nid].get("name", "")))
+    leaf_nodes = _flatten_tree_in_order(nodes_by_id, root_ids)
+
+    # --- Filtro scope por rol ------------------------------------------------
+    role = user["role"]
+    allowed_node_ids: Optional[set] = None
+    if role == ROLE_SUB:
+        scope_ids = user.get("scope_node_ids") or []
+        if not scope_ids:
+            allowed_node_ids = set()
+        else:
+            descendants: set = set()
+            for sid in scope_ids:
+                for d in await descendants_ids(sid):
+                    descendants.add(d)
+            allowed_node_ids = descendants
+
+    # --- Query de reportes ---------------------------------------------------
+    q: dict = {
+        "project_id": pid,
+        "created_at": {"$gte": start_dt, "$lte": end_dt},
+    }
+    if role == ROLE_ESPECIALISTA:
+        q["captured_by"] = user["id"]
+    if allowed_node_ids is not None:
+        q["node_id"] = {"$in": list(allowed_node_ids)}
+
+    reports = await db.reports.find(q).to_list(length=20000)
+    reports_by_node: dict = {}
+    for r in reports:
+        reports_by_node.setdefault(r.get("node_id"), []).append(r)
+    for nid, lst in reports_by_node.items():
+        lst.sort(key=lambda r: r.get("created_at") or datetime.min)
+
+    # --- Resolución de rutas (cache) ----------------------------------------
+    path_cache: dict = {}
+    async def _path(nid: str) -> str:
+        if nid in path_cache:
+            return path_cache[nid]
+        names = await node_path_names(nid)
+        s = " › ".join(names)
+        path_cache[nid] = s
+        return s
+
+    # Pre-cargar rutas de nodos con reportes
+    for nid in list(reports_by_node.keys()):
+        await _path(nid)
+
+    # --- Generar PDF ---------------------------------------------------------
+    buf = io.BytesIO()
+    PAGE = landscape(A4)  # 29.7 x 21 cm
+    PW, PH = PAGE
+    c = _canvas.Canvas(buf, pagesize=PAGE)
+
+    BRAND = HexColor("#1E3A8A")
+    MUTED = HexColor("#64748B")
+    BORDER = HexColor("#E2E8F0")
+    TEXT = HexColor("#0F172A")
+
+    def draw_header(page_num: int):
+        # Logo
+        if LOGO_PATH.exists():
+            try:
+                logo = ImageReader(str(LOGO_PATH))
+                c.drawImage(logo, 1.2 * cm, PH - 1.8 * cm, width=2.2 * cm, height=1.1 * cm,
+                            preserveAspectRatio=True, mask='auto')
+            except Exception:
+                pass
+        c.setFillColor(BRAND)
+        c.setFont("Helvetica-Bold", 11)
+        c.drawString(4.0 * cm, PH - 1.2 * cm, f"SynCo · {proj.get('name','')}")
+        c.setFillColor(MUTED)
+        c.setFont("Helvetica", 8)
+        c.drawString(4.0 * cm, PH - 1.6 * cm, f"Reporte {period_label} · Exportado {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
+        # Línea inferior
+        c.setStrokeColor(BORDER)
+        c.setLineWidth(0.5)
+        c.line(1.2 * cm, PH - 2.0 * cm, PW - 1.2 * cm, PH - 2.0 * cm)
+        # Pie
+        c.setFillColor(MUTED)
+        c.setFont("Helvetica", 7)
+        c.drawRightString(PW - 1.2 * cm, 0.8 * cm, f"Página {page_num}")
+
+    # --- PORTADA -------------------------------------------------------------
+    page_num = 1
+    # Sin header de página en la portada
+    if LOGO_PATH.exists():
+        try:
+            logo = ImageReader(str(LOGO_PATH))
+            c.drawImage(logo, (PW - 6 * cm) / 2, PH - 6.5 * cm, width=6 * cm, height=3 * cm,
+                        preserveAspectRatio=True, mask='auto')
+        except Exception:
+            pass
+    c.setFillColor(BRAND)
+    c.setFont("Helvetica-Bold", 28)
+    c.drawCentredString(PW / 2, PH - 8.5 * cm, "Reporte de Avance")
+    c.setFillColor(TEXT)
+    c.setFont("Helvetica-Bold", 18)
+    c.drawCentredString(PW / 2, PH - 9.8 * cm, proj.get("name", "Proyecto"))
+    c.setFillColor(MUTED)
+    c.setFont("Helvetica", 12)
+    c.drawCentredString(PW / 2, PH - 11.2 * cm, f"Período: {period_label}")
+    c.drawCentredString(PW / 2, PH - 12.0 * cm,
+                        f"{start_dt.strftime('%Y-%m-%d %H:%M')} – {end_dt.strftime('%Y-%m-%d %H:%M')} UTC")
+    c.setFont("Helvetica-Bold", 11)
+    c.setFillColor(TEXT)
+    label_author = "Coordinador" if role == ROLE_COORD else ("Especialista" if role == ROLE_ESPECIALISTA else "Sub-Coordinador")
+    c.drawCentredString(PW / 2, PH - 13.5 * cm, f"{label_author}: {user.get('name','')}")
+    c.setFont("Helvetica", 10)
+    c.setFillColor(MUTED)
+    c.drawCentredString(PW / 2, PH - 14.2 * cm, user.get("email", ""))
+    # Resumen
+    total_reportes = sum(len(v) for v in reports_by_node.values())
+    c.drawCentredString(PW / 2, PH - 15.5 * cm, f"Total de reportes incluidos: {total_reportes}")
+    # Pie portada
+    c.setFont("Helvetica", 7)
+    c.drawRightString(PW - 1.2 * cm, 0.8 * cm, f"Página {page_num}")
+    c.showPage()
+    page_num += 1
+
+    # --- Si no hay reportes, agregamos una página vacía informativa ----------
+    if total_reportes == 0:
+        draw_header(page_num)
+        c.setFillColor(MUTED)
+        c.setFont("Helvetica-Oblique", 14)
+        c.drawCentredString(PW / 2, PH / 2, "No hay reportes para el período seleccionado.")
+        c.showPage()
+        c.save()
+        buf.seek(0)
+        safe_name = re.sub(r"[^A-Za-z0-9_-]+", "_", proj.get("name", "proyecto"))[:60] or "proyecto"
+        fname = f"synco_{safe_name}_{period}_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M')}.pdf"
+        return StreamingResponse(buf, media_type="application/pdf",
+                                 headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+
+    # --- CUERPO: una página por reporte (orden jerárquico) -------------------
+    PHOTO_W = 10.0 * cm
+    PHOTO_H = 13.37 * cm
+
+    def render_text_block(x: float, y: float, max_w: float, lines: list, font="Helvetica", size=9, leading=12):
+        c.setFont(font, size)
+        c.setFillColor(TEXT)
+        cy = y
+        for ln in lines:
+            if cy < 1.5 * cm:
+                break
+            # wrap simple por ancho de pixel
+            words = (ln or "").split(" ")
+            current = ""
+            for w in words:
+                test = (current + " " + w).strip()
+                if c.stringWidth(test, font, size) > max_w:
+                    c.drawString(x, cy, current)
+                    cy -= leading
+                    current = w
+                    if cy < 1.5 * cm:
+                        return cy
+                else:
+                    current = test
+            if current:
+                c.drawString(x, cy, current)
+                cy -= leading
+        return cy
+
+    def fmt_coord(v) -> str:
+        if v is None or v == "":
+            return "—"
+        try:
+            return f"{float(v):.6f}"
+        except Exception:
+            return str(v)
+
+    for n in leaf_nodes:
+        node_reps = reports_by_node.get(n["id"]) or []
+        if not node_reps:
+            continue
+        node_path = path_cache.get(n["id"]) or n.get("name", "")
+        target_lat = n.get("target_lat")
+        target_lon = n.get("target_lon")
+        target_elev = n.get("target_elev")
+        for r in node_reps:
+            draw_header(page_num)
+
+            # === Foto centrada 10 x 13.37 cm =================================
+            photo_x = (PW - PHOTO_W) / 2
+            photo_y = PH - 2.3 * cm - PHOTO_H  # debajo del header
+            # Marco
+            c.setStrokeColor(BORDER)
+            c.setLineWidth(0.8)
+            c.rect(photo_x, photo_y, PHOTO_W, PHOTO_H)
+            img_b64 = None
+            imgs = r.get("images") or []
+            if imgs:
+                img_b64 = _strip_b64_prefix(imgs[0])
+            if img_b64:
+                try:
+                    raw = base64.b64decode(img_b64)
+                    img = ImageReader(io.BytesIO(raw))
+                    c.drawImage(img, photo_x, photo_y, width=PHOTO_W, height=PHOTO_H,
+                                preserveAspectRatio=True, mask='auto')
+                except Exception:
+                    c.setFillColor(MUTED)
+                    c.setFont("Helvetica-Oblique", 10)
+                    c.drawCentredString(PW / 2, photo_y + PHOTO_H / 2, "(imagen no legible)")
+            else:
+                c.setFillColor(MUTED)
+                c.setFont("Helvetica-Oblique", 10)
+                c.drawCentredString(PW / 2, photo_y + PHOTO_H / 2, "(sin fotografía)")
+
+            # === Bloque de datos a la derecha de la foto =====================
+            data_x = photo_x + PHOTO_W + 0.8 * cm
+            data_w = PW - data_x - 1.2 * cm
+            cy = PH - 2.6 * cm
+
+            c.setFillColor(BRAND)
+            c.setFont("Helvetica-Bold", 10)
+            c.drawString(data_x, cy, "RUTA")
+            cy -= 0.45 * cm
+            cy = render_text_block(data_x, cy, data_w, [node_path], font="Helvetica-Bold", size=10, leading=13)
+
+            cy -= 0.25 * cm
+            c.setFillColor(BRAND)
+            c.setFont("Helvetica-Bold", 10)
+            c.drawString(data_x, cy, "COORDENADAS OBJETIVO (X, Y, Z)")
+            cy -= 0.45 * cm
+            coord_str = f"X (Lat): {fmt_coord(target_lat)}    Y (Lon): {fmt_coord(target_lon)}    Z (Elev): {fmt_coord(target_elev)}"
+            cy = render_text_block(data_x, cy, data_w, [coord_str], size=9.5, leading=12)
+
+            cy -= 0.25 * cm
+            c.setFillColor(BRAND)
+            c.setFont("Helvetica-Bold", 10)
+            c.drawString(data_x, cy, "AVANCE")
+            cy -= 0.45 * cm
+            avance = r.get("avance") or "—"
+            cy = render_text_block(data_x, cy, data_w, [str(avance)], size=10, leading=13)
+
+            cy -= 0.25 * cm
+            c.setFillColor(BRAND)
+            c.setFont("Helvetica-Bold", 10)
+            c.drawString(data_x, cy, "OBSERVACIONES")
+            cy -= 0.45 * cm
+            notes = r.get("notes") or "—"
+            cy = render_text_block(data_x, cy, data_w, [str(notes)], size=9.5, leading=12)
+
+            # === Pie del reporte: capturado por + fecha ======================
+            captured_by = r.get("captured_by_name") or "—"
+            ts = r.get("created_at")
+            ts_str = ts.strftime("%Y-%m-%d %H:%M UTC") if isinstance(ts, datetime) else ""
+            c.setFillColor(MUTED)
+            c.setFont("Helvetica-Oblique", 8)
+            c.drawString(photo_x, photo_y - 0.5 * cm, f"Capturado por: {captured_by}  ·  {ts_str}")
+
+            c.showPage()
+            page_num += 1
+
+    c.save()
+    buf.seek(0)
+    safe_name = re.sub(r"[^A-Za-z0-9_-]+", "_", proj.get("name", "proyecto"))[:60] or "proyecto"
+    fname = f"synco_{safe_name}_{period}_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M')}.pdf"
+    return StreamingResponse(
+        buf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
 # === MOUNT ==================================================================
 app.include_router(api)
 
