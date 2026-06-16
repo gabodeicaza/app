@@ -9,6 +9,7 @@ Arquitectura:
 """
 import os
 import re
+import io
 import uuid
 import logging
 import secrets
@@ -19,7 +20,8 @@ from typing import List, Optional, Literal
 import jwt
 import bcrypt
 from dotenv import load_dotenv
-from fastapi import FastAPI, APIRouter, HTTPException, Depends
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, Query
+from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -1687,6 +1689,192 @@ async def delete_event(eid: str, user: dict = Depends(current_user)):
         raise HTTPException(403, "Sólo el autor o un Coordinador puede eliminar")
     await db.events.delete_one({"id": eid})
     return {"ok": True}
+
+
+# === EXPORT (Excel "sábana plana" jerárquica) ===============================
+def _flatten_tree_in_order(nodes_by_id: dict, root_ids: list) -> list:
+    """Devuelve los nodos en pre-order (raíz → hijos por order), aplanando el árbol.
+    Sólo retorna nodos hoja (los que pueden tener reportes asociados)."""
+    out: list = []
+    def visit(nid: str):
+        n = nodes_by_id.get(nid)
+        if not n:
+            return
+        if n.get("is_leaf"):
+            out.append(n)
+        # Recorre hijos ordenados
+        children = sorted(
+            [c for c in nodes_by_id.values() if c.get("parent_id") == nid],
+            key=lambda x: (x.get("order", 0), x.get("name", "")),
+        )
+        for c in children:
+            visit(c["id"])
+    for rid in root_ids:
+        visit(rid)
+    return out
+
+
+def _excel_safe(value) -> object:
+    """Convierte valores no-nativos a algo que openpyxl pueda escribir."""
+    if value is None:
+        return ""
+    if isinstance(value, datetime):
+        # openpyxl maneja datetime nativo; quitamos tz para Excel.
+        return value.replace(tzinfo=None) if value.tzinfo else value
+    if isinstance(value, (list, tuple)):
+        return ", ".join(str(v) for v in value if v is not None and str(v).strip())
+    if isinstance(value, dict):
+        # Aplana dict simple
+        return ", ".join(f"{k}={v}" for k, v in value.items() if v is not None)
+    return value
+
+
+@api.get("/projects/{pid}/export/reports.xlsx")
+async def export_reports_xlsx(pid: str, user: dict = Depends(require_role(ROLE_COORD))):
+    """Exporta TODOS los reportes del proyecto en una sábana Excel plana,
+    iterando los nodos en orden jerárquico (Tramo → Estación → Poste).
+    Incluye ruta del nodo y coordenadas dictadas (X, Y, Z). Sólo Coord."""
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill, Alignment
+    except Exception as e:
+        raise HTTPException(500, f"openpyxl no instalado: {e}")
+
+    await ensure_project_access(user, pid)
+    proj = await db.projects.find_one({"id": pid})
+    if not proj:
+        raise HTTPException(404, "Proyecto no existe")
+
+    # Carga árbol completo del proyecto
+    nodes_raw = await db.location_nodes.find({"project_id": pid}).to_list(length=10000)
+    nodes_by_id = {n["id"]: n for n in nodes_raw}
+    root_ids = [n["id"] for n in nodes_raw if not n.get("parent_id")]
+    # Ordena raíces por (order, name)
+    root_ids.sort(key=lambda nid: (nodes_by_id[nid].get("order", 0), nodes_by_id[nid].get("name", "")))
+    leaf_nodes = _flatten_tree_in_order(nodes_by_id, root_ids)
+    leaf_ids = [n["id"] for n in leaf_nodes]
+    leaf_index = {nid: i for i, nid in enumerate(leaf_ids)}
+
+    # Trae todos los reportes y agrúpalos por node_id
+    reports = await db.reports.find({"project_id": pid}).to_list(length=20000)
+
+    # Áreas para resolver nombres
+    areas = await db.areas.find({"project_id": pid}).to_list(length=500)
+    areas_by_id = {a["id"]: a for a in areas}
+
+    # Construir workbook
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Reportes"
+
+    headers = [
+        "Orden",                   # índice de orden jerárquico del nodo hoja
+        "Tipo de medición",
+        "Ruta completa",            # Tramo > Estación > Poste
+        "Nodo (hoja)",
+        "Latitud objetivo (X)",
+        "Longitud objetivo (Y)",
+        "Elevación objetivo (Z)",
+        "Valor capturado",          # measurement_value (string)
+        "Avance",
+        "Contratista",
+        "Personal",
+        "Equipo",
+        "Notas / Observaciones",
+        "Área",
+        "Capturado por",
+        "Fecha de captura",
+        "ID Reporte",
+    ]
+    ws.append(headers)
+
+    # Estilo cabecera
+    header_fill = PatternFill(start_color="1E3A8A", end_color="1E3A8A", fill_type="solid")
+    header_font = Font(color="FFFFFF", bold=True)
+    for col_idx in range(1, len(headers) + 1):
+        c = ws.cell(row=1, column=col_idx)
+        c.fill = header_fill
+        c.font = header_font
+        c.alignment = Alignment(horizontal="center", vertical="center")
+    ws.freeze_panes = "A2"
+
+    # Recorre los nodos hoja en orden y escribe sus reportes
+    for n in leaf_nodes:
+        node_reports = [r for r in reports if r.get("node_id") == n["id"]]
+        # Orden secundario: por fecha de captura descendente
+        node_reports.sort(key=lambda r: r.get("created_at") or datetime.min, reverse=True)
+        full_path = " > ".join((await node_path_names(n["id"])))
+        target_lat = n.get("target_lat")
+        target_lon = n.get("target_lon")
+        target_elev = n.get("target_elev")
+        if not node_reports:
+            # Aún así dejamos una fila por nodo hoja (vacía) para mantener trazabilidad.
+            ws.append([
+                leaf_index[n["id"]] + 1,
+                n.get("measurement_type") or "",
+                full_path,
+                n.get("name"),
+                target_lat if target_lat is not None else "",
+                target_lon if target_lon is not None else "",
+                target_elev if target_elev is not None else "",
+                "(sin reporte)",
+                "", "", "", "", "", "", "", "", "",
+            ])
+            continue
+        for r in node_reports:
+            personnel = r.get("personnel") or []
+            equipment = r.get("equipment") or []
+            ws.append([
+                leaf_index[n["id"]] + 1,
+                r.get("measurement_type") or n.get("measurement_type") or "",
+                full_path,
+                n.get("name"),
+                _excel_safe(target_lat),
+                _excel_safe(target_lon),
+                _excel_safe(target_elev),
+                _excel_safe(r.get("measurement_value")),
+                _excel_safe(r.get("avance")),
+                _excel_safe(r.get("contratista")),
+                _excel_safe(personnel),
+                _excel_safe(equipment),
+                _excel_safe(r.get("notes")),
+                _excel_safe(r.get("area_name") or (areas_by_id.get(r.get("area_id"), {}) or {}).get("name") or ""),
+                _excel_safe(r.get("captured_by_name")),
+                _excel_safe(r.get("created_at")),
+                r.get("id"),
+            ])
+
+    # Anchos de columna
+    widths = [7, 18, 44, 22, 16, 16, 16, 24, 14, 18, 30, 26, 36, 18, 22, 22, 38]
+    for i, w in enumerate(widths, start=1):
+        ws.column_dimensions[ws.cell(row=1, column=i).column_letter].width = w
+    # Wrap en columnas largas
+    wrap_cols = {3, 11, 12, 13}  # Ruta, Personal, Equipo, Notas
+    for row in ws.iter_rows(min_row=2):
+        for cell in row:
+            if cell.column in wrap_cols:
+                cell.alignment = Alignment(wrap_text=True, vertical="top")
+
+    # Cabecera del archivo: nombre del proyecto y fecha
+    ws.insert_rows(1)
+    ws.cell(row=1, column=1, value=f"SynCo · {proj.get('name','Proyecto')} · Reporte exportado {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(headers))
+    title_cell = ws.cell(row=1, column=1)
+    title_cell.font = Font(bold=True, size=12, color="1E3A8A")
+    title_cell.alignment = Alignment(horizontal="left", vertical="center")
+    ws.freeze_panes = "A3"
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+
+    safe_name = re.sub(r"[^A-Za-z0-9_-]+", "_", proj.get("name", "proyecto"))[:60] or "proyecto"
+    fname = f"synco_{safe_name}_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M')}.xlsx"
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
 
 
 # === MOUNT ==================================================================

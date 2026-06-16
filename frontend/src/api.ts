@@ -359,6 +359,29 @@ export const api = {
   listProjectMembers: (pid: string) =>
     request<User[]>('GET', `/projects/${pid}/members`),
 
+  // ---- Export ------------------------------------------------------------
+  /** Devuelve URL absoluta para descargar el Excel (Coord). El backend exige Bearer token. */
+  exportReportsXlsxUrl: (pid: string) => `${BASE}/projects/${pid}/export/reports.xlsx`,
+  /** Descarga el Excel autenticado. En Web abre el archivo (download), en native devuelve Blob. */
+  downloadReportsXlsx: async (pid: string): Promise<{ blob: Blob; filename: string }> => {
+    const tok = await storage.secureGet<string>('syncsite_token', '');
+    const res = await fetch(`${BASE}/projects/${pid}/export/reports.xlsx`, {
+      method: 'GET',
+      headers: tok ? { Authorization: `Bearer ${tok}` } : {},
+    });
+    if (!res.ok) {
+      const txt = await res.text();
+      let msg = `HTTP ${res.status}`;
+      try { const j = JSON.parse(txt); msg = j?.detail || msg; } catch {}
+      throw new ApiError(res.status, msg);
+    }
+    const cd = res.headers.get('Content-Disposition') || '';
+    const m = cd.match(/filename="?([^"]+)"?/);
+    const filename = (m && m[1]) || `synco_reportes.xlsx`;
+    const blob = await res.blob();
+    return { blob, filename };
+  },
+
   // ---- Events (Calendario) ------------------------------------------------
   listEvents: (pid: string, range: 'upcoming' | 'past' | 'all' = 'upcoming', limit = 500) =>
     request<ProjectEvent[]>('GET', `/projects/${pid}/events?range=${range}&limit=${limit}`),

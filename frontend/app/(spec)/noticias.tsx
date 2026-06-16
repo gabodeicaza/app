@@ -1,9 +1,11 @@
-// SynCo v2.0 — Tab "Noticias" del Especialista / Sub-Coord (lectura).
-// Lista noticias del proyecto, fijadas primero. Pull-to-refresh y polling cada 60s.
+// SynCo v2.0 — Tab "Noticias" del Especialista / Sub-Coord.
+// Cualquier miembro del proyecto puede crear noticias. El autor o el Coord
+// pueden editar/eliminar. El Coord controla la fijación (pinned).
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  ActivityIndicator, AppState, AppStateStatus, Pressable, RefreshControl,
-  ScrollView, StatusBar, StyleSheet, Text, View,
+  ActivityIndicator, Alert, AppState, AppStateStatus, KeyboardAvoidingView,
+  Modal, Platform, Pressable, RefreshControl, ScrollView, StatusBar,
+  StyleSheet, Switch, Text, TextInput, View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -14,15 +16,22 @@ import { colors, radius, shadow, spacing } from '@/src/theme';
 
 const POLL_MS = 60000;
 
+type EditorState =
+  | { kind: 'create' }
+  | { kind: 'edit'; item: Announcement }
+  | null;
+
 export default function NoticiasScreen() {
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
   const projectId = (user?.project_ids || [])[0] || '';
+  const isCoord = user?.role === 'coordinador_general';
 
   const [items, setItems] = useState<Announcement[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [editor, setEditor] = useState<EditorState>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const load = useCallback(async (silent = false) => {
@@ -42,7 +51,6 @@ export default function NoticiasScreen() {
 
   useEffect(() => { load(false); }, [load]);
 
-  // Polling cada 60s + refresh on foreground.
   useEffect(() => {
     function start() {
       if (pollRef.current) return;
@@ -58,6 +66,23 @@ export default function NoticiasScreen() {
     return () => { stop(); sub.remove(); };
   }, [load]);
 
+  const onDelete = useCallback((it: Announcement) => {
+    const confirm = () => {
+      api.deleteAnnouncement(it.id).then(() => load(true)).catch((e) => {
+        Alert.alert('Error', e?.message || 'No se pudo eliminar');
+      });
+    };
+    if (Platform.OS === 'web') {
+      // eslint-disable-next-line no-restricted-globals, no-alert
+      if (typeof window !== 'undefined' && window.confirm('¿Eliminar esta noticia? Esta acción no se puede deshacer.')) confirm();
+    } else {
+      Alert.alert('Eliminar noticia', '¿Seguro que deseas eliminarla?', [
+        { text: 'Cancelar', style: 'cancel' },
+        { text: 'Eliminar', style: 'destructive', onPress: confirm },
+      ]);
+    }
+  }, [load]);
+
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <StatusBar barStyle="light-content" />
@@ -69,7 +94,7 @@ export default function NoticiasScreen() {
         </View>
         <View style={{ flex: 1 }}>
           <Text style={styles.headerTitle}>Noticias</Text>
-          <Text style={styles.headerSubtitle}>Anuncios del Coordinador General</Text>
+          <Text style={styles.headerSubtitle}>Anuncios del equipo del proyecto</Text>
         </View>
         <Pressable onPress={() => load(false)} hitSlop={10} style={styles.refreshBtn}>
           <Ionicons name="refresh" size={18} color="#fff" />
@@ -78,7 +103,7 @@ export default function NoticiasScreen() {
 
       <ScrollView
         style={{ flex: 1 }}
-        contentContainerStyle={{ paddingHorizontal: spacing.md, paddingBottom: spacing.xl, gap: spacing.sm }}
+        contentContainerStyle={{ paddingHorizontal: spacing.md, paddingBottom: 96, gap: spacing.sm }}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
@@ -105,18 +130,46 @@ export default function NoticiasScreen() {
             </View>
             <Text style={styles.emptyTitle}>Aún no hay noticias</Text>
             <Text style={styles.emptyMsg}>
-              Cuando el Coordinador publique un anuncio, lo verás aquí.
+              Toca el botón “+” para publicar el primer anuncio del proyecto.
             </Text>
           </View>
         ) : (
-          items.map((a) => <AnnouncementCard key={a.id} item={a} />)
+          items.map((a) => (
+            <AnnouncementCard
+              key={a.id}
+              item={a}
+              canEdit={isCoord || a.author_id === user?.id}
+              onEdit={() => setEditor({ kind: 'edit', item: a })}
+              onDelete={() => onDelete(a)}
+            />
+          ))
         )}
       </ScrollView>
+
+      <Pressable onPress={() => setEditor({ kind: 'create' })} style={[styles.fab, { bottom: insets.bottom + 16 }]}>
+        <Ionicons name="add" size={26} color="#fff" />
+      </Pressable>
+
+      <AnnouncementEditor
+        visible={!!editor}
+        editor={editor}
+        canPin={isCoord}
+        onClose={() => setEditor(null)}
+        onSaved={() => { setEditor(null); load(true); }}
+        projectId={projectId}
+      />
     </View>
   );
 }
 
-function AnnouncementCard({ item }: { item: Announcement }) {
+function AnnouncementCard({
+  item, canEdit, onEdit, onDelete,
+}: {
+  item: Announcement;
+  canEdit: boolean;
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
   return (
     <View style={[styles.card, item.pinned && styles.cardPinned]}>
       {item.pinned ? (
@@ -133,8 +186,124 @@ function AnnouncementCard({ item }: { item: Announcement }) {
         <Text style={styles.cardMetaDot}>·</Text>
         <Ionicons name="time-outline" size={12} color={colors.textMuted} />
         <Text style={styles.cardMetaTxt}>{formatDate(item.created_at)}</Text>
+        <View style={{ flex: 1 }} />
+        {canEdit ? (
+          <>
+            <Pressable hitSlop={8} onPress={onEdit} style={styles.iconBtn}>
+              <Ionicons name="create-outline" size={16} color={colors.primary} />
+            </Pressable>
+            <Pressable hitSlop={8} onPress={onDelete} style={styles.iconBtn}>
+              <Ionicons name="trash-outline" size={16} color={colors.error} />
+            </Pressable>
+          </>
+        ) : null}
       </View>
     </View>
+  );
+}
+
+function AnnouncementEditor({
+  visible, editor, canPin, onClose, onSaved, projectId,
+}: {
+  visible: boolean;
+  editor: EditorState;
+  canPin: boolean;
+  onClose: () => void;
+  onSaved: () => void;
+  projectId: string;
+}) {
+  const insets = useSafeAreaInsets();
+  const [title, setTitle] = useState('');
+  const [body, setBody] = useState('');
+  const [pinned, setPinned] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!visible) return;
+    if (editor?.kind === 'edit') {
+      setTitle(editor.item.title);
+      setBody(editor.item.body);
+      setPinned(!!editor.item.pinned);
+    } else {
+      setTitle(''); setBody(''); setPinned(false);
+    }
+    setErr(null);
+  }, [visible, editor]);
+
+  async function submit() {
+    setErr(null);
+    const t = title.trim();
+    const b = body.trim();
+    if (!t) { setErr('Título obligatorio'); return; }
+    if (!b) { setErr('Cuerpo obligatorio'); return; }
+    setBusy(true);
+    try {
+      if (editor?.kind === 'edit') {
+        const payload: any = { title: t, body: b };
+        if (canPin) payload.pinned = pinned;
+        await api.updateAnnouncement(editor.item.id, payload);
+      } else {
+        await api.createAnnouncement(projectId, { title: t, body: b, pinned: canPin ? pinned : false });
+      }
+      onSaved();
+    } catch (e: any) {
+      setErr(e?.message || 'No se pudo guardar');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <View style={styles.modalBackdrop}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1, justifyContent: 'flex-end' }}>
+          <View style={[styles.modalCard, { paddingBottom: insets.bottom + spacing.md }]}>
+            <View style={styles.modalHead}>
+              <Text style={styles.modalTitle}>
+                {editor?.kind === 'edit' ? 'Editar noticia' : 'Nueva noticia'}
+              </Text>
+              <Pressable onPress={onClose} hitSlop={10}>
+                <Ionicons name="close" size={22} color={colors.textBody} />
+              </Pressable>
+            </View>
+            <ScrollView style={{ maxHeight: 460 }} contentContainerStyle={{ gap: spacing.sm }}>
+              <Text style={styles.modalLabel}>Título</Text>
+              <TextInput
+                value={title} onChangeText={setTitle}
+                placeholder="Ej. Suspensión de actividades 18-jul"
+                placeholderTextColor={colors.textMuted}
+                style={styles.modalInput} editable={!busy} maxLength={140}
+              />
+              <Text style={styles.modalLabel}>Cuerpo</Text>
+              <TextInput
+                value={body} onChangeText={setBody}
+                placeholder="Contenido completo del anuncio…"
+                placeholderTextColor={colors.textMuted}
+                style={[styles.modalInput, { minHeight: 120, textAlignVertical: 'top' }]}
+                multiline editable={!busy} maxLength={4000}
+              />
+              {canPin ? (
+                <View style={styles.pinRow}>
+                  <Ionicons name="pin" size={14} color={colors.primary} />
+                  <Text style={styles.pinLabel}>Fijar al inicio del feed</Text>
+                  <Switch value={pinned} onValueChange={setPinned} disabled={busy} />
+                </View>
+              ) : null}
+              {err ? (
+                <View style={styles.errInline}>
+                  <Ionicons name="alert-circle" size={14} color={colors.error} />
+                  <Text style={styles.errInlineTxt}>{err}</Text>
+                </View>
+              ) : null}
+            </ScrollView>
+            <Pressable onPress={submit} style={[styles.saveBtn, busy && { opacity: 0.7 }]} disabled={busy}>
+              {busy ? <ActivityIndicator color="#fff" /> : <Text style={styles.saveTxt}>{editor?.kind === 'edit' ? 'Guardar cambios' : 'Publicar'}</Text>}
+            </Pressable>
+          </View>
+        </KeyboardAvoidingView>
+      </View>
+    </Modal>
   );
 }
 
@@ -189,6 +358,7 @@ const styles = StyleSheet.create({
   },
   cardMetaTxt: { fontSize: 11, color: colors.textMuted, fontWeight: '600' },
   cardMetaDot: { fontSize: 11, color: colors.textMuted, marginHorizontal: 2 },
+  iconBtn: { width: 28, height: 28, alignItems: 'center', justifyContent: 'center', borderRadius: radius.sm },
   centerPad: { padding: spacing.xl, alignItems: 'center' },
   errorBox: {
     padding: spacing.lg, alignItems: 'center', gap: spacing.sm,
@@ -209,4 +379,39 @@ const styles = StyleSheet.create({
   },
   emptyTitle: { fontSize: 15, fontWeight: '800', color: colors.text },
   emptyMsg: { fontSize: 12, color: colors.textBody, textAlign: 'center', lineHeight: 18 },
+  // FAB
+  fab: {
+    position: 'absolute', right: 18, width: 56, height: 56, borderRadius: 28,
+    backgroundColor: colors.primary, alignItems: 'center', justifyContent: 'center',
+    ...shadow.card,
+  },
+  // Modal
+  modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.45)' },
+  modalCard: {
+    backgroundColor: colors.surface, borderTopLeftRadius: radius.lg, borderTopRightRadius: radius.lg,
+    padding: spacing.md, gap: spacing.sm,
+  },
+  modalHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  modalTitle: { fontSize: 17, fontWeight: '800', color: colors.text },
+  modalLabel: { fontSize: 12, fontWeight: '700', color: colors.textBody, marginTop: 4 },
+  modalInput: {
+    borderWidth: 1, borderColor: colors.border, borderRadius: radius.md,
+    paddingHorizontal: 12, paddingVertical: 10, fontSize: 14, color: colors.text,
+    backgroundColor: colors.bg,
+  },
+  pinRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: colors.primaryLight, padding: 10, borderRadius: radius.md,
+  },
+  pinLabel: { flex: 1, fontSize: 12, fontWeight: '700', color: colors.primary },
+  errInline: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: colors.errorBg, padding: 8, borderRadius: radius.sm,
+  },
+  errInlineTxt: { color: colors.error, fontSize: 12, fontWeight: '700' },
+  saveBtn: {
+    backgroundColor: colors.primary, paddingVertical: 14, borderRadius: radius.md,
+    alignItems: 'center', justifyContent: 'center', marginTop: spacing.xs,
+  },
+  saveTxt: { color: '#fff', fontWeight: '800', fontSize: 14 },
 });

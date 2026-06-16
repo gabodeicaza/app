@@ -1,5 +1,5 @@
 import React, { useCallback, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, ActivityIndicator, Pressable, Alert } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, ActivityIndicator, Pressable, Alert, Platform } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -14,6 +14,7 @@ export default function ProjectDetailScreen() {
   const [project, setProject] = useState<Project | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -38,6 +39,41 @@ export default function ProjectDetailScreen() {
     if (!ok) return;
     try { await api.archiveProject(pid); router.back(); }
     catch (e: any) { Alert.alert('Error', e?.message || 'No se pudo archivar'); }
+  }
+
+  async function onExportXlsx() {
+    try {
+      setExporting(true);
+      if (Platform.OS === 'web') {
+        const { blob, filename } = await api.downloadReportsXlsx(pid);
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = filename; document.body.appendChild(a); a.click();
+        a.remove(); URL.revokeObjectURL(url);
+      } else {
+        const { blob, filename } = await api.downloadReportsXlsx(pid);
+        const reader = new FileReader();
+        const dataUri: string = await new Promise((resolve, reject) => {
+          reader.onerror = () => reject(reader.error);
+          reader.onloadend = () => resolve(reader.result as string);
+          reader.readAsDataURL(blob);
+        });
+        const base64 = dataUri.split(',')[1] || '';
+        const FileSystem: any = await import('expo-file-system');
+        const Sharing: any = await import('expo-sharing');
+        const dest = `${FileSystem.cacheDirectory || ''}${filename}`;
+        await FileSystem.writeAsStringAsync(dest, base64, { encoding: FileSystem.EncodingType?.Base64 || 'base64' });
+        if (await Sharing.isAvailableAsync()) {
+          await Sharing.shareAsync(dest, { mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', dialogTitle: 'Compartir reporte SynCo' });
+        } else {
+          Alert.alert('Listo', `Archivo guardado en caché:\n${dest}`);
+        }
+      }
+    } catch (e: any) {
+      Alert.alert('Error al exportar', e?.message || 'No se pudo generar el Excel');
+    } finally {
+      setExporting(false);
+    }
   }
 
   return (
@@ -102,10 +138,11 @@ export default function ProjectDetailScreen() {
             />
             <ActionTile
               icon="document-text-outline"
-              title="Reportes capturados"
-              subtitle="Auditoría de mediciones"
-              disabled
-              comingSoon
+              title={exporting ? 'Generando Excel…' : 'Exportar reportes a Excel'}
+              subtitle="Sábana plana ordenada por jerarquía del árbol (incluye coords X/Y/Z)"
+              onPress={onExportXlsx}
+              disabled={exporting}
+              busy={exporting}
             />
 
             <Pressable onPress={onArchive} style={styles.archiveBtn}>
@@ -131,14 +168,16 @@ function InfoRow({ icon, label, value }: { icon: any; label: string; value: stri
   );
 }
 
-function ActionTile({ icon, title, subtitle, disabled, comingSoon, onPress }: any) {
+function ActionTile({ icon, title, subtitle, disabled, comingSoon, onPress, busy }: any) {
   return (
     <Pressable
       onPress={onPress}
       disabled={!!disabled}
       style={({ pressed }) => [styles.tile, disabled && { opacity: 0.55 }, pressed && !disabled && { transform: [{ scale: 0.99 }] }]}
     >
-      <View style={styles.tileIcon}><Ionicons name={icon} size={20} color={colors.primary} /></View>
+      <View style={styles.tileIcon}>
+        {busy ? <ActivityIndicator color={colors.primary} /> : <Ionicons name={icon} size={20} color={colors.primary} />}
+      </View>
       <View style={{ flex: 1 }}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
           <Text style={styles.tileTitle}>{title}</Text>

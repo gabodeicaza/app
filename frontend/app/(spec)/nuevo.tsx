@@ -413,6 +413,40 @@ export default function SpecCaptureScreen() {
           )}
         </SectionCard>
 
+        {/* Coordenadas objetivo dictadas por el Coordinador (read-only) */}
+        {leafNode && leafNode.measurement_type === 'coord_latlon' && (
+          (leafNode as any).target_lat != null ||
+          (leafNode as any).target_lon != null ||
+          (leafNode as any).target_elev != null
+        ) ? (
+          <SectionCard
+            icon="location-outline"
+            title="Coordenadas objetivo (oficina)"
+            subtitle="Valores dictados por el Coordinador. Solo lectura."
+          >
+            <View style={styles.coordsTargetGrid}>
+              <View style={styles.coordsTargetItem}>
+                <Text style={styles.coordsTargetLabel}>Latitud (X)</Text>
+                <Text style={styles.coordsTargetValue} numberOfLines={1}>
+                  {(leafNode as any).target_lat != null ? String((leafNode as any).target_lat) : '—'}
+                </Text>
+              </View>
+              <View style={styles.coordsTargetItem}>
+                <Text style={styles.coordsTargetLabel}>Longitud (Y)</Text>
+                <Text style={styles.coordsTargetValue} numberOfLines={1}>
+                  {(leafNode as any).target_lon != null ? String((leafNode as any).target_lon) : '—'}
+                </Text>
+              </View>
+              <View style={styles.coordsTargetItem}>
+                <Text style={styles.coordsTargetLabel}>Elevación (Z)</Text>
+                <Text style={styles.coordsTargetValue} numberOfLines={1}>
+                  {(leafNode as any).target_elev != null ? String((leafNode as any).target_elev) : '—'}
+                </Text>
+              </View>
+            </View>
+          </SectionCard>
+        ) : null}
+
         {/* Medición */}
         {leafNode ? (
           <SectionCard
@@ -956,4 +990,14 @@ const styles = StyleSheet.create({
     maxHeight: 280,
   },
   successPreviewTxt: { fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' }), fontSize: 12, color: colors.text, lineHeight: 18 },
+  // Coordenadas objetivo (read-only para el especialista)
+  coordsTargetGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  coordsTargetItem: {
+    flex: 1, minWidth: '30%',
+    backgroundColor: colors.primaryLight,
+    borderRadius: radius.md, padding: 10, gap: 4,
+    borderWidth: 1, borderColor: colors.primary,
+  },
+  coordsTargetLabel: { fontSize: 10, fontWeight: '800', color: colors.primary, letterSpacing: 0.6 },
+  coordsTargetValue: { fontSize: 14, fontWeight: '800', color: colors.text },
 });

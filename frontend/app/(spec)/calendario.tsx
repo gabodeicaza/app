@@ -1,9 +1,10 @@
 // SynCo v2.0 — Tab "Calendario" — vista de lectura agrupada por sección temporal.
 // Sin librería externa: lista limpia con secciones Hoy / Mañana / Esta semana / Más adelante.
-import React, { useCallback, useMemo, useState } from 'react';
+// Cualquier miembro del proyecto puede crear eventos. Autor o Coord pueden editar/eliminar.
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  ActivityIndicator, Pressable, RefreshControl, ScrollView, StatusBar,
-  StyleSheet, Text, View,
+  ActivityIndicator, Alert, KeyboardAvoidingView, Modal, Platform, Pressable,
+  RefreshControl, ScrollView, StatusBar, StyleSheet, Text, TextInput, View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from 'expo-router';
@@ -20,16 +21,23 @@ const RANGE_OPTIONS: Array<{ key: RangeKey; label: string }> = [
   { key: 'past', label: 'Pasados' },
 ];
 
+type EditorState =
+  | { kind: 'create' }
+  | { kind: 'edit'; item: ProjectEvent }
+  | null;
+
 export default function CalendarioScreen() {
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
   const projectId = (user?.project_ids || [])[0] || '';
+  const isCoord = user?.role === 'coordinador_general';
 
   const [items, setItems] = useState<ProjectEvent[]>([]);
   const [range, setRange] = useState<RangeKey>('upcoming');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [editor, setEditor] = useState<EditorState>(null);
 
   const load = useCallback(async (nextRange: RangeKey = range, silent = false) => {
     if (!projectId) { setLoading(false); setError('Sin proyecto asignado'); return; }
@@ -50,6 +58,23 @@ export default function CalendarioScreen() {
   useFocusEffect(useCallback(() => { load(range, false); }, [load, range]));
 
   const sections = useMemo(() => groupEvents(items, range), [items, range]);
+
+  const onDelete = useCallback((it: ProjectEvent) => {
+    const confirm = () => {
+      api.deleteEvent(it.id).then(() => load(range, true)).catch((e) => {
+        Alert.alert('Error', e?.message || 'No se pudo eliminar');
+      });
+    };
+    if (Platform.OS === 'web') {
+      // eslint-disable-next-line no-alert
+      if (typeof window !== 'undefined' && window.confirm('¿Eliminar este evento?')) confirm();
+    } else {
+      Alert.alert('Eliminar evento', '¿Seguro que deseas eliminarlo?', [
+        { text: 'Cancelar', style: 'cancel' },
+        { text: 'Eliminar', style: 'destructive', onPress: confirm },
+      ]);
+    }
+  }, [load, range]);
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
@@ -128,16 +153,43 @@ export default function CalendarioScreen() {
           sections.map((section) => (
             <View key={section.key} style={{ gap: 6, marginTop: 4 }}>
               <Text style={styles.sectionTitle}>{section.title}</Text>
-              {section.items.map((e) => <EventCard key={e.id} item={e} />)}
+              {section.items.map((e) => (
+                <EventCard
+                  key={e.id}
+                  item={e}
+                  canEdit={isCoord || e.author_id === user?.id}
+                  onEdit={() => setEditor({ kind: 'edit', item: e })}
+                  onDelete={() => onDelete(e)}
+                />
+              ))}
             </View>
           ))
         )}
       </ScrollView>
+
+      <Pressable onPress={() => setEditor({ kind: 'create' })} style={[styles.fab, { bottom: insets.bottom + 16 }]}>
+        <Ionicons name="add" size={26} color="#fff" />
+      </Pressable>
+
+      <EventEditor
+        visible={!!editor}
+        editor={editor}
+        projectId={projectId}
+        onClose={() => setEditor(null)}
+        onSaved={() => { setEditor(null); load(range, true); }}
+      />
     </View>
   );
 }
 
-function EventCard({ item }: { item: ProjectEvent }) {
+function EventCard({
+  item, canEdit, onEdit, onDelete,
+}: {
+  item: ProjectEvent;
+  canEdit: boolean;
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
   return (
     <View style={styles.card}>
       <View style={styles.dateBlock}>
@@ -166,9 +218,164 @@ function EventCard({ item }: { item: ProjectEvent }) {
           <Text style={styles.authorTxt}>{item.author_name}</Text>
           <Text style={styles.metaDot}>·</Text>
           <Text style={styles.authorTxt}>{formatEventDate(item.start_at)}</Text>
+          <View style={{ flex: 1 }} />
+          {canEdit ? (
+            <>
+              <Pressable hitSlop={8} onPress={onEdit} style={styles.iconBtn}>
+                <Ionicons name="create-outline" size={15} color={colors.primary} />
+              </Pressable>
+              <Pressable hitSlop={8} onPress={onDelete} style={styles.iconBtn}>
+                <Ionicons name="trash-outline" size={15} color={colors.error} />
+              </Pressable>
+            </>
+          ) : null}
         </View>
       </View>
     </View>
+  );
+}
+
+// =====================================================================
+// Modal editor de eventos. Inputs de fecha sencillos (string ISO local /
+// formato YYYY-MM-DD HH:mm). El backend acepta ISO y datetime sin tz.
+// =====================================================================
+function pad2(n: number): string { return n < 10 ? `0${n}` : String(n); }
+
+function isoToLocalInput(iso?: string | null): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}
+
+function localInputToIso(s: string): string | null {
+  const t = (s || '').trim();
+  if (!t) return null;
+  // Acepta "YYYY-MM-DD HH:mm" o "YYYY-MM-DDTHH:mm"
+  const m = t.match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})$/);
+  if (!m) return null;
+  const [, y, mo, d, h, mi] = m;
+  const dt = new Date(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi));
+  if (Number.isNaN(dt.getTime())) return null;
+  return dt.toISOString();
+}
+
+function EventEditor({
+  visible, editor, projectId, onClose, onSaved,
+}: {
+  visible: boolean;
+  editor: EditorState;
+  projectId: string;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const insets = useSafeAreaInsets();
+  const [title, setTitle] = useState('');
+  const [desc, setDesc] = useState('');
+  const [loc, setLoc] = useState('');
+  const [start, setStart] = useState('');
+  const [end, setEnd] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!visible) return;
+    if (editor?.kind === 'edit') {
+      setTitle(editor.item.title);
+      setDesc(editor.item.description || '');
+      setLoc(editor.item.location || '');
+      setStart(isoToLocalInput(editor.item.start_at));
+      setEnd(isoToLocalInput(editor.item.end_at));
+    } else {
+      // Default a próxima hora redonda
+      const d = new Date();
+      d.setMinutes(0, 0, 0);
+      d.setHours(d.getHours() + 1);
+      setTitle(''); setDesc(''); setLoc('');
+      setStart(`${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`);
+      setEnd('');
+    }
+    setErr(null);
+  }, [visible, editor]);
+
+  async function submit() {
+    setErr(null);
+    const t = title.trim();
+    if (!t) { setErr('Título obligatorio'); return; }
+    const startIso = localInputToIso(start);
+    if (!startIso) { setErr('Inicio inválido. Formato: YYYY-MM-DD HH:mm'); return; }
+    let endIso: string | null = null;
+    if (end.trim()) {
+      endIso = localInputToIso(end);
+      if (!endIso) { setErr('Fin inválido. Formato: YYYY-MM-DD HH:mm'); return; }
+    }
+    setBusy(true);
+    try {
+      if (editor?.kind === 'edit') {
+        await api.updateEvent(editor.item.id, {
+          title: t,
+          description: desc.trim(),
+          location: loc.trim(),
+          start_at: startIso,
+          end_at: endIso,
+        });
+      } else {
+        await api.createEvent(projectId, {
+          title: t,
+          description: desc.trim() || undefined,
+          location: loc.trim() || undefined,
+          start_at: startIso,
+          end_at: endIso || undefined,
+        });
+      }
+      onSaved();
+    } catch (e: any) {
+      setErr(e?.message || 'No se pudo guardar');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <View style={styles.modalBackdrop}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1, justifyContent: 'flex-end' }}>
+          <View style={[styles.modalCard, { paddingBottom: insets.bottom + spacing.md }]}>
+            <View style={styles.modalHead}>
+              <Text style={styles.modalTitle}>{editor?.kind === 'edit' ? 'Editar evento' : 'Nuevo evento'}</Text>
+              <Pressable onPress={onClose} hitSlop={10}><Ionicons name="close" size={22} color={colors.textBody} /></Pressable>
+            </View>
+            <ScrollView style={{ maxHeight: 480 }} contentContainerStyle={{ gap: spacing.sm }}>
+              <Text style={styles.modalLabel}>Título</Text>
+              <TextInput value={title} onChangeText={setTitle} placeholder="Ej. Junta de obra"
+                placeholderTextColor={colors.textMuted} style={styles.modalInput} editable={!busy} maxLength={140} />
+              <Text style={styles.modalLabel}>Inicio (YYYY-MM-DD HH:mm)</Text>
+              <TextInput value={start} onChangeText={setStart} placeholder="2026-06-20 09:00"
+                placeholderTextColor={colors.textMuted} style={styles.modalInput} editable={!busy} autoCapitalize="none" />
+              <Text style={styles.modalLabel}>Fin (opcional)</Text>
+              <TextInput value={end} onChangeText={setEnd} placeholder="2026-06-20 11:00"
+                placeholderTextColor={colors.textMuted} style={styles.modalInput} editable={!busy} autoCapitalize="none" />
+              <Text style={styles.modalLabel}>Ubicación (opcional)</Text>
+              <TextInput value={loc} onChangeText={setLoc} placeholder="Frente principal"
+                placeholderTextColor={colors.textMuted} style={styles.modalInput} editable={!busy} maxLength={200} />
+              <Text style={styles.modalLabel}>Descripción (opcional)</Text>
+              <TextInput value={desc} onChangeText={setDesc} placeholder="Detalles…"
+                placeholderTextColor={colors.textMuted} style={[styles.modalInput, { minHeight: 90, textAlignVertical: 'top' }]}
+                multiline editable={!busy} maxLength={2000} />
+              {err ? (
+                <View style={styles.errInline}>
+                  <Ionicons name="alert-circle" size={14} color={colors.error} />
+                  <Text style={styles.errInlineTxt}>{err}</Text>
+                </View>
+              ) : null}
+            </ScrollView>
+            <Pressable onPress={submit} style={[styles.saveBtn, busy && { opacity: 0.7 }]} disabled={busy}>
+              {busy ? <ActivityIndicator color="#fff" /> : <Text style={styles.saveTxt}>{editor?.kind === 'edit' ? 'Guardar cambios' : 'Crear evento'}</Text>}
+            </Pressable>
+          </View>
+        </KeyboardAvoidingView>
+      </View>
+    </Modal>
   );
 }
 
@@ -260,4 +467,33 @@ const styles = StyleSheet.create({
   },
   emptyTitle: { fontSize: 15, fontWeight: '800', color: colors.text },
   emptyMsg: { fontSize: 12, color: colors.textBody, textAlign: 'center', lineHeight: 18 },
+  iconBtn: { width: 26, height: 26, alignItems: 'center', justifyContent: 'center', borderRadius: radius.sm },
+  fab: {
+    position: 'absolute', right: 18, width: 56, height: 56, borderRadius: 28,
+    backgroundColor: colors.primary, alignItems: 'center', justifyContent: 'center',
+    ...shadow.card,
+  },
+  modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.45)' },
+  modalCard: {
+    backgroundColor: colors.surface, borderTopLeftRadius: radius.lg, borderTopRightRadius: radius.lg,
+    padding: spacing.md, gap: spacing.sm,
+  },
+  modalHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  modalTitle: { fontSize: 17, fontWeight: '800', color: colors.text },
+  modalLabel: { fontSize: 12, fontWeight: '700', color: colors.textBody, marginTop: 4 },
+  modalInput: {
+    borderWidth: 1, borderColor: colors.border, borderRadius: radius.md,
+    paddingHorizontal: 12, paddingVertical: 10, fontSize: 14, color: colors.text,
+    backgroundColor: colors.bg,
+  },
+  errInline: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: colors.errorBg, padding: 8, borderRadius: radius.sm,
+  },
+  errInlineTxt: { color: colors.error, fontSize: 12, fontWeight: '700' },
+  saveBtn: {
+    backgroundColor: colors.primary, paddingVertical: 14, borderRadius: radius.md,
+    alignItems: 'center', justifyContent: 'center', marginTop: spacing.xs,
+  },
+  saveTxt: { color: '#fff', fontWeight: '800', fontSize: 14 },
 });
