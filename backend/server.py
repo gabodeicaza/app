@@ -1967,11 +1967,17 @@ async def export_reports_pdf(
             allowed_node_ids = descendants
 
     # --- Query de reportes ---------------------------------------------------
+    # RBAC ESTRICTO:
+    #   - Coordinador General: acceso global (sin filtro por usuario).
+    #   - Cualquier otro rol (Especialista, Sub-Coordinador, Analyst, etc.):
+    #     filtro OBLIGATORIO por captured_by == user.id para que solo descargue
+    #     sus propios reportes. Esto blinda el endpoint contra fugas de datos
+    #     entre usuarios y permite que specialist/analyst usen "Mis Reportes".
     q: dict = {
         "project_id": pid,
         "created_at": {"$gte": start_dt, "$lte": end_dt},
     }
-    if role == ROLE_ESPECIALISTA:
+    if role != ROLE_COORD:
         q["captured_by"] = user["id"]
     if allowed_node_ids is not None:
         q["node_id"] = {"$in": list(allowed_node_ids)}
@@ -2013,7 +2019,8 @@ async def export_reports_pdf(
         if LOGO_PATH.exists():
             try:
                 logo = ImageReader(str(LOGO_PATH))
-                c.drawImage(logo, 1.2 * cm, PH - 1.8 * cm, width=2.2 * cm, height=1.1 * cm,
+                # Logo Dirac (~2.73:1). Caja ajustada al ratio nativo + preserveAspectRatio.
+                c.drawImage(logo, 1.2 * cm, PH - 1.9 * cm, width=3.0 * cm, height=1.2 * cm,
                             preserveAspectRatio=True, mask='auto')
             except Exception:
                 pass
@@ -2038,7 +2045,8 @@ async def export_reports_pdf(
     if LOGO_PATH.exists():
         try:
             logo = ImageReader(str(LOGO_PATH))
-            c.drawImage(logo, (PW - 6 * cm) / 2, PH - 6.5 * cm, width=6 * cm, height=3 * cm,
+            # Portada: caja 8x3cm (ratio 2.67) compatible con logo Dirac nativo (~2.73:1).
+            c.drawImage(logo, (PW - 8 * cm) / 2, PH - 6.5 * cm, width=8 * cm, height=3 * cm,
                         preserveAspectRatio=True, mask='auto')
         except Exception:
             pass
