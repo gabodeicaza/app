@@ -55,7 +55,7 @@ VALID_ROLES = {ROLE_COORD, ROLE_SUB, ROLE_ESPECIALISTA}
 MEASUREMENT_TYPES = {"coord_latlon", "cadenamiento", "eje", "nivel"}
 
 # Colecciones del esquema v2
-COLLECTIONS_V2 = ["users", "projects", "location_nodes", "areas", "invitations", "reports"]
+COLLECTIONS_V2 = ["users", "projects", "location_nodes", "areas", "invitations", "reports", "announcements"]
 
 # Colecciones legacy a eliminar en startup
 COLLECTIONS_LEGACY = [
@@ -344,6 +344,7 @@ async def startup_event():
     await db.invitations.create_index("token", unique=True)
     await db.location_nodes.create_index([("project_id", 1), ("parent_id", 1)])
     await db.reports.create_index([("project_id", 1), ("created_at", -1)])
+    await db.announcements.create_index([("project_id", 1), ("pinned", -1), ("created_at", -1)])
     log.info("[startup] SynCo v2.0 ready")
 
 
@@ -1000,6 +1001,115 @@ async def list_project_users(pid: str, user: dict = Depends(require_role(ROLE_CO
     await ensure_project_access(user, pid)
     items = await db.users.find({"project_ids": pid}).to_list(length=1000)
     return [user_to_out(u) for u in items]
+
+
+# === ANNOUNCEMENTS (Noticias) ==============================================
+class AnnouncementIn(BaseModel):
+    title: str
+    body: str
+    pinned: bool = False
+
+
+class AnnouncementPatch(BaseModel):
+    title: Optional[str] = None
+    body: Optional[str] = None
+    pinned: Optional[bool] = None
+
+
+def _announcement_out(doc: dict) -> dict:
+    doc.pop("_id", None)
+    return doc
+
+
+@api.get("/projects/{pid}/announcements")
+async def list_announcements(pid: str, user: dict = Depends(current_user)):
+    """Lista noticias del proyecto. Cualquier miembro del proyecto puede leer.
+
+    Orden: pinned primero, luego más recientes primero.
+    """
+    await ensure_project_access(user, pid)
+    cursor = db.announcements.find({"project_id": pid}).sort([("pinned", -1), ("created_at", -1)])
+    items = await cursor.to_list(length=500)
+    return [_announcement_out(it) for it in items]
+
+
+@api.post("/projects/{pid}/announcements")
+async def create_announcement(
+    pid: str,
+    body: AnnouncementIn,
+    user: dict = Depends(require_role(ROLE_COORD)),
+):
+    """Solo Coordinador General puede publicar."""
+    await ensure_project_access(user, pid)
+    title = (body.title or "").strip()
+    text = (body.body or "").strip()
+    if not title:
+        raise HTTPException(400, "Título requerido")
+    if not text:
+        raise HTTPException(400, "Cuerpo requerido")
+    if len(title) > 140:
+        raise HTTPException(400, "Título máximo 140 caracteres")
+    if len(text) > 4000:
+        raise HTTPException(400, "Cuerpo máximo 4000 caracteres")
+    now = datetime.now(timezone.utc)
+    doc = {
+        "id": str(uuid.uuid4()),
+        "project_id": pid,
+        "title": title,
+        "body": text,
+        "pinned": bool(body.pinned),
+        "author_id": user["id"],
+        "author_name": user["name"],
+        "created_at": now,
+        "updated_at": now,
+    }
+    await db.announcements.insert_one(doc)
+    return _announcement_out(doc)
+
+
+@api.patch("/announcements/{aid}")
+async def update_announcement(
+    aid: str,
+    body: AnnouncementPatch,
+    user: dict = Depends(require_role(ROLE_COORD)),
+):
+    a = await db.announcements.find_one({"id": aid})
+    if not a:
+        raise HTTPException(404, "Noticia no existe")
+    await ensure_project_access(user, a["project_id"])
+    update: dict = {}
+    if body.title is not None:
+        t = body.title.strip()
+        if not t:
+            raise HTTPException(400, "Título no puede estar vacío")
+        if len(t) > 140:
+            raise HTTPException(400, "Título máximo 140 caracteres")
+        update["title"] = t
+    if body.body is not None:
+        b = body.body.strip()
+        if not b:
+            raise HTTPException(400, "Cuerpo no puede estar vacío")
+        if len(b) > 4000:
+            raise HTTPException(400, "Cuerpo máximo 4000 caracteres")
+        update["body"] = b
+    if body.pinned is not None:
+        update["pinned"] = bool(body.pinned)
+    if not update:
+        return _announcement_out(a)
+    update["updated_at"] = datetime.now(timezone.utc)
+    await db.announcements.update_one({"id": aid}, {"$set": update})
+    a = await db.announcements.find_one({"id": aid})
+    return _announcement_out(a)
+
+
+@api.delete("/announcements/{aid}")
+async def delete_announcement(aid: str, user: dict = Depends(require_role(ROLE_COORD))):
+    a = await db.announcements.find_one({"id": aid})
+    if not a:
+        raise HTTPException(404, "Noticia no existe")
+    await ensure_project_access(user, a["project_id"])
+    await db.announcements.delete_one({"id": aid})
+    return {"ok": True}
 
 
 # === MOUNT ==================================================================

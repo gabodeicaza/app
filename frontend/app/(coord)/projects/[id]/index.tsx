@@ -89,6 +89,12 @@ export default function ProjectDetailScreen() {
               onPress={() => router.push({ pathname: '/(coord)/projects/[id]/invitations', params: { id: pid } })}
             />
             <ActionTile
+              icon="newspaper-outline"
+              title="Noticias"
+              subtitle="Publica anuncios visibles para todos los miembros"
+              onPress={() => router.push({ pathname: '/(coord)/projects/[id]/announcements' as any, params: { id: pid } })}
+            />
+            <ActionTile
               icon="document-text-outline"
               title="Reportes capturados"
               subtitle="Auditoría de mediciones"

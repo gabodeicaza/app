@@ -9,6 +9,7 @@ export default function ProjectLayout() {
       <Stack.Screen name="tree" />
       <Stack.Screen name="areas" />
       <Stack.Screen name="invitations" />
+      <Stack.Screen name="announcements" />
     </Stack>
   );
 }

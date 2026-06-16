@@ -155,6 +155,18 @@ export interface FeedResponse {
   reports: FeedItem[];
 }
 
+export interface Announcement {
+  id: string;
+  project_id: string;
+  title: string;
+  body: string;
+  pinned: boolean;
+  author_id: string;
+  author_name: string;
+  created_at: string;
+  updated_at: string;
+}
+
 // ---- API client -----------------------------------------------------------
 export const api = {
   // Auth
@@ -241,6 +253,16 @@ export const api = {
   feed: (pid: string, range: 'today' | 'week' | 'month' | 'all' = 'today', limit = 50) =>
     request<FeedResponse>('GET', `/projects/${pid}/reports/feed?range=${range}&limit=${limit}`),
   getReport: (rid: string) => request<Report>('GET', `/reports/${rid}`),
+
+  // ---- Announcements (Noticias) -------------------------------------------
+  listAnnouncements: (pid: string) =>
+    request<Announcement[]>('GET', `/projects/${pid}/announcements`),
+  createAnnouncement: (pid: string, payload: { title: string; body: string; pinned?: boolean }) =>
+    request<Announcement>('POST', `/projects/${pid}/announcements`, payload),
+  updateAnnouncement: (aid: string, payload: { title?: string; body?: string; pinned?: boolean }) =>
+    request<Announcement>('PATCH', `/announcements/${aid}`, payload),
+  deleteAnnouncement: (aid: string) =>
+    request<{ ok: boolean }>('DELETE', `/announcements/${aid}`),
   deleteReport: (rid: string) => request<{ ok: boolean }>('DELETE', `/reports/${rid}`),
 
   // Users (admin)
