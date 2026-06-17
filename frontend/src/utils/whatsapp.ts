@@ -48,6 +48,8 @@ export function formatMeasurementValue(
   }
 }
 
+export type Unidad = 'km' | 'm' | 'cm';
+
 export interface WhatsAppPayload {
   /** Nombre completo del especialista (sin "Ing."). */
   userName: string;
@@ -61,8 +63,8 @@ export interface WhatsAppPayload {
   leafNodeName: string;
   /** Texto ya formateado del valor de medición (ver formatMeasurementValue). */
   ubicacion: string;
-  /** Texto libre ingresado por el especialista. */
-  contratista: string;
+  /** Constructora global del proyecto (read-only). */
+  constructora: string;
   /** Listas serializadas (ej. ["3 Albañil", "1 Maestro"]). */
   personal: string[];
   equipo: string[];
@@ -73,19 +75,29 @@ export interface WhatsAppPayload {
   /** Lecturas numéricas. */
   primeraLectura?: number | null;
   ultimaLectura?: number | null;
+  /** Unidad de las lecturas (km | m | cm). */
+  unidad?: Unidad;
   /** Opcional, override de fecha; por defecto usa "hoy". */
   date?: Date;
 }
 
-function fmtNum(n: number | null | undefined): string | null {
+/** Formato profesional: máximo 2 decimales, sin ceros sobrantes. */
+export function fmtNum2(n: number | null | undefined): string | null {
   if (n == null || !Number.isFinite(n)) return null;
-  // Acepta entero o decimal según corresponda.
-  return Number.isInteger(n) ? String(n) : String(n);
+  if (Number.isInteger(n)) return String(n);
+  // 2 decimales fijos, sin ceros sobrantes a la derecha.
+  let s = n.toFixed(2);
+  if (s.includes('.')) {
+    s = s.replace(/0+$/, '').replace(/\.$/, '');
+  }
+  return s;
 }
 
 export function buildWhatsAppMessage(p: WhatsAppPayload): string {
   const dateLine = formatDateLongES(p.date || new Date());
   const lines: string[] = [];
+  const unidad: Unidad = p.unidad || 'm';
+
   lines.push(dateLine);
   lines.push('');
   lines.push(`Ing. ${(p.userName || '').trim()}`);
@@ -101,13 +113,24 @@ export function buildWhatsAppMessage(p: WhatsAppPayload): string {
   }
   lines.push(`Ubicación: ${(p.ubicacion || '').trim()}`);
 
-  // Lecturas (solo si vienen)
-  const pl = fmtNum(p.primeraLectura);
-  const ul = fmtNum(p.ultimaLectura);
+  // Lecturas con unidad + Avance calculado
+  const pl = fmtNum2(p.primeraLectura);
+  const ul = fmtNum2(p.ultimaLectura);
   if (pl != null || ul != null) {
     lines.push('');
-    if (pl != null) lines.push(`Primera lectura: ${pl}`);
-    if (ul != null) lines.push(`Última lectura: ${ul}`);
+    if (pl != null) lines.push(`Primera lectura: ${pl} ${unidad}`);
+    if (ul != null) lines.push(`Última lectura: ${ul} ${unidad}`);
+    // Avance = Última - Primera (cuando ambas existen)
+    if (
+      p.primeraLectura != null && Number.isFinite(p.primeraLectura) &&
+      p.ultimaLectura != null && Number.isFinite(p.ultimaLectura)
+    ) {
+      const avance = (p.ultimaLectura as number) - (p.primeraLectura as number);
+      const avanceStr = fmtNum2(avance);
+      if (avanceStr != null) {
+        lines.push(`Avance: ${avanceStr} ${unidad}`);
+      }
+    }
   }
 
   // Actividades
@@ -126,9 +149,9 @@ export function buildWhatsAppMessage(p: WhatsAppPayload): string {
     lines.push(obs);
   }
 
-  // Contratista, Personal y Equipo
+  // Constructora (global, NO editable), Personal y Equipo
   lines.push('');
-  lines.push(`Contratista: ${(p.contratista || '').trim()}`);
+  lines.push(`Constructora: ${(p.constructora || '').trim() || '—'}`);
 
   const personal = (p.personal || []).map((s) => s.trim()).filter(Boolean);
   lines.push('Personal:');

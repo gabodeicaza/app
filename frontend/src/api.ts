@@ -129,6 +129,7 @@ export interface Report {
   files: Array<{ filename: string; mime: string; data_base64: string }>;
   primera_lectura?: number | null;
   ultima_lectura?: number | null;
+  unidad?: string | null;
   captured_by: string;
   captured_by_name: string;
   created_at: string;

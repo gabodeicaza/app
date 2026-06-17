@@ -216,6 +216,8 @@ class ReportIn(BaseModel):
     # Lecturas numéricas (P/U) – específicas del flujo Especialista v2.
     primera_lectura: Optional[float] = None
     ultima_lectura: Optional[float] = None
+    # Unidad de las lecturas (km | m | cm). Default = "m".
+    unidad: Optional[str] = "m"
 
 
 class ReportOut(BaseModel):
@@ -237,6 +239,7 @@ class ReportOut(BaseModel):
     files: List[dict] = Field(default_factory=list)
     primera_lectura: Optional[float] = None
     ultima_lectura: Optional[float] = None
+    unidad: Optional[str] = "m"
     captured_by: str
     captured_by_name: str
     created_at: datetime
@@ -923,6 +926,7 @@ async def create_report(body: ReportIn, user: dict = Depends(current_user)):
         "files": body.files,
         "primera_lectura": body.primera_lectura,
         "ultima_lectura": body.ultima_lectura,
+        "unidad": (body.unidad or "m").strip() or "m",
         "captured_by": user["id"],
         "captured_by_name": user["name"],
         "created_at": datetime.now(timezone.utc),
@@ -2011,11 +2015,21 @@ def _extract_numeric_reading(report: dict) -> Optional[float]:
 
 
 def _fmt_reading(v: Optional[float]) -> str:
+    """Formato profesional con máximo 2 decimales (sin ceros sobrantes)."""
     if v is None:
         return "—"
-    if abs(v - round(v)) < 1e-9:
-        return f"{int(round(v))}"
-    return f"{v:.3f}"
+    try:
+        f = float(v)
+    except Exception:
+        return "—"
+    if abs(f - round(f)) < 1e-9:
+        return f"{int(round(f))}"
+    s = f"{f:.2f}"
+    # Quita ceros sobrantes a la derecha (p.ej. 12.50 → 12.5) pero respeta el
+    # punto decimal: 12.00 ya quedaría como entero por la rama anterior.
+    if "." in s:
+        s = s.rstrip("0").rstrip(".") if s.endswith("0") else s
+    return s
 
 
 def _format_measurement_for_display(report: dict) -> str:
@@ -2333,7 +2347,9 @@ async def export_reports_pdf(
                 ts = r.get("created_at")
                 fecha_str = _fmt_fecha_es(ts) if isinstance(ts, datetime) else "—"
                 nombre = r.get("captured_by_name") or "—"
-                contratista = (r.get("contratista") or "").strip() or project_constructora or "N/A"
+                # Constructora siempre desde el proyecto (P0 fix v2.0)
+                contratista = (project_constructora or "").strip() or "N/A"
+                unidad_r = (r.get("unidad") or "m").strip() or "m"
                 personal_list = [p for p in (r.get("personnel") or []) if p]
                 equipo_list = [e for e in (r.get("equipment") or []) if e]
                 personal_str = ", ".join(personal_list) if personal_list else "N/A"
@@ -2357,7 +2373,7 @@ async def export_reports_pdf(
                 field("Contratista", contratista)
                 field("Ubicación", node_path)
                 field("Reporte de avance",
-                      f"Primera lectura: {primera_str}    |    Última lectura: {ultima_str}    |    Avance: {avance_str}")
+                      f"Primera lectura: {primera_str} {unidad_r}    |    Última lectura: {ultima_str} {unidad_r}    |    Avance: {avance_str} {unidad_r}")
                 field("Personal", personal_str)
                 field("Equipo", equipo_str)
                 field("Observaciones", obs_str)

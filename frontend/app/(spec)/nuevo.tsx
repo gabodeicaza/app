@@ -28,8 +28,11 @@ import {
 } from '@/src/utils/roles';
 import {
   buildWhatsAppMessage, formatMeasurementValue, formatDateLongES,
+  fmtNum2, Unidad,
 } from '@/src/utils/whatsapp';
 import { api, LocationNodeTree, Project } from '@/src/api';
+
+const UNIDAD_OPTIONS: Unidad[] = ['km', 'm', 'cm'];
 
 type MeasurementValue = Record<string, any>;
 
@@ -80,9 +83,9 @@ export default function SpecCaptureScreen() {
   // ----- Form --------------------------------------------------------------
   const [actividades, setActividades] = useState('');
   const [observaciones, setObservaciones] = useState('');
-  const [contratista, setContratista] = useState('');
   const [primeraLectura, setPrimeraLectura] = useState('');
   const [ultimaLectura, setUltimaLectura] = useState('');
+  const [unidad, setUnidad] = useState<Unidad>('m');
   const [personal, setPersonal] = useState<DynItem[]>([]);
   const [equipo, setEquipo] = useState<DynItem[]>([]);
   const [measurement, setMeasurement] = useState<MeasurementValue>({});
@@ -421,12 +424,13 @@ export default function SpecCaptureScreen() {
         notes: actividades.trim() || null, // legacy notes = actividades
         avance: actividades.trim() || null,
         observaciones: observaciones.trim() || null,
-        contratista: contratista.trim() || null,
+        contratista: null, // Deprecado: ahora se usa project.constructora global.
         personnel: personnelArr,
         equipment: equipmentArr,
         images: images,
         primera_lectura: primeraLecturaNum,
         ultima_lectura: ultimaLecturaNum,
+        unidad: unidad,
       });
 
       // Actualizar catálogo local (autocomplete).
@@ -443,7 +447,7 @@ export default function SpecCaptureScreen() {
         parentNodeName: parentOfLeaf?.name || '',
         leafNodeName: leafNode.name,
         ubicacion,
-        contratista,
+        contratista: contratistaDisplay,
         personal: personnelArr,
         equipo: equipmentArr,
         actividades: actividades.trim(),
@@ -463,7 +467,6 @@ export default function SpecCaptureScreen() {
   function clearFormAndCloseSuccess() {
     setActividades('');
     setObservaciones('');
-    setContratista('');
     setPrimeraLectura('');
     setUltimaLectura('');
     setPersonal([]);
@@ -752,15 +755,6 @@ export default function SpecCaptureScreen() {
               />
             </Field>
 
-            <Field label="Contratista">
-              <TextInput
-                placeholder="Ej. CYPSA"
-                placeholderTextColor={colors.textMuted}
-                style={styles.input}
-                value={contratista}
-                onChangeText={setContratista}
-              />
-            </Field>
           </SectionCard>
         ) : null}
 
