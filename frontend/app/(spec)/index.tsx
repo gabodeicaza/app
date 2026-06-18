@@ -45,6 +45,7 @@ export default function SpecFeedScreen() {
   const [error, setError] = useState<string | null>(null);
   const [periodSheetVisible, setPeriodSheetVisible] = useState(false);
   const [pdfBusy, setPdfBusy] = useState(false);
+  const [exportFormat, setExportFormat] = useState<'pdf' | 'docx' | 'pptx'>('pdf');
 
   const load = useCallback(async (nextRange: RangeKey = range, silent = false) => {
     if (!projectId) {
@@ -89,13 +90,34 @@ export default function SpecFeedScreen() {
     if (!projectId) return;
     try {
       setPdfBusy(true);
-      const { blob, filename } = await api.downloadReportsPdf(projectId, period);
-      await downloadBlob(blob, filename, 'application/pdf');
+      let blob: Blob; let filename: string; let mime: string;
+      if (exportFormat === 'docx') {
+        const r = await api.downloadReportsDocx(projectId, period);
+        blob = r.blob; filename = r.filename;
+        mime = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+      } else if (exportFormat === 'pptx') {
+        const r = await api.downloadReportsPptx(projectId, period);
+        blob = r.blob; filename = r.filename;
+        mime = 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+      } else {
+        const r = await api.downloadReportsPdf(projectId, period);
+        blob = r.blob; filename = r.filename;
+        mime = 'application/pdf';
+      }
+      await downloadBlob(blob, filename, mime);
     } catch (e: any) {
-      Alert.alert('No se pudo generar el PDF', e?.message || 'Inténtalo nuevamente.');
+      Alert.alert(
+        `No se pudo generar el ${exportFormat.toUpperCase()}`,
+        e?.message || 'Inténtalo nuevamente.',
+      );
     } finally {
       setPdfBusy(false);
     }
+  }
+
+  function openExport(fmt: 'pdf' | 'docx' | 'pptx') {
+    setExportFormat(fmt);
+    setPeriodSheetVisible(true);
   }
 
   const stats = feed?.stats || { total: 0, mine: 0, others: 0 };
@@ -189,28 +211,58 @@ export default function SpecFeedScreen() {
           />
         </View>
 
-        {/* Botón Mis Reportes (PDF) */}
-        <View style={styles.pdfBtnWrap}>
+        {/* Exportadores: PDF / Word / PowerPoint */}
+        <View style={styles.exportRow}>
           <Pressable
-            onPress={() => setPeriodSheetVisible(true)}
+            onPress={() => openExport('pdf')}
             disabled={pdfBusy || !projectId}
             style={({ pressed }) => [
-              styles.pdfBtn,
+              styles.exportBtn,
+              { backgroundColor: '#1E3A8A' },
               (pdfBusy || !projectId) && styles.pdfBtnDisabled,
               pressed && !pdfBusy && { opacity: 0.85 },
             ]}
           >
-            {pdfBusy ? (
+            {pdfBusy && exportFormat === 'pdf' ? (
               <ActivityIndicator color="#fff" size="small" />
             ) : (
               <Ionicons name="document-text" size={18} color="#fff" />
             )}
-            <Text style={styles.pdfBtnTxt}>
-              {pdfBusy ? 'Generando PDF…' : 'Mis Reportes (PDF)'}
-            </Text>
-            {!pdfBusy ? (
-              <Ionicons name="download-outline" size={16} color="#fff" style={{ marginLeft: 'auto' }} />
-            ) : null}
+            <Text style={styles.exportBtnTxt}>PDF</Text>
+          </Pressable>
+          <Pressable
+            onPress={() => openExport('docx')}
+            disabled={pdfBusy || !projectId}
+            style={({ pressed }) => [
+              styles.exportBtn,
+              { backgroundColor: '#1D4ED8' },
+              (pdfBusy || !projectId) && styles.pdfBtnDisabled,
+              pressed && !pdfBusy && { opacity: 0.85 },
+            ]}
+          >
+            {pdfBusy && exportFormat === 'docx' ? (
+              <ActivityIndicator color="#fff" size="small" />
+            ) : (
+              <Ionicons name="document-outline" size={18} color="#fff" />
+            )}
+            <Text style={styles.exportBtnTxt}>Word</Text>
+          </Pressable>
+          <Pressable
+            onPress={() => openExport('pptx')}
+            disabled={pdfBusy || !projectId}
+            style={({ pressed }) => [
+              styles.exportBtn,
+              { backgroundColor: '#B45309' },
+              (pdfBusy || !projectId) && styles.pdfBtnDisabled,
+              pressed && !pdfBusy && { opacity: 0.85 },
+            ]}
+          >
+            {pdfBusy && exportFormat === 'pptx' ? (
+              <ActivityIndicator color="#fff" size="small" />
+            ) : (
+              <Ionicons name="easel-outline" size={18} color="#fff" />
+            )}
+            <Text style={styles.exportBtnTxt}>PPT</Text>
           </Pressable>
         </View>
 

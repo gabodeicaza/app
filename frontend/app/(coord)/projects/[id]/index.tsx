@@ -25,6 +25,11 @@ export default function ProjectDetailScreen() {
   const [refUrl, setRefUrl] = useState('');
   const [refBusy, setRefBusy] = useState(false);
 
+  // Listas dinámicas (Contratistas / Contratos)
+  const [contratistaInput, setContratistaInput] = useState('');
+  const [contratoInput, setContratoInput] = useState('');
+  const [listBusy, setListBusy] = useState(false);
+
   const load = useCallback(async () => {
     try {
       setError(null);
@@ -77,6 +82,63 @@ export default function ProjectDetailScreen() {
     const current = project?.reference_files || [];
     const next = current.filter((_, i) => i !== idx);
     await persistRefs(next);
+  }
+
+  // -------- Listas dinámicas (Contratistas / Contratos) --------------------
+  async function persistLists(next: { contratistas_list?: string[]; contratos_list?: string[] }) {
+    try {
+      setListBusy(true);
+      const updated = await api.updateProject(pid, next);
+      setProject(updated);
+    } catch (e: any) {
+      Alert.alert('No se pudo guardar', e?.message || 'Inténtalo nuevamente.');
+    } finally {
+      setListBusy(false);
+    }
+  }
+
+  async function onAddContratista() {
+    const v = contratistaInput.trim();
+    if (!v) return;
+    const current = project?.contratistas_list || [];
+    if (current.some((x) => x.toLowerCase() === v.toLowerCase())) {
+      Alert.alert('Duplicado', 'Ese contratista ya está en la lista.');
+      return;
+    }
+    await persistLists({ contratistas_list: [...current, v] });
+    setContratistaInput('');
+  }
+
+  async function onRemoveContratista(idx: number) {
+    const ok = await confirm('Eliminar contratista', '¿Quitar este contratista del proyecto?', {
+      confirmText: 'Eliminar', destructive: true,
+    });
+    if (!ok) return;
+    const current = project?.contratistas_list || [];
+    const next = current.filter((_, i) => i !== idx);
+    await persistLists({ contratistas_list: next });
+  }
+
+  async function onAddContrato() {
+    const v = contratoInput.trim();
+    if (!v) return;
+    const current = project?.contratos_list || [];
+    if (current.some((x) => x.toLowerCase() === v.toLowerCase())) {
+      Alert.alert('Duplicado', 'Ese contrato ya está en la lista.');
+      return;
+    }
+    await persistLists({ contratos_list: [...current, v] });
+    setContratoInput('');
+  }
+
+  async function onRemoveContrato(idx: number) {
+    const ok = await confirm('Eliminar contrato', '¿Quitar este contrato del proyecto?', {
+      confirmText: 'Eliminar', destructive: true,
+    });
+    if (!ok) return;
+    const current = project?.contratos_list || [];
+    const next = current.filter((_, i) => i !== idx);
+    await persistLists({ contratos_list: next });
   }
 
   useFocusEffect(useCallback(() => { load(); }, [load]));

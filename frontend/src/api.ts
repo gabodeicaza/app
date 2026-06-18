@@ -68,6 +68,8 @@ export interface Project {
   end_date?: string | null;
   description?: string | null;
   reference_files?: ReferenceFile[];
+  contratistas_list?: string[];
+  contratos_list?: string[];
   created_by: string;
   created_at: string;
   archived?: boolean;
@@ -434,6 +436,52 @@ export const api = {
     const cd = res.headers.get('Content-Disposition') || '';
     const m = cd.match(/filename="?([^"]+)"?/);
     const filename = (m && m[1]) || `synco_reportes_${period}.pdf`;
+    const blob = await res.blob();
+    return { blob, filename };
+  },
+
+  /** Exportar a Word (.docx). period: today | yesterday | week | month */
+  downloadReportsDocx: async (
+    pid: string,
+    period: 'today' | 'yesterday' | 'week' | 'month',
+  ): Promise<{ blob: Blob; filename: string }> => {
+    const tok = await storage.secureGet<string>('syncsite_token', '');
+    const res = await fetch(`${BASE}/projects/${pid}/export/reports.docx?period=${period}`, {
+      method: 'GET',
+      headers: tok ? { Authorization: `Bearer ${tok}` } : {},
+    });
+    if (!res.ok) {
+      const txt = await res.text();
+      let msg = `HTTP ${res.status}`;
+      try { const j = JSON.parse(txt); msg = j?.detail || msg; } catch {}
+      throw new ApiError(res.status, msg);
+    }
+    const cd = res.headers.get('Content-Disposition') || '';
+    const m = cd.match(/filename="?([^"]+)"?/);
+    const filename = (m && m[1]) || `synco_reportes_${period}.docx`;
+    const blob = await res.blob();
+    return { blob, filename };
+  },
+
+  /** Exportar a PowerPoint (.pptx). period: today | yesterday | week | month */
+  downloadReportsPptx: async (
+    pid: string,
+    period: 'today' | 'yesterday' | 'week' | 'month',
+  ): Promise<{ blob: Blob; filename: string }> => {
+    const tok = await storage.secureGet<string>('syncsite_token', '');
+    const res = await fetch(`${BASE}/projects/${pid}/export/reports.pptx?period=${period}`, {
+      method: 'GET',
+      headers: tok ? { Authorization: `Bearer ${tok}` } : {},
+    });
+    if (!res.ok) {
+      const txt = await res.text();
+      let msg = `HTTP ${res.status}`;
+      try { const j = JSON.parse(txt); msg = j?.detail || msg; } catch {}
+      throw new ApiError(res.status, msg);
+    }
+    const cd = res.headers.get('Content-Disposition') || '';
+    const m = cd.match(/filename="?([^"]+)"?/);
+    const filename = (m && m[1]) || `synco_reportes_${period}.pptx`;
     const blob = await res.blob();
     return { blob, filename };
   },
