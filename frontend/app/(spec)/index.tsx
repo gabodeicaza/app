@@ -9,7 +9,7 @@
 //   • Pull-to-refresh y estados vacíos amigables.
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  ActivityIndicator, Alert, FlatList, Image, Linking, Platform, Pressable, RefreshControl,
+  ActivityIndicator, Alert, FlatList, Image, Linking, Modal, Platform, Pressable, RefreshControl,
   ScrollView, StatusBar, StyleSheet, Text, View,
 } from 'react-native';
 import { router } from 'expo-router';
@@ -20,8 +20,25 @@ import { useAuth } from '@/src/auth-context';
 import { colors, radius, shadow, spacing, areaTone } from '@/src/theme';
 import { confirm } from '@/src/utils/confirm';
 import { api, FeedItem, FeedResponse, Project } from '@/src/api';
-import { PeriodSheet, ReportPeriod } from '@/src/components/PeriodSheet';
+import { ReportPeriod } from '@/src/components/PeriodSheet';
 import { downloadBlob } from '@/src/utils/downloadBlob';
+
+// === Configuración del flujo de exportación en 2 pasos ============================
+type ExportFormat = 'pdf' | 'docx' | 'pptx';
+type ExportStep = 'period' | 'format';
+
+const PERIOD_OPTIONS: { value: ReportPeriod; label: string; sub: string; icon: keyof typeof Ionicons.glyphMap }[] = [
+  { value: 'today',     label: 'Hoy',         sub: 'Reportes capturados hoy',  icon: 'today-outline' },
+  { value: 'yesterday', label: 'Ayer',        sub: 'Reportes del día anterior', icon: 'calendar-clear-outline' },
+  { value: 'week',      label: 'Esta semana', sub: 'Últimos 7 días',            icon: 'calendar-outline' },
+  { value: 'month',     label: 'Este mes',    sub: 'Últimos 30 días',           icon: 'calendar-number-outline' },
+];
+
+const FORMAT_OPTIONS: { value: ExportFormat; label: string; sub: string; icon: keyof typeof Ionicons.glyphMap; tint: string }[] = [
+  { value: 'pdf',  label: 'PDF',        sub: 'Documento horizontal listo para imprimir', icon: 'document-text', tint: '#DC2626' },
+  { value: 'docx', label: 'Word',       sub: 'Editable en Microsoft Word',                icon: 'document',      tint: '#1D4ED8' },
+  { value: 'pptx', label: 'PowerPoint', sub: 'Presentación con portada DIRAC',            icon: 'easel',         tint: '#B45309' },
+];
 
 type RangeKey = 'today' | 'week' | 'month' | 'all';
 
@@ -43,9 +60,10 @@ export default function SpecFeedScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [periodSheetVisible, setPeriodSheetVisible] = useState(false);
-  const [pdfBusy, setPdfBusy] = useState(false);
-  const [exportFormat, setExportFormat] = useState<'pdf' | 'docx' | 'pptx'>('pdf');
+  const [exportOpen, setExportOpen] = useState(false);
+  const [exportStep, setExportStep] = useState<ExportStep>('period');
+  const [exportPeriod, setExportPeriod] = useState<ReportPeriod>('today');
+  const [exportBusy, setExportBusy] = useState(false);
 
   const load = useCallback(async (nextRange: RangeKey = range, silent = false) => {
     if (!projectId) {
@@ -85,39 +103,54 @@ export default function SpecFeedScreen() {
     router.replace('/(auth)/login');
   }
 
-  async function onSelectPeriod(period: ReportPeriod) {
-    setPeriodSheetVisible(false);
+  // === Flujo de exportación en 2 pasos =========================================
+  function openExportFlow() {
+    setExportStep('period');
+    setExportPeriod('today');
+    setExportOpen(true);
+  }
+
+  function closeExportFlow() {
+    if (exportBusy) return;
+    setExportOpen(false);
+    // Pequeño delay para evitar parpadeo si reabre
+    setTimeout(() => setExportStep('period'), 200);
+  }
+
+  function onPickPeriod(p: ReportPeriod) {
+    setExportPeriod(p);
+    setExportStep('format');
+  }
+
+  async function onPickFormat(fmt: ExportFormat) {
     if (!projectId) return;
     try {
-      setPdfBusy(true);
+      setExportBusy(true);
       let blob: Blob; let filename: string; let mime: string;
-      if (exportFormat === 'docx') {
-        const r = await api.downloadReportsDocx(projectId, period);
+      if (fmt === 'docx') {
+        const r = await api.downloadReportsDocx(projectId, exportPeriod);
         blob = r.blob; filename = r.filename;
         mime = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
-      } else if (exportFormat === 'pptx') {
-        const r = await api.downloadReportsPptx(projectId, period);
+      } else if (fmt === 'pptx') {
+        const r = await api.downloadReportsPptx(projectId, exportPeriod);
         blob = r.blob; filename = r.filename;
         mime = 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
       } else {
-        const r = await api.downloadReportsPdf(projectId, period);
+        const r = await api.downloadReportsPdf(projectId, exportPeriod);
         blob = r.blob; filename = r.filename;
         mime = 'application/pdf';
       }
       await downloadBlob(blob, filename, mime);
+      setExportOpen(false);
+      setTimeout(() => setExportStep('period'), 200);
     } catch (e: any) {
       Alert.alert(
-        `No se pudo generar el ${exportFormat.toUpperCase()}`,
+        `No se pudo generar el ${fmt.toUpperCase()}`,
         e?.message || 'Inténtalo nuevamente.',
       );
     } finally {
-      setPdfBusy(false);
+      setExportBusy(false);
     }
-  }
-
-  function openExport(fmt: 'pdf' | 'docx' | 'pptx') {
-    setExportFormat(fmt);
-    setPeriodSheetVisible(true);
   }
 
   const stats = feed?.stats || { total: 0, mine: 0, others: 0 };
@@ -211,58 +244,31 @@ export default function SpecFeedScreen() {
           />
         </View>
 
-        {/* Exportadores: PDF / Word / PowerPoint */}
+        {/* Botón único de exportación (abre modal de 2 pasos: Período → Formato) */}
         <View style={styles.exportRow}>
           <Pressable
-            onPress={() => openExport('pdf')}
-            disabled={pdfBusy || !projectId}
+            onPress={openExportFlow}
+            disabled={exportBusy || !projectId}
             style={({ pressed }) => [
-              styles.exportBtn,
-              { backgroundColor: '#1E3A8A' },
-              (pdfBusy || !projectId) && styles.pdfBtnDisabled,
-              pressed && !pdfBusy && { opacity: 0.85 },
+              styles.exportMainBtn,
+              (exportBusy || !projectId) && styles.pdfBtnDisabled,
+              pressed && !exportBusy && { opacity: 0.92 },
             ]}
           >
-            {pdfBusy && exportFormat === 'pdf' ? (
+            {exportBusy ? (
               <ActivityIndicator color="#fff" size="small" />
             ) : (
-              <Ionicons name="document-text" size={18} color="#fff" />
+              <Ionicons name="download-outline" size={22} color="#fff" />
             )}
-            <Text style={styles.exportBtnTxt}>PDF</Text>
-          </Pressable>
-          <Pressable
-            onPress={() => openExport('docx')}
-            disabled={pdfBusy || !projectId}
-            style={({ pressed }) => [
-              styles.exportBtn,
-              { backgroundColor: '#1D4ED8' },
-              (pdfBusy || !projectId) && styles.pdfBtnDisabled,
-              pressed && !pdfBusy && { opacity: 0.85 },
-            ]}
-          >
-            {pdfBusy && exportFormat === 'docx' ? (
-              <ActivityIndicator color="#fff" size="small" />
-            ) : (
-              <Ionicons name="document-outline" size={18} color="#fff" />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.exportMainTitle}>Exportar Reportes</Text>
+              <Text style={styles.exportMainSub}>
+                {exportBusy ? 'Generando archivo…' : 'PDF · Word · PowerPoint'}
+              </Text>
+            </View>
+            {!exportBusy && (
+              <Ionicons name="chevron-forward" size={20} color="rgba(255,255,255,0.85)" />
             )}
-            <Text style={styles.exportBtnTxt}>Word</Text>
-          </Pressable>
-          <Pressable
-            onPress={() => openExport('pptx')}
-            disabled={pdfBusy || !projectId}
-            style={({ pressed }) => [
-              styles.exportBtn,
-              { backgroundColor: '#B45309' },
-              (pdfBusy || !projectId) && styles.pdfBtnDisabled,
-              pressed && !pdfBusy && { opacity: 0.85 },
-            ]}
-          >
-            {pdfBusy && exportFormat === 'pptx' ? (
-              <ActivityIndicator color="#fff" size="small" />
-            ) : (
-              <Ionicons name="easel-outline" size={18} color="#fff" />
-            )}
-            <Text style={styles.exportBtnTxt}>PPT</Text>
           </Pressable>
         </View>
 
@@ -324,13 +330,126 @@ export default function SpecFeedScreen() {
         )}
       </ScrollView>
 
-      {/* Bottom sheet de selección de período para PDF */}
-      <PeriodSheet
-        visible={periodSheetVisible}
-        title="Mis Reportes (PDF)"
-        onClose={() => setPeriodSheetVisible(false)}
-        onSelect={onSelectPeriod}
-      />
+      {/* Modal de exportación en 2 pasos: Período → Formato */}
+      <Modal
+        visible={exportOpen}
+        animationType="slide"
+        transparent
+        onRequestClose={closeExportFlow}
+      >
+        <Pressable style={styles.exportBackdrop} onPress={closeExportFlow} />
+        <View style={styles.exportSheet} pointerEvents="box-none">
+          <View style={styles.exportSheetInner}>
+            <View style={styles.exportHandle} />
+
+            {/* Header con título y paso actual */}
+            <View style={styles.exportHeader}>
+              {exportStep === 'format' ? (
+                <Pressable
+                  onPress={() => !exportBusy && setExportStep('period')}
+                  hitSlop={10}
+                  style={styles.exportBack}
+                >
+                  <Ionicons name="chevron-back" size={22} color={colors.text} />
+                </Pressable>
+              ) : (
+                <View style={styles.exportBack} />
+              )}
+              <View style={{ flex: 1 }}>
+                <Text style={styles.exportTitle}>
+                  {exportStep === 'period' ? 'Exportar Reportes' : 'Elegir formato'}
+                </Text>
+                <Text style={styles.exportSubtitle}>
+                  {exportStep === 'period'
+                    ? 'Paso 1 de 2 · Selecciona el período'
+                    : `Paso 2 de 2 · Período: ${PERIOD_OPTIONS.find((p) => p.value === exportPeriod)?.label ?? ''}`}
+                </Text>
+              </View>
+              <Pressable
+                onPress={closeExportFlow}
+                disabled={exportBusy}
+                hitSlop={10}
+                style={styles.exportBack}
+              >
+                <Ionicons name="close" size={22} color={colors.text} />
+              </Pressable>
+            </View>
+
+            {/* Indicador de progreso */}
+            <View style={styles.exportSteps}>
+              <View style={[styles.exportStepDot, styles.exportStepDotActive]} />
+              <View style={[styles.exportStepBar, exportStep === 'format' && styles.exportStepBarActive]} />
+              <View
+                style={[
+                  styles.exportStepDot,
+                  exportStep === 'format' && styles.exportStepDotActive,
+                ]}
+              />
+            </View>
+
+            {exportStep === 'period' ? (
+              <View style={{ paddingHorizontal: spacing.md, paddingBottom: spacing.md }}>
+                {PERIOD_OPTIONS.map((opt) => {
+                  const active = exportPeriod === opt.value;
+                  return (
+                    <Pressable
+                      key={opt.value}
+                      onPress={() => onPickPeriod(opt.value)}
+                      style={({ pressed }) => [
+                        styles.exportItem,
+                        active && styles.exportItemActive,
+                        pressed && { opacity: 0.85 },
+                      ]}
+                    >
+                      <View style={[styles.exportItemIcon, { backgroundColor: '#EEF2FF' }]}>
+                        <Ionicons name={opt.icon} size={20} color="#1E3A8A" />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.exportItemTitle}>{opt.label}</Text>
+                        <Text style={styles.exportItemSub}>{opt.sub}</Text>
+                      </View>
+                      <Ionicons name="chevron-forward" size={20} color={colors.textMuted} />
+                    </Pressable>
+                  );
+                })}
+              </View>
+            ) : (
+              <View style={{ paddingHorizontal: spacing.md, paddingBottom: spacing.md }}>
+                {FORMAT_OPTIONS.map((opt) => (
+                  <Pressable
+                    key={opt.value}
+                    onPress={() => onPickFormat(opt.value)}
+                    disabled={exportBusy}
+                    style={({ pressed }) => [
+                      styles.exportItem,
+                      exportBusy && { opacity: 0.6 },
+                      pressed && !exportBusy && { opacity: 0.85 },
+                    ]}
+                  >
+                    <View style={[styles.exportItemIcon, { backgroundColor: `${opt.tint}1A` }]}>
+                      <Ionicons name={opt.icon} size={20} color={opt.tint} />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.exportItemTitle}>{opt.label}</Text>
+                      <Text style={styles.exportItemSub}>{opt.sub}</Text>
+                    </View>
+                    {exportBusy ? (
+                      <ActivityIndicator color={opt.tint} />
+                    ) : (
+                      <Ionicons name="download-outline" size={20} color={colors.textMuted} />
+                    )}
+                  </Pressable>
+                ))}
+                {exportBusy ? (
+                  <Text style={styles.exportBusyHint}>
+                    Generando archivo en el servidor… esto puede tardar unos segundos.
+                  </Text>
+                ) : null}
+              </View>
+            )}
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -721,6 +840,123 @@ const styles = StyleSheet.create({
     borderRadius: radius.md,
   },
   emptyBtnTxt: { color: '#fff', fontWeight: '800', fontSize: 13 },
+
+  // === Botón único de exportación + Modal de 2 pasos =========================
+  exportRow: {
+    paddingHorizontal: spacing.md,
+    marginTop: spacing.md,
+  },
+  exportMainBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    backgroundColor: colors.primary,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 16,
+    borderRadius: radius.lg,
+    minHeight: 64,
+    ...shadow.card,
+  },
+  exportMainTitle: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '800',
+    letterSpacing: 0.3,
+  },
+  exportMainSub: {
+    color: 'rgba(255,255,255,0.85)',
+    fontSize: 12,
+    fontWeight: '600',
+    marginTop: 2,
+  },
+
+  exportBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(15,23,42,0.45)',
+  },
+  exportSheet: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: 'flex-end',
+  },
+  exportSheetInner: {
+    backgroundColor: colors.surface,
+    borderTopLeftRadius: radius.xl ?? 20,
+    borderTopRightRadius: radius.xl ?? 20,
+    paddingTop: 10,
+    paddingBottom: 24,
+    ...shadow.card,
+  },
+  exportHandle: {
+    alignSelf: 'center',
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: colors.border,
+    marginBottom: 8,
+  },
+  exportHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: spacing.md,
+    paddingBottom: 4,
+    gap: 6,
+  },
+  exportBack: {
+    width: 36, height: 36,
+    alignItems: 'center', justifyContent: 'center',
+    borderRadius: radius.full,
+  },
+  exportTitle: { fontSize: 17, fontWeight: '800', color: colors.text },
+  exportSubtitle: { fontSize: 12, color: colors.textMuted, fontWeight: '600', marginTop: 2 },
+
+  exportSteps: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: spacing.sm,
+  },
+  exportStepDot: {
+    width: 10, height: 10, borderRadius: 5,
+    backgroundColor: colors.border,
+  },
+  exportStepDotActive: { backgroundColor: colors.primary },
+  exportStepBar: {
+    width: 48, height: 3, borderRadius: 2,
+    backgroundColor: colors.border,
+  },
+  exportStepBarActive: { backgroundColor: colors.primary },
+
+  exportItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 12,
+    marginTop: spacing.sm,
+    minHeight: 64,
+  },
+  exportItemActive: {
+    borderColor: colors.primary,
+    backgroundColor: '#EEF2FF',
+  },
+  exportItemIcon: {
+    width: 40, height: 40, borderRadius: radius.full,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  exportItemTitle: { fontSize: 15, fontWeight: '800', color: colors.text },
+  exportItemSub: { fontSize: 12, color: colors.textMuted, marginTop: 2 },
+  exportBusyHint: {
+    fontSize: 12,
+    color: colors.textMuted,
+    textAlign: 'center',
+    marginTop: spacing.md,
+    fontStyle: 'italic',
+  },
 });
 
 // Suprime ESLint warning para web platform-specific styles si los hubiese.

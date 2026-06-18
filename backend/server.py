@@ -2918,6 +2918,27 @@ async def export_reports_pptx(
 
         # ===== PORTADA =====
         s = prs.slides.add_slide(blank)
+
+        # Logo DIRAC en la portada (descarga 100% en RAM con BytesIO).
+        # CERO huella local: no se escribe a disco.
+        try:
+            import requests as _http  # local import para no inflar el módulo
+            _logo_url = (
+                "https://customer-assets.emergentagent.com/"
+                "job_offline-report-sync/artifacts/eprp6ziy_logo%20driac.png"
+            )
+            _logo_resp = _http.get(_logo_url, timeout=8)
+            if _logo_resp.status_code == 200 and _logo_resp.content:
+                _logo_buf = io.BytesIO(_logo_resp.content)
+                _logo_w = Cm(5.0)
+                _logo_h = Cm(2.2)
+                _logo_x = (SW - _logo_w) // 2
+                _logo_y = Cm(1.6)
+                s.shapes.add_picture(_logo_buf, _logo_x, _logo_y,
+                                     width=_logo_w, height=_logo_h)
+        except Exception as _logo_err:  # pragma: no cover
+            logging.warning("No se pudo incrustar logo DIRAC en PPTX: %s", _logo_err)
+
         add_text(s, Cm(1.5), Cm(4.5), SW - Cm(3.0), Cm(2.0),
                  f"SynCo · {project_name}",
                  size=36, bold=True, color=(0x1E, 0x3A, 0x8A), align=PP_ALIGN.CENTER)

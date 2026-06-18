@@ -100,54 +100,25 @@ export default function SpecCaptureScreen() {
   const [nodeHistory, setNodeHistory] = useState<NodeHistorySnapshot | null>(null);
   const [nodeHistoryLoading, setNodeHistoryLoading] = useState(false);
 
-  // Contratista / Contrato: selección dinámica con fallback manual.
-  // Modo: 'list' => elegido de la lista del proyecto; 'manual' => TextInput libre.
-  const [contratistaMode, setContratistaMode] = useState<'list' | 'manual'>('list');
-  const [contratistaSel, setContratistaSel] = useState<string>('');
-  const [contratistaManual, setContratistaManual] = useState<string>('');
-  const [contratoMode, setContratoMode] = useState<'list' | 'manual'>('list');
-  const [contratoSel, setContratoSel] = useState<string>('');
-  const [contratoManual, setContratoManual] = useState<string>('');
-
-  // Modales de selección dinámica
-  const [contratistaPickerOpen, setContratistaPickerOpen] = useState(false);
-  const [contratoPickerOpen, setContratoPickerOpen] = useState(false);
+  // Contratista / Contrato: captura libre simple (TextInputs).
+  const [contratistaText, setContratistaText] = useState<string>('');
+  const [contratoText, setContratoText] = useState<string>('');
 
   // Sincronizar defaults cuando llega el proyecto.
   useEffect(() => {
     if (!project) return;
-    const list = project.contratistas_list || [];
-    const def = (project.constructora || '').trim();
-    if (!contratistaSel && !contratistaManual) {
-      if (def && list.some((s) => s.toLowerCase() === def.toLowerCase())) {
-        setContratistaMode('list');
-        setContratistaSel(def);
-      } else if (def) {
-        setContratistaMode('manual');
-        setContratistaManual(def);
-      }
+    if (!contratistaText && project.constructora) {
+      setContratistaText(project.constructora);
     }
-    const listC = project.contratos_list || [];
-    const defC = (project.contract_number || '').trim();
-    if (!contratoSel && !contratoManual) {
-      if (defC && listC.some((s) => s.toLowerCase() === defC.toLowerCase())) {
-        setContratoMode('list');
-        setContratoSel(defC);
-      } else if (defC) {
-        setContratoMode('manual');
-        setContratoManual(defC);
-      }
+    if (!contratoText && project.contract_number) {
+      setContratoText(project.contract_number);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project?.id]);
 
   // Valor efectivo (lo que va al reporte / WhatsApp)
-  const contratistaEfectivo = (
-    contratistaMode === 'manual' ? contratistaManual : contratistaSel
-  ).trim();
-  const contratoEfectivo = (
-    contratoMode === 'manual' ? contratoManual : contratoSel
-  ).trim();
+  const contratistaEfectivo = contratistaText.trim();
+  const contratoEfectivo = contratoText.trim();
 
   // ----- Modal cascada -----------------------------------------------------
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -820,45 +791,23 @@ export default function SpecCaptureScreen() {
         {leafNode ? (
           <SectionCard icon="document-text-outline" title="Reporte" subtitle="Actividades, observaciones y contratista.">
             <Field label="Contratista">
-              <Pressable
-                onPress={() => setContratistaPickerOpen(true)}
-                style={({ pressed }) => [styles.input, styles.selectorBtn, pressed && { opacity: 0.85 }]}
-              >
-                <Text style={[styles.selectorBtnTxt, !contratistaEfectivo && { color: colors.textMuted }]} numberOfLines={1}>
-                  {contratistaEfectivo || 'Selecciona contratista…'}
-                </Text>
-                <Ionicons name="chevron-down" size={16} color={colors.textMuted} />
-              </Pressable>
-              {contratistaMode === 'manual' ? (
-                <TextInput
-                  placeholder="Escribe el contratista (manual)"
-                  placeholderTextColor={colors.textMuted}
-                  style={[styles.input, { marginTop: 8 }]}
-                  value={contratistaManual}
-                  onChangeText={setContratistaManual}
-                />
-              ) : null}
+              <TextInput
+                placeholder="Nombre del contratista"
+                placeholderTextColor={colors.textMuted}
+                style={styles.input}
+                value={contratistaText}
+                onChangeText={setContratistaText}
+              />
             </Field>
 
             <Field label="No. de contrato">
-              <Pressable
-                onPress={() => setContratoPickerOpen(true)}
-                style={({ pressed }) => [styles.input, styles.selectorBtn, pressed && { opacity: 0.85 }]}
-              >
-                <Text style={[styles.selectorBtnTxt, !contratoEfectivo && { color: colors.textMuted }]} numberOfLines={1}>
-                  {contratoEfectivo || 'Selecciona contrato…'}
-                </Text>
-                <Ionicons name="chevron-down" size={16} color={colors.textMuted} />
-              </Pressable>
-              {contratoMode === 'manual' ? (
-                <TextInput
-                  placeholder="Escribe el No. de contrato (manual)"
-                  placeholderTextColor={colors.textMuted}
-                  style={[styles.input, { marginTop: 8 }]}
-                  value={contratoManual}
-                  onChangeText={setContratoManual}
-                />
-              ) : null}
+              <TextInput
+                placeholder="Ej. CONT-2026-001"
+                placeholderTextColor={colors.textMuted}
+                style={styles.input}
+                value={contratoText}
+                onChangeText={setContratoText}
+              />
             </Field>
 
             <Field label="Actividades">
@@ -1009,106 +958,6 @@ export default function SpecCaptureScreen() {
             ListEmptyComponent={<Text style={styles.emptyTxt}>Sin opciones disponibles.</Text>}
             style={{ maxHeight: 380 }}
           />
-        </View>
-      </Modal>
-
-      {/* Modal selector: Contratista */}
-      <Modal visible={contratistaPickerOpen} animationType="slide" transparent onRequestClose={() => setContratistaPickerOpen(false)}>
-        <Pressable style={styles.modalBackdrop} onPress={() => setContratistaPickerOpen(false)} />
-        <View style={[styles.modalSheet, { paddingBottom: insets.bottom + spacing.md }]}>
-          <View style={styles.sheetHandle} />
-          <Text style={styles.sheetTitle}>Selecciona contratista</Text>
-          <FlatList
-            data={(project?.contratistas_list || []) as string[]}
-            keyExtractor={(s, i) => `${i}-${s}`}
-            renderItem={({ item }) => {
-              const selected = contratistaMode === 'list' && contratistaSel === item;
-              return (
-                <Pressable
-                  onPress={() => {
-                    setContratistaMode('list');
-                    setContratistaSel(item);
-                    setContratistaPickerOpen(false);
-                  }}
-                  style={({ pressed }) => [styles.pickerOption, pressed && { backgroundColor: colors.primaryLight }]}
-                >
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.pickerOptionName}>{item}</Text>
-                  </View>
-                  {selected ? <Ionicons name="checkmark-circle" size={18} color={colors.primary} /> : null}
-                </Pressable>
-              );
-            }}
-            ItemSeparatorComponent={() => <View style={styles.sep} />}
-            ListEmptyComponent={
-              <Text style={styles.emptyTxt}>
-                No hay contratistas configurados en el proyecto. Usa “Otro / Manual”.
-              </Text>
-            }
-            style={{ maxHeight: 320 }}
-          />
-          <View style={styles.sep} />
-          <Pressable
-            onPress={() => {
-              setContratistaMode('manual');
-              setContratistaSel('');
-              setContratistaPickerOpen(false);
-            }}
-            style={({ pressed }) => [styles.pickerOption, pressed && { backgroundColor: colors.primaryLight }]}
-          >
-            <Ionicons name="create-outline" size={16} color={colors.primary} style={{ marginRight: 8 }} />
-            <Text style={[styles.pickerOptionName, { color: colors.primary }]}>Otro / Manual…</Text>
-          </Pressable>
-        </View>
-      </Modal>
-
-      {/* Modal selector: Contrato */}
-      <Modal visible={contratoPickerOpen} animationType="slide" transparent onRequestClose={() => setContratoPickerOpen(false)}>
-        <Pressable style={styles.modalBackdrop} onPress={() => setContratoPickerOpen(false)} />
-        <View style={[styles.modalSheet, { paddingBottom: insets.bottom + spacing.md }]}>
-          <View style={styles.sheetHandle} />
-          <Text style={styles.sheetTitle}>Selecciona No. de contrato</Text>
-          <FlatList
-            data={(project?.contratos_list || []) as string[]}
-            keyExtractor={(s, i) => `${i}-${s}`}
-            renderItem={({ item }) => {
-              const selected = contratoMode === 'list' && contratoSel === item;
-              return (
-                <Pressable
-                  onPress={() => {
-                    setContratoMode('list');
-                    setContratoSel(item);
-                    setContratoPickerOpen(false);
-                  }}
-                  style={({ pressed }) => [styles.pickerOption, pressed && { backgroundColor: colors.primaryLight }]}
-                >
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.pickerOptionName}>{item}</Text>
-                  </View>
-                  {selected ? <Ionicons name="checkmark-circle" size={18} color={colors.primary} /> : null}
-                </Pressable>
-              );
-            }}
-            ItemSeparatorComponent={() => <View style={styles.sep} />}
-            ListEmptyComponent={
-              <Text style={styles.emptyTxt}>
-                No hay contratos configurados en el proyecto. Usa “Otro / Manual”.
-              </Text>
-            }
-            style={{ maxHeight: 320 }}
-          />
-          <View style={styles.sep} />
-          <Pressable
-            onPress={() => {
-              setContratoMode('manual');
-              setContratoSel('');
-              setContratoPickerOpen(false);
-            }}
-            style={({ pressed }) => [styles.pickerOption, pressed && { backgroundColor: colors.primaryLight }]}
-          >
-            <Ionicons name="create-outline" size={16} color={colors.primary} style={{ marginRight: 8 }} />
-            <Text style={[styles.pickerOptionName, { color: colors.primary }]}>Otro / Manual…</Text>
-          </Pressable>
         </View>
       </Modal>
 
