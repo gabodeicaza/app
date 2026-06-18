@@ -2365,6 +2365,44 @@ async def export_reports_pdf(
             if primera_acc is None:
                 primera_acc = 0.0
 
+            # =================================================================
+            # [P0] PORTADA SEPARADORA POR NODO
+            #   Página dedicada antes de los reportes del nodo:
+            #     - Ubicación: 24pt Bold centrado
+            #     - Coordenadas: 14pt centrado
+            # =================================================================
+            draw_header(page_num)
+            # Bloque visual centrado vertical
+            c.setFillColor(BRAND)
+            c.setFont("Helvetica-Bold", 24)
+            c.drawCentredString(PW / 2, PH / 2 + 1.6 * cm, node_path)
+            # Línea decorativa
+            c.setStrokeColor(BRAND)
+            c.setLineWidth(1.2)
+            c.line(PW / 2 - 6 * cm, PH / 2 + 0.8 * cm, PW / 2 + 6 * cm, PH / 2 + 0.8 * cm)
+            # Coordenadas (medición representativa del nodo: tomada del primer reporte)
+            coord_text = ""
+            try:
+                coord_text = _format_measurement_for_display(node_reps[0]) or ""
+            except Exception:
+                coord_text = ""
+            c.setFillColor(TEXT)
+            c.setFont("Helvetica", 14)
+            if coord_text:
+                c.drawCentredString(PW / 2, PH / 2 - 0.2 * cm, f"Coordenadas: {coord_text}")
+            else:
+                c.setFillColor(MUTED)
+                c.setFont("Helvetica-Oblique", 14)
+                c.drawCentredString(PW / 2, PH / 2 - 0.2 * cm, "Coordenadas: —")
+            # Conteo de reportes del nodo
+            c.setFillColor(MUTED)
+            c.setFont("Helvetica", 11)
+            c.drawCentredString(PW / 2, PH / 2 - 1.6 * cm,
+                                f"Reportes en este nodo: {len(node_reps)}")
+            # Salto de página obligatorio para iniciar el bloque del nodo
+            c.showPage()
+            page_num += 1
+
             for r in node_reps:
                 draw_header(page_num)
 

@@ -428,7 +428,8 @@ export default function SpecCaptureScreen() {
         node_id: leafNode.id,
         measurement_value: measurement,
         notes: actividades.trim() || null, // legacy notes = actividades
-        avance: actividades.trim() || null,
+        // [P0 FIX] avance ahora envía el string calculado + unidad (no actividades).
+        avance: avanceStr != null ? `${avanceStr} ${unidad}` : null,
         observaciones: observaciones.trim() || null,
         contratista: null, // Deprecado: ahora se usa project.constructora global.
         personnel: personnelArr,
@@ -1596,5 +1597,8 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: colors.primary,
   },
   coordsTargetLabel: { fontSize: 10, fontWeight: '800', color: colors.primary, letterSpacing: 0.6 },
+  coordsTargetValue: { fontSize: 14, fontWeight: '800', color: colors.text },
+});
+erSpacing: 0.6 },
   coordsTargetValue: { fontSize: 14, fontWeight: '800', color: colors.text },
 });
