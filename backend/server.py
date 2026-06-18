@@ -1020,8 +1020,8 @@ def validate_measurement_value(mtype: str, value: dict):
 
 @api.post("/reports")
 async def create_report(body: ReportIn, user: dict = Depends(current_user)):
-    if user["role"] not in (ROLE_ESPECIALISTA, ROLE_COORD):
-        raise HTTPException(403, "Solo Especialistas (o Coordinador General) pueden capturar")
+    if user["role"] not in (ROLE_ESPECIALISTA, ROLE_COORD, ROLE_SUB, ROLE_JEFE):
+        raise HTTPException(403, "Tu rol no puede capturar reportes")
     await ensure_project_access(user, body.project_id)
     node = await db.location_nodes.find_one({"id": body.node_id, "project_id": body.project_id})
     if not node:
@@ -1031,6 +1031,10 @@ async def create_report(body: ReportIn, user: dict = Depends(current_user)):
     if user["role"] == ROLE_ESPECIALISTA:
         if body.node_id not in (user.get("scope_node_ids") or []):
             raise HTTPException(403, "Nodo no está en tu scope autorizado")
+    elif user["role"] == ROLE_SUB and user.get("scope_node_id"):
+        allowed = await descendants_ids(user["scope_node_id"])
+        if body.node_id not in allowed:
+            raise HTTPException(403, "Nodo fuera de tu scope autorizado")
     validate_measurement_value(node["measurement_type"], body.measurement_value)
     path_names = await node_path_names(body.node_id)
     area_name = None

@@ -18,6 +18,7 @@ export default function SubCoordLayout() {
   return (
     <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.bg } }}>
       <Stack.Screen name="index" />
+      <Stack.Screen name="dashboard" />
     </Stack>
   );
 }
