@@ -2436,17 +2436,22 @@ async def export_reports_pdf(
                 data_w = PW - data_x - 1.2 * cm
                 cy = PH - 2.6 * cm
 
-                # Calculo Primera / Última / Avance
-                ultima_val = _extract_numeric_reading(r)
-                if ultima_val is None:
-                    primera_str = _fmt_reading(primera_acc)
-                    ultima_str = _format_measurement_for_display(r)
-                    avance_str = "—"
-                else:
-                    primera_str = _fmt_reading(primera_acc)
-                    ultima_str = _fmt_reading(ultima_val)
-                    avance_str = _fmt_reading(ultima_val - primera_acc)
-                    primera_acc = ultima_val  # avanza acumulado
+                # [P0 FIX] Lectura DIRECTA desde la BD — sin lógica condicional
+                # por measurement_type. Se eliminó la regla hardcodeada que
+                # secuestraba "Coordenadas" forzando ultima="X, Y" y avance="—".
+                # Ahora se imprime SIEMPRE lo que viene del documento.
+                def _raw_to_str(v):
+                    if v is None or v == "":
+                        return "—"
+                    try:
+                        return _fmt_reading(float(v))
+                    except Exception:
+                        return str(v).strip() or "—"
+
+                primera_str = _raw_to_str(r.get("primera_lectura"))
+                ultima_str = _raw_to_str(r.get("ultima_lectura"))
+                _av = r.get("avance")
+                avance_str = str(_av).strip() if _av not in (None, "") else "—"
 
                 ts = r.get("created_at")
                 fecha_str = _fmt_fecha_es(ts) if isinstance(ts, datetime) else "—"
@@ -2477,7 +2482,7 @@ async def export_reports_pdf(
                 field("Contratista", contratista)
                 field("Ubicación", node_path)
                 field("Reporte de avance",
-                      f"Primera lectura: {primera_str} {unidad_r}    |    Última lectura: {ultima_str} {unidad_r}    |    Avance: {avance_str} {unidad_r}")
+                      f"Primera lectura: {primera_str} {unidad_r}    |    Última lectura: {ultima_str} {unidad_r}    |    Avance: {avance_str}")
                 field("Personal", personal_str)
                 field("Equipo", equipo_str)
                 field("Observaciones", obs_str)
