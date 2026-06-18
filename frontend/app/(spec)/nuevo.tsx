@@ -402,6 +402,12 @@ export default function SpecCaptureScreen() {
   const primeraLecturaNum = parseFloatOrNull(primeraLectura);
   const ultimaLecturaNum = parseFloatOrNull(ultimaLectura);
 
+  // Avance calculado en vivo (Última − Primera) con 2 decimales máximo.
+  const avanceStr: string | null = useMemo(() => {
+    if (primeraLecturaNum == null || ultimaLecturaNum == null) return null;
+    return fmtNum2(ultimaLecturaNum - primeraLecturaNum);
+  }, [primeraLecturaNum, ultimaLecturaNum]);
+
   const canSubmit = !!leafNode && !!project
     && validateMeasurement(leafNode.measurement_type, measurement)
     && !submitting;
@@ -454,6 +460,7 @@ export default function SpecCaptureScreen() {
         observaciones: observaciones.trim(),
         primeraLectura: primeraLecturaNum,
         ultimaLectura: ultimaLecturaNum,
+        unidad: unidad,
       });
       setWaMessage(msg);
       setSuccessOpen(true);
@@ -690,6 +697,27 @@ export default function SpecCaptureScreen() {
             title="Lecturas"
             subtitle="Captura la primera y última lectura del día."
           >
+            {/* Selector de Unidades — pills [km | m | cm] */}
+            <Field label="Unidad de medida">
+              <View style={styles.unidadRow}>
+                {UNIDAD_OPTIONS.map((u) => {
+                  const active = unidad === u;
+                  return (
+                    <Pressable
+                      key={u}
+                      onPress={() => setUnidad(u)}
+                      style={[styles.unidadPill, active && styles.unidadPillActive]}
+                      hitSlop={6}
+                    >
+                      <Text style={[styles.unidadPillTxt, active && styles.unidadPillTxtActive]}>
+                        {u}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </Field>
+
             <Field label="Primera lectura">
               <TextInput
                 placeholder="Ej. 12.45"
@@ -725,6 +753,19 @@ export default function SpecCaptureScreen() {
                 onChangeText={setUltimaLectura}
               />
             </Field>
+
+            {/* Avance calculado en vivo = Última - Primera */}
+            {avanceStr != null ? (
+              <View style={styles.avanceBox}>
+                <Ionicons name="trending-up" size={16} color={colors.primary} />
+                <Text style={styles.avanceLabel}>Avance:</Text>
+                <Text style={styles.avanceValue}>{avanceStr} {unidad}</Text>
+              </View>
+            ) : (primeraLectura.trim() !== '' || ultimaLectura.trim() !== '') ? (
+              <Text style={styles.histHelperMuted}>
+                Captura ambas lecturas (Primera y Última) para calcular el avance.
+              </Text>
+            ) : null}
           </SectionCard>
         ) : null}
 
@@ -1324,6 +1365,66 @@ const styles = StyleSheet.create({
     minHeight: 44,
   },
   inputMulti: { minHeight: 90, textAlignVertical: 'top' },
+
+  // Selector de unidades (pills)
+  unidadRow: {
+    flexDirection: 'row',
+    gap: 8,
+    flexWrap: 'wrap',
+  },
+  unidadPill: {
+    flex: 1,
+    minWidth: 64,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: radius.full,
+    backgroundColor: colors.bg,
+    borderWidth: 1,
+    borderColor: colors.border,
+    minHeight: 44,
+  },
+  unidadPillActive: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
+  },
+  unidadPillTxt: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: colors.textBody,
+    textTransform: 'lowercase',
+    letterSpacing: 0.5,
+  },
+  unidadPillTxtActive: {
+    color: colors.textInverse,
+  },
+
+  // Avance calculado en vivo
+  avanceBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 6,
+    padding: 10,
+    backgroundColor: colors.primaryLight,
+    borderRadius: radius.md,
+    borderLeftWidth: 3,
+    borderLeftColor: colors.primary,
+  },
+  avanceLabel: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: colors.textBody,
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+  },
+  avanceValue: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: colors.primary,
+    marginLeft: 'auto',
+  },
 
   // Helper de histórico para Primera lectura
   histHelperBox: {

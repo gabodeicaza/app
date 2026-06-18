@@ -54,6 +54,11 @@ export interface User {
   created_at: string;
 }
 
+export interface ReferenceFile {
+  name: string;
+  url: string;
+}
+
 export interface Project {
   id: string;
   name: string;
@@ -62,6 +67,7 @@ export interface Project {
   start_date?: string | null;
   end_date?: string | null;
   description?: string | null;
+  reference_files?: ReferenceFile[];
   created_by: string;
   created_at: string;
   archived?: boolean;
@@ -255,6 +261,10 @@ export const api = {
     description?: string | null;
   }) => request<Project>('POST', '/projects', body),
   updateProject: (pid: string, body: any) => request<Project>('PUT', `/projects/${pid}`, body),
+  setProjectReferenceFiles: (pid: string, files: ReferenceFile[]) =>
+    request<{ ok: boolean; reference_files: ReferenceFile[] }>(
+      'PUT', `/projects/${pid}/reference-files`, { reference_files: files }
+    ),
   archiveProject: (pid: string) => request<{ ok: boolean; archived: boolean }>('DELETE', `/projects/${pid}`),
 
   // Nodes

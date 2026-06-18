@@ -17,6 +17,11 @@ import asyncio
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Literal
+try:
+    from zoneinfo import ZoneInfo  # Python 3.9+
+    MX_TZ = ZoneInfo("America/Mexico_City")
+except Exception:  # pragma: no cover
+    MX_TZ = timezone(timedelta(hours=-6))  # fallback CST
 
 import jwt
 import bcrypt
@@ -56,6 +61,25 @@ ROLE_ESPECIALISTA = "especialista"
 VALID_ROLES = {ROLE_COORD, ROLE_SUB, ROLE_ESPECIALISTA}
 
 MEASUREMENT_TYPES = {"coord_latlon", "cadenamiento", "eje", "nivel"}
+
+
+def _sanitize_reference_files(items) -> list:
+    """Valida y limpia la lista de archivos de referencia.
+    Espera una lista de dicts con 'name' y 'url'.
+    Descarta entradas vacías o malformadas. Máximo 50 elementos."""
+    if not items or not isinstance(items, list):
+        return []
+    cleaned = []
+    for it in items[:50]:
+        if not isinstance(it, dict):
+            continue
+        name = (it.get("name") or "").strip()
+        url = (it.get("url") or "").strip()
+        if not name or not url:
+            continue
+        # Limitar tamaños para evitar payloads abusivos
+        cleaned.append({"name": name[:200], "url": url[:1000]})
+    return cleaned
 
 # Colecciones del esquema v2
 COLLECTIONS_V2 = ["users", "projects", "location_nodes", "areas", "invitations", "reports", "announcements", "messages", "events", "channels"]
@@ -105,6 +129,7 @@ class ProjectIn(BaseModel):
     start_date: Optional[str] = None  # ISO date "2026-01-15"
     end_date: Optional[str] = None
     description: Optional[str] = None
+    reference_files: Optional[List[dict]] = None  # [{"name": str, "url": str}]
 
 
 class ProjectOut(BaseModel):
@@ -115,6 +140,7 @@ class ProjectOut(BaseModel):
     start_date: Optional[str] = None
     end_date: Optional[str] = None
     description: Optional[str] = None
+    reference_files: List[dict] = Field(default_factory=list)
     created_by: str
     created_at: datetime
     archived: bool = False
@@ -473,6 +499,7 @@ async def create_project(body: ProjectIn, user: dict = Depends(require_role(ROLE
         "start_date": body.start_date,
         "end_date": body.end_date,
         "description": (body.description or "").strip() or None,
+        "reference_files": _sanitize_reference_files(body.reference_files),
         "created_by": user["id"],
         "created_at": datetime.now(timezone.utc),
         "archived": False,
@@ -486,6 +513,7 @@ async def create_project(body: ProjectIn, user: dict = Depends(require_role(ROLE
 async def get_project(pid: str, user: dict = Depends(current_user)):
     p = await ensure_project_access(user, pid)
     p.pop("_id", None)
+    p.setdefault("reference_files", [])
     return p
 
 
@@ -499,11 +527,15 @@ async def update_project(pid: str, body: ProjectIn, user: dict = Depends(require
         "end_date": body.end_date,
         "description": (body.description or "").strip() or None,
     }
+    # Sólo sobrescribimos reference_files si vienen explícitos en el payload
+    if body.reference_files is not None:
+        upd["reference_files"] = _sanitize_reference_files(body.reference_files)
     r = await db.projects.update_one({"id": pid}, {"$set": upd})
     if r.matched_count == 0:
         raise HTTPException(404, "Proyecto no existe")
     p = await db.projects.find_one({"id": pid})
     p.pop("_id", None)
+    p.setdefault("reference_files", [])
     return p
 
 
@@ -511,6 +543,27 @@ async def update_project(pid: str, body: ProjectIn, user: dict = Depends(require
 async def archive_project(pid: str, user: dict = Depends(require_role(ROLE_COORD))):
     await db.projects.update_one({"id": pid}, {"$set": {"archived": True}})
     return {"ok": True, "archived": True}
+
+
+class ReferenceFilesIn(BaseModel):
+    reference_files: List[dict] = Field(default_factory=list)
+
+
+@api.put("/projects/{pid}/reference-files")
+async def set_reference_files(
+    pid: str,
+    body: ReferenceFilesIn,
+    user: dict = Depends(require_role(ROLE_COORD)),
+):
+    """Actualiza la lista completa de Archivos de Consulta del proyecto.
+    Sólo Coordinador General puede modificar esta lista."""
+    cleaned = _sanitize_reference_files(body.reference_files)
+    r = await db.projects.update_one(
+        {"id": pid}, {"$set": {"reference_files": cleaned}}
+    )
+    if r.matched_count == 0:
+        raise HTTPException(404, "Proyecto no existe")
+    return {"ok": True, "reference_files": cleaned}
 
 
 # === LOCATION NODES (Árbol Recursivo) =======================================
@@ -1982,8 +2035,13 @@ def _measurement_label(mtype: str) -> str:
 
 
 def _fmt_fecha_es(dt: datetime) -> str:
-    """Formato ej. '16 de Junio del 2026'."""
+    """Formato ej. '16 de Junio del 2026' en zona horaria America/Mexico_City."""
     try:
+        if not isinstance(dt, datetime):
+            return "—"
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.astimezone(MX_TZ)
         return f"{dt.day} de {_MESES_ES[dt.month - 1]} del {dt.year}"
     except Exception:
         return dt.strftime("%Y-%m-%d") if isinstance(dt, datetime) else "—"
@@ -2055,25 +2113,33 @@ def _format_measurement_for_display(report: dict) -> str:
 
 
 def _period_range(period: str) -> tuple:
-    """Devuelve (start_utc, end_utc, etiqueta_legible)."""
-    now = datetime.now(timezone.utc)
+    """Devuelve (start_utc, end_utc, etiqueta_legible).
+
+    Los rangos se calculan en horario local America/Mexico_City y se
+    convierten a UTC para consultar Mongo. Esto garantiza:
+      - "Hoy" = desde 00:00:00 CDMX del día actual.
+      - "Ayer" = el día calendario anterior (00:00–24:00 CDMX).
+      - "Mes" = REGLA ESTRICTA: día 1 del mes calendario actual CDMX 00:00:00 → ahora.
+    """
+    now_utc = datetime.now(timezone.utc)
+    now_mx = now_utc.astimezone(MX_TZ)
     p = (period or "today").lower().strip()
     if p in ("today", "hoy"):
-        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        return start, now, "Hoy"
+        start_mx = now_mx.replace(hour=0, minute=0, second=0, microsecond=0)
+        return start_mx.astimezone(timezone.utc), now_utc, "Hoy"
     if p in ("yesterday", "ayer"):
-        end = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        start = end - timedelta(days=1)
-        return start, end, "Ayer"
+        end_mx = now_mx.replace(hour=0, minute=0, second=0, microsecond=0)
+        start_mx = end_mx - timedelta(days=1)
+        return start_mx.astimezone(timezone.utc), end_mx.astimezone(timezone.utc), "Ayer"
     if p in ("week", "semana", "semanal"):
-        start = now - timedelta(days=7)
-        return start, now, "Última semana"
+        start_mx = now_mx - timedelta(days=7)
+        return start_mx.astimezone(timezone.utc), now_utc, "Última semana"
     if p in ("month", "mes", "mensual"):
-        # REGLA ESTRICTA: Mes-a-la-fecha — día 1 del mes actual 00:00 UTC → ahora.
-        start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        return start, now, "Mes a la fecha"
-    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    return start, now, "Hoy"
+        # REGLA ESTRICTA: Día 1 del mes calendario CDMX 00:00 → ahora.
+        start_mx = now_mx.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        return start_mx.astimezone(timezone.utc), now_utc, "Mes a la fecha"
+    start_mx = now_mx.replace(hour=0, minute=0, second=0, microsecond=0)
+    return start_mx.astimezone(timezone.utc), now_utc, "Hoy"
 
 
 def _strip_b64_prefix(s: str) -> str:
@@ -2207,7 +2273,7 @@ async def export_reports_pdf(
             c.setFillColor(MUTED)
             c.setFont("Helvetica", 8)
             c.drawString(4.0 * cm, PH - 1.6 * cm,
-                         f"Reporte {period_label} · Exportado {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
+                         f"Reporte {period_label} · Exportado {datetime.now(timezone.utc).astimezone(MX_TZ).strftime('%Y-%m-%d %H:%M')} (CDMX)")
             c.setStrokeColor(BORDER)
             c.setLineWidth(0.5)
             c.line(1.2 * cm, PH - 2.0 * cm, PW - 1.2 * cm, PH - 2.0 * cm)
@@ -2234,7 +2300,7 @@ async def export_reports_pdf(
         c.setFont("Helvetica", 12)
         c.drawCentredString(PW / 2, PH - 11.2 * cm, f"Período: {period_label}")
         c.drawCentredString(PW / 2, PH - 12.0 * cm,
-                            f"{start_dt.strftime('%Y-%m-%d %H:%M')} – {end_dt.strftime('%Y-%m-%d %H:%M')} UTC")
+                            f"{(start_dt.astimezone(MX_TZ) if start_dt.tzinfo else start_dt.replace(tzinfo=timezone.utc).astimezone(MX_TZ)).strftime('%Y-%m-%d %H:%M')} – {(end_dt.astimezone(MX_TZ) if end_dt.tzinfo else end_dt.replace(tzinfo=timezone.utc).astimezone(MX_TZ)).strftime('%Y-%m-%d %H:%M')} (CDMX)")
         c.setFont("Helvetica-Bold", 11)
         c.setFillColor(TEXT)
         c.drawCentredString(PW / 2, PH - 13.5 * cm, f"{role_label}: {user_name}")
