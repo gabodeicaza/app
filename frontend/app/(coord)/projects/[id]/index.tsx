@@ -1,14 +1,37 @@
-import React, { useCallback, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, ActivityIndicator, Pressable, Alert, Platform, TextInput, Linking } from 'react-native';
+import React, { useCallback, useEffect, useState } from 'react';
+import {
+  View, Text, StyleSheet, ScrollView, ActivityIndicator, Pressable, Alert, Platform,
+  TextInput, Linking, Modal,
+} from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { api, Project, ReferenceFile } from '@/src/api';
-import { colors, radius, spacing } from '@/src/theme';
+import { api, Project, ReferenceFile, FeedItem } from '@/src/api';
+import { colors, radius, shadow, spacing } from '@/src/theme';
 import { confirm } from '@/src/utils/confirm';
-import { PeriodSheet, ReportPeriod } from '@/src/components/PeriodSheet';
+import { ReportPeriod } from '@/src/components/PeriodSheet';
 import { downloadBlob } from '@/src/utils/downloadBlob';
 import { DailyGoalsPanel } from '@/src/components/DailyGoalsPanel';
+import { NodeProgressPanel } from '@/src/components/NodeProgressPanel';
+import { HistoryCalendarModal } from '@/src/components/HistoryCalendarModal';
+
+// === Flujo de Exportación en 2 pasos ====================================
+type ExportFormat = 'pdf' | 'docx' | 'pptx' | 'xlsx';
+type ExportStep = 'period' | 'format';
+
+const PERIOD_OPTIONS: { value: ReportPeriod; label: string; sub: string; icon: keyof typeof Ionicons.glyphMap }[] = [
+  { value: 'today',     label: 'Hoy',         sub: 'Reportes capturados hoy',  icon: 'today-outline' },
+  { value: 'yesterday', label: 'Ayer',        sub: 'Reportes del día anterior', icon: 'calendar-clear-outline' },
+  { value: 'week',      label: 'Esta semana', sub: 'Últimos 7 días',            icon: 'calendar-outline' },
+  { value: 'month',     label: 'Este mes',    sub: 'Últimos 30 días',           icon: 'calendar-number-outline' },
+];
+
+const FORMAT_OPTIONS: { value: ExportFormat; label: string; sub: string; icon: keyof typeof Ionicons.glyphMap; tint: string }[] = [
+  { value: 'pdf',  label: 'PDF',        sub: 'Documento horizontal listo para imprimir', icon: 'document-text', tint: '#DC2626' },
+  { value: 'docx', label: 'Word',       sub: 'Editable en Microsoft Word',                icon: 'document',      tint: '#1D4ED8' },
+  { value: 'pptx', label: 'PowerPoint', sub: 'Presentación con portada DIRAC',            icon: 'easel',         tint: '#B45309' },
+  { value: 'xlsx', label: 'Excel',      sub: 'Sábana plana con jerarquía y coords',       icon: 'grid',          tint: '#059669' },
+];
 
 export default function ProjectDetailScreen() {
   const insets = useSafeAreaInsets();
@@ -17,19 +40,21 @@ export default function ProjectDetailScreen() {
   const [project, setProject] = useState<Project | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [exporting, setExporting] = useState(false);
-  const [pdfSheetOpen, setPdfSheetOpen] = useState(false);
-  const [exportingPdf, setExportingPdf] = useState(false);
+
+  // Reports para alimentar NodeProgressPanel y HistoryCalendarModal
+  const [reports, setReports] = useState<FeedItem[]>([]);
+  const [calendarOpen, setCalendarOpen] = useState(false);
+
+  // Exportación unificada (2 pasos: período → formato)
+  const [exportOpen, setExportOpen] = useState(false);
+  const [exportStep, setExportStep] = useState<ExportStep>('period');
+  const [exportPeriod, setExportPeriod] = useState<ReportPeriod>('today');
+  const [exportBusy, setExportBusy] = useState(false);
 
   // Archivos de Consulta (Reference Files)
   const [refName, setRefName] = useState('');
   const [refUrl, setRefUrl] = useState('');
   const [refBusy, setRefBusy] = useState(false);
-
-  // Listas dinámicas (Contratistas / Contratos)
-  const [contratistaInput, setContratistaInput] = useState('');
-  const [contratoInput, setContratoInput] = useState('');
-  const [listBusy, setListBusy] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -42,6 +67,20 @@ export default function ProjectDetailScreen() {
       setLoading(false);
     }
   }, [pid]);
+
+  // Carga feed completo (range='all') para alimentar gráficas y calendario
+  const loadFeed = useCallback(async () => {
+    if (!pid) return;
+    try {
+      const f = await api.feed(pid, 'all', 500);
+      setReports(f?.reports || []);
+    } catch {
+      // Silencioso: el panel mostrará estado vacío.
+    }
+  }, [pid]);
+
+  useFocusEffect(useCallback(() => { load(); }, [load]));
+  useEffect(() => { loadFeed(); }, [loadFeed]);
 
   async function persistRefs(next: ReferenceFile[]) {
     try {
@@ -85,65 +124,6 @@ export default function ProjectDetailScreen() {
     await persistRefs(next);
   }
 
-  // -------- Listas dinámicas (Contratistas / Contratos) --------------------
-  async function persistLists(next: { contratistas_list?: string[]; contratos_list?: string[] }) {
-    try {
-      setListBusy(true);
-      const updated = await api.updateProject(pid, next);
-      setProject(updated);
-    } catch (e: any) {
-      Alert.alert('No se pudo guardar', e?.message || 'Inténtalo nuevamente.');
-    } finally {
-      setListBusy(false);
-    }
-  }
-
-  async function onAddContratista() {
-    const v = contratistaInput.trim();
-    if (!v) return;
-    const current = project?.contratistas_list || [];
-    if (current.some((x) => x.toLowerCase() === v.toLowerCase())) {
-      Alert.alert('Duplicado', 'Ese contratista ya está en la lista.');
-      return;
-    }
-    await persistLists({ contratistas_list: [...current, v] });
-    setContratistaInput('');
-  }
-
-  async function onRemoveContratista(idx: number) {
-    const ok = await confirm('Eliminar contratista', '¿Quitar este contratista del proyecto?', {
-      confirmText: 'Eliminar', destructive: true,
-    });
-    if (!ok) return;
-    const current = project?.contratistas_list || [];
-    const next = current.filter((_, i) => i !== idx);
-    await persistLists({ contratistas_list: next });
-  }
-
-  async function onAddContrato() {
-    const v = contratoInput.trim();
-    if (!v) return;
-    const current = project?.contratos_list || [];
-    if (current.some((x) => x.toLowerCase() === v.toLowerCase())) {
-      Alert.alert('Duplicado', 'Ese contrato ya está en la lista.');
-      return;
-    }
-    await persistLists({ contratos_list: [...current, v] });
-    setContratoInput('');
-  }
-
-  async function onRemoveContrato(idx: number) {
-    const ok = await confirm('Eliminar contrato', '¿Quitar este contrato del proyecto?', {
-      confirmText: 'Eliminar', destructive: true,
-    });
-    if (!ok) return;
-    const current = project?.contratos_list || [];
-    const next = current.filter((_, i) => i !== idx);
-    await persistLists({ contratos_list: next });
-  }
-
-  useFocusEffect(useCallback(() => { load(); }, [load]));
-
   async function onArchive() {
     const ok = await confirm(
       'Archivar proyecto',
@@ -155,52 +135,84 @@ export default function ProjectDetailScreen() {
     catch (e: any) { Alert.alert('Error', e?.message || 'No se pudo archivar'); }
   }
 
-  async function onExportXlsx() {
-    try {
-      setExporting(true);
-      if (Platform.OS === 'web') {
-        const { blob, filename } = await api.downloadReportsXlsx(pid);
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url; a.download = filename; document.body.appendChild(a); a.click();
-        a.remove(); URL.revokeObjectURL(url);
-      } else {
-        const { blob, filename } = await api.downloadReportsXlsx(pid);
-        const reader = new FileReader();
-        const dataUri: string = await new Promise((resolve, reject) => {
-          reader.onerror = () => reject(reader.error);
-          reader.onloadend = () => resolve(reader.result as string);
-          reader.readAsDataURL(blob);
-        });
-        const base64 = dataUri.split(',')[1] || '';
-        // Expo SDK 54: writeAsStringAsync se movió al paquete legacy.
-        const FileSystem: any = await import('expo-file-system/legacy');
-        const Sharing: any = await import('expo-sharing');
-        const dest = `${FileSystem.cacheDirectory || ''}${filename}`;
-        await FileSystem.writeAsStringAsync(dest, base64, { encoding: FileSystem.EncodingType?.Base64 || 'base64' });
-        if (await Sharing.isAvailableAsync()) {
-          await Sharing.shareAsync(dest, { mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', dialogTitle: 'Compartir reporte SynCo' });
-        } else {
-          Alert.alert('Listo', `Archivo guardado en caché:\n${dest}`);
-        }
-      }
-    } catch (e: any) {
-      Alert.alert('Error al exportar', e?.message || 'No se pudo generar el Excel');
-    } finally {
-      setExporting(false);
-    }
+  // === Exportación: flujo en 2 pasos =========================================
+  function openExportFlow() {
+    setExportStep('period');
+    setExportPeriod('today');
+    setExportOpen(true);
   }
 
-  async function onPickPdfPeriod(period: ReportPeriod) {
-    setPdfSheetOpen(false);
+  function closeExportFlow() {
+    if (exportBusy) return;
+    setExportOpen(false);
+    setTimeout(() => setExportStep('period'), 200);
+  }
+
+  function onPickPeriod(p: ReportPeriod) {
+    setExportPeriod(p);
+    setExportStep('format');
+  }
+
+  async function onPickFormat(fmt: ExportFormat) {
+    if (!pid) return;
     try {
-      setExportingPdf(true);
-      const { blob, filename } = await api.downloadReportsPdf(pid, period);
-      await downloadBlob(blob, filename, 'application/pdf');
+      setExportBusy(true);
+      if (fmt === 'xlsx') {
+        // Excel ignora período (sábana completa). Reusamos descarga existente.
+        if (Platform.OS === 'web') {
+          const { blob, filename } = await api.downloadReportsXlsx(pid);
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url; a.download = filename; document.body.appendChild(a); a.click();
+          a.remove(); URL.revokeObjectURL(url);
+        } else {
+          const { blob, filename } = await api.downloadReportsXlsx(pid);
+          const reader = new FileReader();
+          const dataUri: string = await new Promise((resolve, reject) => {
+            reader.onerror = () => reject(reader.error);
+            reader.onloadend = () => resolve(reader.result as string);
+            reader.readAsDataURL(blob);
+          });
+          const base64 = dataUri.split(',')[1] || '';
+          const FileSystem: any = await import('expo-file-system/legacy');
+          const Sharing: any = await import('expo-sharing');
+          const dest = `${FileSystem.cacheDirectory || ''}${filename}`;
+          await FileSystem.writeAsStringAsync(dest, base64, { encoding: FileSystem.EncodingType?.Base64 || 'base64' });
+          if (await Sharing.isAvailableAsync()) {
+            await Sharing.shareAsync(dest, {
+              mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+              dialogTitle: 'Compartir reporte SynCo',
+            });
+          } else {
+            Alert.alert('Listo', `Archivo guardado en caché:\n${dest}`);
+          }
+        }
+      } else {
+        let blob: Blob; let filename: string; let mime: string;
+        if (fmt === 'docx') {
+          const r = await api.downloadReportsDocx(pid, exportPeriod);
+          blob = r.blob; filename = r.filename;
+          mime = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+        } else if (fmt === 'pptx') {
+          const r = await api.downloadReportsPptx(pid, exportPeriod);
+          blob = r.blob; filename = r.filename;
+          mime = 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+        } else {
+          const r = await api.downloadReportsPdf(pid, exportPeriod);
+          blob = r.blob; filename = r.filename;
+          mime = 'application/pdf';
+        }
+        await downloadBlob(blob, filename, mime);
+      }
+      setExportOpen(false);
+      setTimeout(() => setExportStep('period'), 200);
     } catch (e: any) {
-      Alert.alert('Error al exportar', e?.message || 'No se pudo generar el PDF');
+      Alert.alert(
+        `No se pudo generar el ${fmt.toUpperCase()}`,
+        e?.message || 'Inténtalo nuevamente.',
+      );
     } finally {
-      setExportingPdf(false);
+      setExportBusy(false);
     }
   }
 
@@ -232,6 +244,53 @@ export default function ProjectDetailScreen() {
               {project.description ? <InfoRow icon="chatbox-ellipses-outline" label="Descripción" value={project.description} /> : null}
             </View>
 
+            {/* ===== Botón GRANDE: Exportar Reportes (PDF / Word / PPT / Excel) ===== */}
+            <Pressable
+              onPress={openExportFlow}
+              disabled={exportBusy}
+              style={({ pressed }) => [
+                styles.exportMainBtn,
+                exportBusy && { opacity: 0.55 },
+                pressed && !exportBusy && { opacity: 0.92 },
+              ]}
+            >
+              {exportBusy ? (
+                <ActivityIndicator color="#fff" size="small" />
+              ) : (
+                <Ionicons name="download-outline" size={22} color="#fff" />
+              )}
+              <View style={{ flex: 1 }}>
+                <Text style={styles.exportMainTitle}>Exportar Reportes</Text>
+                <Text style={styles.exportMainSub}>
+                  {exportBusy ? 'Generando archivo…' : 'PDF · Word · PowerPoint · Excel'}
+                </Text>
+              </View>
+              {!exportBusy && (
+                <Ionicons name="chevron-forward" size={20} color="rgba(255,255,255,0.85)" />
+              )}
+            </Pressable>
+
+            {/* ===== Sprint 2 · Metas Diarias ===== */}
+            <DailyGoalsPanel projectId={pid} />
+
+            {/* ===== Sprint 2 · Avance por Nodo ===== */}
+            <NodeProgressPanel projectId={pid} reports={reports} />
+
+            {/* ===== Sprint 2 · Calendario Histórico ===== */}
+            <Pressable
+              onPress={() => setCalendarOpen(true)}
+              style={({ pressed }) => [styles.calendarBtn, pressed && { opacity: 0.9 }]}
+            >
+              <View style={styles.tileIcon}>
+                <Ionicons name="calendar-outline" size={20} color={colors.primary} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.tileTitle}>Calendario histórico</Text>
+                <Text style={styles.tileSub}>Explora actividad por día (heatmap del proyecto)</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+            </Pressable>
+
             <Text style={styles.sectionTitle}>Configuración del proyecto</Text>
 
             <ActionTile
@@ -260,25 +319,9 @@ export default function ProjectDetailScreen() {
             />
             <ActionTile
               icon="calendar-outline"
-              title="Calendario"
-              subtitle="Programa eventos, visitas e hitos del proyecto"
+              title="Eventos del proyecto"
+              subtitle="Programa visitas, hitos y reuniones"
               onPress={() => router.push({ pathname: '/(coord)/projects/[id]/events' as any, params: { id: pid } })}
-            />
-            <ActionTile
-              icon="document-text-outline"
-              title={exporting ? 'Generando Excel…' : 'Exportar reportes a Excel'}
-              subtitle="Sábana plana ordenada por jerarquía del árbol (incluye coords X/Y/Z)"
-              onPress={onExportXlsx}
-              disabled={exporting}
-              busy={exporting}
-            />
-            <ActionTile
-              icon="document-attach-outline"
-              title={exportingPdf ? 'Generando PDF…' : 'Exportar reportes a PDF'}
-              subtitle="PDF horizontal con jerarquía completa (Hoy · Ayer · Semana · Mes)"
-              onPress={() => setPdfSheetOpen(true)}
-              disabled={exportingPdf}
-              busy={exportingPdf}
             />
 
             {/* ===== Archivos de Consulta ===== */}
@@ -366,12 +409,134 @@ export default function ProjectDetailScreen() {
           </>
         )}
       </ScrollView>
-      <PeriodSheet
-        visible={pdfSheetOpen}
-        title="Selecciona el período"
-        onClose={() => setPdfSheetOpen(false)}
-        onSelect={onPickPdfPeriod}
+
+      {/* ===== Modal Calendario Histórico (Sprint 2) ===== */}
+      <HistoryCalendarModal
+        visible={calendarOpen}
+        reports={reports}
+        onClose={() => setCalendarOpen(false)}
+        selectedDate={null}
+        onPickDate={() => setCalendarOpen(false)}
       />
+
+      {/* ===== Modal de Exportación: Período → Formato ===== */}
+      <Modal
+        visible={exportOpen}
+        animationType="slide"
+        transparent
+        onRequestClose={closeExportFlow}
+      >
+        <Pressable style={styles.exportBackdrop} onPress={closeExportFlow} />
+        <View style={styles.exportSheet} pointerEvents="box-none">
+          <View style={styles.exportSheetInner}>
+            <View style={styles.exportHandle} />
+
+            <View style={styles.exportHeader}>
+              {exportStep === 'format' ? (
+                <Pressable
+                  onPress={() => !exportBusy && setExportStep('period')}
+                  hitSlop={10}
+                  style={styles.exportBack}
+                >
+                  <Ionicons name="chevron-back" size={22} color={colors.text} />
+                </Pressable>
+              ) : (
+                <View style={styles.exportBack} />
+              )}
+              <View style={{ flex: 1 }}>
+                <Text style={styles.exportTitle}>
+                  {exportStep === 'period' ? 'Exportar Reportes' : 'Elegir formato'}
+                </Text>
+                <Text style={styles.exportSubtitle}>
+                  {exportStep === 'period'
+                    ? 'Paso 1 de 2 · Selecciona el período'
+                    : `Paso 2 de 2 · Período: ${PERIOD_OPTIONS.find((p) => p.value === exportPeriod)?.label ?? ''}`}
+                </Text>
+              </View>
+              <Pressable
+                onPress={closeExportFlow}
+                disabled={exportBusy}
+                hitSlop={10}
+                style={styles.exportBack}
+              >
+                <Ionicons name="close" size={22} color={colors.text} />
+              </Pressable>
+            </View>
+
+            <View style={styles.exportSteps}>
+              <View style={[styles.exportStepDot, styles.exportStepDotActive]} />
+              <View style={[styles.exportStepBar, exportStep === 'format' && styles.exportStepBarActive]} />
+              <View
+                style={[
+                  styles.exportStepDot,
+                  exportStep === 'format' && styles.exportStepDotActive,
+                ]}
+              />
+            </View>
+
+            {exportStep === 'period' ? (
+              <View style={{ paddingHorizontal: spacing.md, paddingBottom: spacing.md }}>
+                {PERIOD_OPTIONS.map((opt) => {
+                  const active = exportPeriod === opt.value;
+                  return (
+                    <Pressable
+                      key={opt.value}
+                      onPress={() => onPickPeriod(opt.value)}
+                      style={({ pressed }) => [
+                        styles.exportItem,
+                        active && styles.exportItemActive,
+                        pressed && { opacity: 0.85 },
+                      ]}
+                    >
+                      <View style={[styles.exportItemIcon, { backgroundColor: '#EEF2FF' }]}>
+                        <Ionicons name={opt.icon} size={20} color="#1E3A8A" />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.exportItemTitle}>{opt.label}</Text>
+                        <Text style={styles.exportItemSub}>{opt.sub}</Text>
+                      </View>
+                      <Ionicons name="chevron-forward" size={20} color={colors.textMuted} />
+                    </Pressable>
+                  );
+                })}
+              </View>
+            ) : (
+              <View style={{ paddingHorizontal: spacing.md, paddingBottom: spacing.md }}>
+                {FORMAT_OPTIONS.map((opt) => (
+                  <Pressable
+                    key={opt.value}
+                    onPress={() => onPickFormat(opt.value)}
+                    disabled={exportBusy}
+                    style={({ pressed }) => [
+                      styles.exportItem,
+                      exportBusy && { opacity: 0.6 },
+                      pressed && !exportBusy && { opacity: 0.85 },
+                    ]}
+                  >
+                    <View style={[styles.exportItemIcon, { backgroundColor: `${opt.tint}1A` }]}>
+                      <Ionicons name={opt.icon} size={20} color={opt.tint} />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.exportItemTitle}>{opt.label}</Text>
+                      <Text style={styles.exportItemSub}>{opt.sub}</Text>
+                    </View>
+                    {exportBusy ? (
+                      <ActivityIndicator color={opt.tint} />
+                    ) : (
+                      <Ionicons name="download-outline" size={20} color={colors.textMuted} />
+                    )}
+                  </Pressable>
+                ))}
+                {exportBusy ? (
+                  <Text style={styles.exportBusyHint}>
+                    Generando archivo en el servidor… esto puede tardar unos segundos.
+                  </Text>
+                ) : null}
+              </View>
+            )}
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -439,6 +604,13 @@ const styles = StyleSheet.create({
   archiveBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, padding: spacing.md, marginTop: spacing.md, borderRadius: radius.md, borderWidth: 1, borderColor: colors.errorBg },
   archiveText: { color: colors.error, fontSize: 13, fontWeight: '700' },
 
+  // Botón grande Calendario
+  calendarBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    backgroundColor: colors.surface, borderRadius: radius.lg, padding: spacing.md,
+    borderWidth: 1, borderColor: colors.border,
+  },
+
   // Archivos de Consulta
   refCard: {
     backgroundColor: colors.surface,
@@ -477,4 +649,117 @@ const styles = StyleSheet.create({
     backgroundColor: colors.primary, paddingVertical: 12, borderRadius: radius.md, minHeight: 44,
   },
   refAddBtnTxt: { color: '#fff', fontSize: 14, fontWeight: '800' },
+
+  // === Exportación (Botón + Modal en 2 pasos) ================================
+  exportMainBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    backgroundColor: colors.primary,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 16,
+    borderRadius: radius.lg,
+    minHeight: 64,
+    ...shadow.card,
+  },
+  exportMainTitle: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '800',
+    letterSpacing: 0.3,
+  },
+  exportMainSub: {
+    color: 'rgba(255,255,255,0.85)',
+    fontSize: 12,
+    fontWeight: '600',
+    marginTop: 2,
+  },
+
+  exportBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(15,23,42,0.45)',
+  },
+  exportSheet: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: 'flex-end',
+  },
+  exportSheetInner: {
+    backgroundColor: colors.surface,
+    borderTopLeftRadius: (radius as any).xl ?? 20,
+    borderTopRightRadius: (radius as any).xl ?? 20,
+    paddingTop: 10,
+    paddingBottom: 24,
+    ...shadow.card,
+  },
+  exportHandle: {
+    alignSelf: 'center',
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: colors.border,
+    marginBottom: 8,
+  },
+  exportHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: spacing.md,
+    paddingBottom: 4,
+    gap: 6,
+  },
+  exportBack: {
+    width: 36, height: 36,
+    alignItems: 'center', justifyContent: 'center',
+    borderRadius: (radius as any).full ?? 999,
+  },
+  exportTitle: { fontSize: 17, fontWeight: '800', color: colors.text },
+  exportSubtitle: { fontSize: 12, color: colors.textMuted, fontWeight: '600', marginTop: 2 },
+
+  exportSteps: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: spacing.sm,
+  },
+  exportStepDot: {
+    width: 10, height: 10, borderRadius: 5,
+    backgroundColor: colors.border,
+  },
+  exportStepDotActive: { backgroundColor: colors.primary },
+  exportStepBar: {
+    width: 48, height: 3, borderRadius: 2,
+    backgroundColor: colors.border,
+  },
+  exportStepBarActive: { backgroundColor: colors.primary },
+
+  exportItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 12,
+    marginTop: spacing.sm,
+    minHeight: 64,
+  },
+  exportItemActive: {
+    borderColor: colors.primary,
+    backgroundColor: '#EEF2FF',
+  },
+  exportItemIcon: {
+    width: 40, height: 40, borderRadius: (radius as any).full ?? 999,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  exportItemTitle: { fontSize: 15, fontWeight: '800', color: colors.text },
+  exportItemSub: { fontSize: 12, color: colors.textMuted, marginTop: 2 },
+  exportBusyHint: {
+    fontSize: 12,
+    color: colors.textMuted,
+    textAlign: 'center',
+    marginTop: spacing.md,
+    fontStyle: 'italic',
+  },
 });

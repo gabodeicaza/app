@@ -1944,10 +1944,11 @@ def _excel_safe(value) -> object:
 
 
 @api.get("/projects/{pid}/export/reports.xlsx")
-async def export_reports_xlsx(pid: str, user: dict = Depends(require_role(ROLE_COORD))):
+async def export_reports_xlsx(pid: str, user: dict = Depends(current_user)):
     """Exporta TODOS los reportes del proyecto en una sábana Excel plana,
     iterando los nodos en orden jerárquico (Tramo → Estación → Poste).
-    Incluye ruta del nodo y coordenadas dictadas (X, Y, Z). Sólo Coord."""
+    Incluye ruta del nodo y coordenadas dictadas (X, Y, Z). Acceso para
+    cualquier rol que pertenezca al proyecto (ensure_project_access)."""
     try:
         from openpyxl import Workbook
         from openpyxl.styles import Font, PatternFill, Alignment
