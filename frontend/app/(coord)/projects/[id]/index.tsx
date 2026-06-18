@@ -1,8 +1,9 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, ActivityIndicator, Pressable, Alert, Platform,
   TextInput, Linking, Modal,
 } from 'react-native';
+import * as Clipboard from 'expo-clipboard';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -45,6 +46,17 @@ export default function ProjectDetailScreen() {
   const [reports, setReports] = useState<FeedItem[]>([]);
   const [calendarOpen, setCalendarOpen] = useState(false);
 
+  // Filtro por Tramo/Área (chips horizontales)
+  const [tramoFilter, setTramoFilter] = useState<string | null>(null);
+
+  // Resumen Ejecutivo con IA
+  const [aiOpen, setAiOpen] = useState(false);
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiSummary, setAiSummary] = useState<string | null>(null);
+  const [aiError, setAiError] = useState<string | null>(null);
+  const [aiMeta, setAiMeta] = useState<{ reports_count: number; period_hours: number } | null>(null);
+  const [aiCopied, setAiCopied] = useState(false);
+
   // Exportación unificada (2 pasos: período → formato)
   const [exportOpen, setExportOpen] = useState(false);
   const [exportStep, setExportStep] = useState<ExportStep>('period');
@@ -81,6 +93,60 @@ export default function ProjectDetailScreen() {
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
   useEffect(() => { loadFeed(); }, [loadFeed]);
+
+  // === Tramos / Áreas únicos derivados de los reportes ====================
+  const tramos = useMemo<string[]>(() => {
+    const set = new Set<string>();
+    for (const r of reports) {
+      const top = (r.node_path_names && r.node_path_names[0]) || (r as any).area_name || null;
+      if (top && typeof top === 'string') set.add(top);
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b, 'es'));
+  }, [reports]);
+
+  const filteredReports = useMemo<FeedItem[]>(() => {
+    if (!tramoFilter) return reports;
+    return reports.filter((r) => {
+      const top = (r.node_path_names && r.node_path_names[0]) || (r as any).area_name || null;
+      return top === tramoFilter;
+    });
+  }, [reports, tramoFilter]);
+
+  // === Resumen Ejecutivo con IA ===========================================
+  async function openAiSummary() {
+    setAiOpen(true);
+    setAiCopied(false);
+    if (aiSummary) return; // ya generado en esta sesión; usuario puede regenerar manualmente
+    await runAiSummary();
+  }
+
+  async function runAiSummary() {
+    if (!pid) return;
+    try {
+      setAiBusy(true);
+      setAiError(null);
+      setAiSummary(null);
+      setAiMeta(null);
+      const res = await api.aiSummary(pid);
+      setAiSummary(res.summary);
+      setAiMeta({ reports_count: res.reports_count, period_hours: res.period_hours });
+    } catch (e: any) {
+      setAiError(e?.message || 'No se pudo generar el resumen.');
+    } finally {
+      setAiBusy(false);
+    }
+  }
+
+  async function copyAiSummary() {
+    if (!aiSummary) return;
+    try {
+      await Clipboard.setStringAsync(aiSummary);
+      setAiCopied(true);
+      setTimeout(() => setAiCopied(false), 1800);
+    } catch {
+      Alert.alert('No se pudo copiar', 'Intenta seleccionar el texto manualmente.');
+    }
+  }
 
   async function persistRefs(next: ReferenceFile[]) {
     try {
@@ -273,8 +339,83 @@ export default function ProjectDetailScreen() {
             {/* ===== Sprint 2 · Metas Diarias ===== */}
             <DailyGoalsPanel projectId={pid} />
 
+            {/* ===== Killer Feature · Resumen Ejecutivo con IA ===== */}
+            <Pressable
+              onPress={openAiSummary}
+              disabled={aiBusy}
+              style={({ pressed }) => [
+                styles.aiBtn,
+                aiBusy && { opacity: 0.7 },
+                pressed && !aiBusy && { opacity: 0.92 },
+              ]}
+            >
+              {aiBusy ? (
+                <ActivityIndicator color="#fff" size="small" />
+              ) : (
+                <Ionicons name="sparkles" size={22} color="#fff" />
+              )}
+              <View style={{ flex: 1 }}>
+                <Text style={styles.aiBtnTitle}>✨ Generar Resumen Ejecutivo con IA</Text>
+                <Text style={styles.aiBtnSub}>
+                  {aiBusy ? 'Analizando reportes del día…' : 'Avances, equipo y personal en 3 viñetas (últimas 24h)'}
+                </Text>
+              </View>
+              {!aiBusy && (
+                <Ionicons name="chevron-forward" size={20} color="rgba(255,255,255,0.85)" />
+              )}
+            </Pressable>
+
+            {/* ===== Filtro por Tramo / Área (chips horizontales) ===== */}
+            {tramos.length > 0 && (
+              <View style={styles.chipWrap}>
+                <Text style={styles.chipTitle}>Filtrar por tramo / área</Text>
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={styles.chipRow}
+                >
+                  <Pressable
+                    onPress={() => setTramoFilter(null)}
+                    style={[styles.chip, !tramoFilter && styles.chipActive]}
+                  >
+                    <Ionicons
+                      name="apps-outline"
+                      size={14}
+                      color={!tramoFilter ? '#fff' : colors.text}
+                    />
+                    <Text style={[styles.chipText, !tramoFilter && styles.chipTextActive]}>
+                      Todos ({reports.length})
+                    </Text>
+                  </Pressable>
+                  {tramos.map((t) => {
+                    const count = reports.filter((r) => {
+                      const top = (r.node_path_names && r.node_path_names[0]) || (r as any).area_name || null;
+                      return top === t;
+                    }).length;
+                    const active = tramoFilter === t;
+                    return (
+                      <Pressable
+                        key={t}
+                        onPress={() => setTramoFilter(active ? null : t)}
+                        style={[styles.chip, active && styles.chipActive]}
+                      >
+                        <Ionicons
+                          name="location-outline"
+                          size={14}
+                          color={active ? '#fff' : colors.text}
+                        />
+                        <Text style={[styles.chipText, active && styles.chipTextActive]}>
+                          {t} ({count})
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </ScrollView>
+              </View>
+            )}
+
             {/* ===== Sprint 2 · Avance por Nodo ===== */}
-            <NodeProgressPanel projectId={pid} reports={reports} />
+            <NodeProgressPanel projectId={pid} reports={filteredReports} />
 
             {/* ===== Sprint 2 · Calendario Histórico ===== */}
             <Pressable

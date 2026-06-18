@@ -42,6 +42,7 @@ JWT_SECRET = os.environ["JWT_SECRET"]
 JWT_ALGORITHM = os.environ.get("JWT_ALGORITHM", "HS256")
 JWT_EXPIRE_MINUTES = int(os.environ.get("JWT_EXPIRE_MINUTES", "10080"))
 BOOTSTRAP_SECRET = os.environ.get("BOOTSTRAP_SECRET", "synco_bootstrap_2026_change_me")
+EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
 
 client = AsyncIOMotorClient(MONGO_URL)
 db = client[DB_NAME]
@@ -3193,6 +3194,107 @@ async def delete_daily_goal(pid: str, gid: str, user: dict = Depends(current_use
     if res.deleted_count == 0:
         raise HTTPException(404, "Meta no encontrada")
     return {"ok": True}
+
+
+# === AI Summary (Resumen Ejecutivo con IA) ==================================
+class AISummaryResponse(BaseModel):
+    summary: str
+    reports_count: int
+    period_hours: int
+    generated_at: datetime
+
+
+@api.post("/projects/{pid}/ai_summary", response_model=AISummaryResponse)
+async def project_ai_summary(pid: str, user: dict = Depends(current_user)):
+    """Genera un resumen ejecutivo (3 viñetas) usando IA con base en los
+    reportes de las últimas 24h del proyecto. Disponible para todos los roles
+    con acceso al proyecto."""
+    await ensure_project_access(user, pid)
+
+    if not EMERGENT_LLM_KEY:
+        raise HTTPException(500, "EMERGENT_LLM_KEY no configurada en el servidor.")
+
+    since = datetime.now(timezone.utc) - timedelta(hours=24)
+    q: dict = {"project_id": pid, "created_at": {"$gte": since}}
+    # Aplica el mismo scope RBAC que el feed.
+    if user["role"] == ROLE_SUB and user.get("scope_node_id"):
+        allowed = await descendants_ids(user["scope_node_id"])
+        q["node_id"] = {"$in": allowed}
+    elif user["role"] == ROLE_ESPECIALISTA:
+        scope = user.get("scope_node_ids") or []
+        q["node_id"] = {"$in": scope}
+
+    raw = await db.reports.find(q).sort("created_at", -1).to_list(length=500)
+
+    if not raw:
+        return AISummaryResponse(
+            summary=(
+                "• No se registraron reportes en las últimas 24 horas.\n"
+                "• Equipo y personal sin movimientos capturados.\n"
+                "• Recomendación: validar con sub-coordinadores el estado de avance del día."
+            ),
+            reports_count=0,
+            period_hours=24,
+            generated_at=datetime.now(timezone.utc),
+        )
+
+    # Formatea reportes como texto plano legible para el LLM.
+    lines: List[str] = []
+    for r in raw:
+        path = " › ".join(r.get("node_path_names") or []) or "(sin nodo)"
+        area = r.get("area_name") or "—"
+        avance = r.get("avance") or "—"
+        contratista = r.get("contratista") or "—"
+        personnel = ", ".join(r.get("personnel") or []) or "—"
+        equipment = ", ".join(r.get("equipment") or []) or "—"
+        captured_by = r.get("captured_by_name") or "—"
+        created = r.get("created_at")
+        created_s = created.isoformat() if isinstance(created, datetime) else str(created)
+        lines.append(
+            f"- [{created_s}] {path} | Área: {area} | Avance: {avance} | "
+            f"Contratista: {contratista} | Personal: {personnel} | "
+            f"Equipo: {equipment} | Capturó: {captured_by}"
+        )
+    body = "\n".join(lines)
+
+    system_message = (
+        "Actúa como un Sub-coordinador de Obra Civil. Resume los avances, "
+        "equipo y personal del día en 3 viñetas ejecutivas. Sé conciso y profesional. "
+        "Responde SIEMPRE en español, con exactamente 3 bullets que empiecen con '• '. "
+        "Una viñeta para avances, una para equipo/maquinaria y una para personal. "
+        "Cero relleno, sin introducciones ni cierres."
+    )
+    user_text = (
+        f"Reportes de las últimas 24 horas del proyecto (id={pid}). "
+        f"Total: {len(raw)} entradas.\n\n{body}\n\n"
+        "Genera el resumen ejecutivo solicitado."
+    )
+
+    try:
+        from emergentintegrations.llm.chat import LlmChat, UserMessage
+        chat = (
+            LlmChat(
+                api_key=EMERGENT_LLM_KEY,
+                session_id=f"ai_summary_{pid}_{uuid.uuid4().hex[:8]}",
+                system_message=system_message,
+            )
+            .with_model("openai", "gpt-4o-mini")
+            .with_max_tokens(400)
+        )
+        reply = await chat.send_message(UserMessage(text=user_text))
+        summary = (reply or "").strip() if isinstance(reply, str) else str(reply).strip()
+        if not summary:
+            raise RuntimeError("Respuesta vacía del LLM")
+    except Exception as e:
+        log.exception("[ai_summary] LLM error: %s", e)
+        raise HTTPException(502, f"No se pudo generar el resumen con IA: {e}")
+
+    return AISummaryResponse(
+        summary=summary,
+        reports_count=len(raw),
+        period_hours=24,
+        generated_at=datetime.now(timezone.utc),
+    )
 
 
 # === MOUNT ==================================================================

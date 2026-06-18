@@ -366,6 +366,15 @@ export const api = {
     request<FeedResponse>('GET', `/projects/${pid}/reports/feed?range=${range}&limit=${limit}`),
   getReport: (rid: string) => request<Report>('GET', `/reports/${rid}`),
 
+  // ---- AI Summary (Resumen Ejecutivo con IA) ------------------------------
+  aiSummary: (pid: string) =>
+    request<{
+      summary: string;
+      reports_count: number;
+      period_hours: number;
+      generated_at: string;
+    }>('POST', `/projects/${pid}/ai_summary`),
+
   // ---- Announcements (Noticias) -------------------------------------------
   listAnnouncements: (pid: string) =>
     request<Announcement[]>('GET', `/projects/${pid}/announcements`),
