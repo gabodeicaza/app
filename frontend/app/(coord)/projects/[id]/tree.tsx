@@ -90,7 +90,7 @@ export default function TreeBuilderScreen() {
     }
   }
 
-  async function onSave(payload: { name: string; is_leaf: boolean; measurement_type: MeasurementType | null; target_lat: number | null; target_lon: number | null; target_elev: number | null }) {
+  async function onSave(payload: { name: string; is_leaf: boolean; measurement_type: MeasurementType | null; target_lat: number | null; target_lon: number | null; target_elev: number | null; meta: number | null }) {
     if (!editor) return;
     try {
       const isCoordLeaf = payload.is_leaf && payload.measurement_type === 'coord_latlon';
@@ -104,6 +104,7 @@ export default function TreeBuilderScreen() {
           name: payload.name,
           is_leaf: payload.is_leaf,
           measurement_type: payload.is_leaf ? payload.measurement_type : null,
+          meta: payload.meta,
           ...targets,
         });
       } else {
@@ -114,6 +115,7 @@ export default function TreeBuilderScreen() {
           name: payload.name,
           is_leaf: payload.is_leaf,
           measurement_type: payload.is_leaf ? payload.measurement_type : null,
+          meta: payload.meta,
           ...targets,
         });
         if (parent_id) setExpanded((e) => ({ ...e, [parent_id]: true }));
@@ -322,7 +324,7 @@ function NodeEditorModal({
   visible: boolean;
   editor: EditorMode | null;
   onClose: () => void;
-  onSave: (p: { name: string; is_leaf: boolean; measurement_type: MeasurementType | null; target_lat: number | null; target_lon: number | null; target_elev: number | null }) => Promise<void>;
+  onSave: (p: { name: string; is_leaf: boolean; measurement_type: MeasurementType | null; target_lat: number | null; target_lon: number | null; target_elev: number | null; meta: number | null }) => Promise<void>;
 }) {
   const insets = useSafeAreaInsets();
   const [name, setName] = useState('');
@@ -331,6 +333,7 @@ function NodeEditorModal({
   const [tLat, setTLat] = useState('');
   const [tLon, setTLon] = useState('');
   const [tElev, setTElev] = useState('');
+  const [metaStr, setMetaStr] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -344,9 +347,11 @@ function NodeEditorModal({
       setTLat(n.target_lat != null ? String(n.target_lat) : '');
       setTLon(n.target_lon != null ? String(n.target_lon) : '');
       setTElev(n.target_elev != null ? String(n.target_elev) : '');
+      setMetaStr(n.meta != null ? String(n.meta) : '');
     } else {
       setName(''); setIsLeaf(false); setMtype(null);
       setTLat(''); setTLon(''); setTElev('');
+      setMetaStr('');
     }
     setErr(null);
   }, [visible, editor]);
@@ -386,6 +391,12 @@ function NodeEditorModal({
     }
     setBusy(true);
     try {
+      const parsedMeta = (() => {
+        const s = (metaStr || '').trim().replace(',', '.');
+        if (!s) return null;
+        const n = Number(s);
+        return Number.isFinite(n) && n >= 0 ? n : null;
+      })();
       await onSave({
         name: n,
         is_leaf: isLeaf,
@@ -393,6 +404,7 @@ function NodeEditorModal({
         target_lat: parsedLat,
         target_lon: parsedLon,
         target_elev: parsedElev,
+        meta: parsedMeta,
       });
     } finally {
       setBusy(false);
@@ -426,6 +438,27 @@ function NodeEditorModal({
                     returnKeyType="done"
                   />
                 </View>
+              </View>
+
+              <View>
+                <Text style={styles.label}>Meta (opcional)</Text>
+                <View style={styles.inputWrap}>
+                  <Ionicons name="flag-outline" size={18} color={colors.textMuted} />
+                  <TextInput
+                    value={metaStr}
+                    onChangeText={setMetaStr}
+                    placeholder="Ej. 100 (total de metros a excavar)"
+                    placeholderTextColor={colors.textMuted}
+                    style={styles.input}
+                    keyboardType="numbers-and-punctuation"
+                    autoCorrect={false}
+                    editable={!busy}
+                    returnKeyType="done"
+                  />
+                </View>
+                <Text style={styles.metaHelp}>
+                  Cantidad total a alcanzar en este nodo (m, m³, piezas, etc.). Se usa para calcular el avance en el Panel de Progreso.
+                </Text>
               </View>
 
               <Pressable
@@ -686,5 +719,6 @@ const styles = StyleSheet.create({
   coordRow: { flexDirection: 'row', gap: 10 },
   coordField: { flex: 1, gap: 6 },
   coordLabel: { fontSize: 11, fontWeight: '700', color: colors.textBody },
+  metaHelp: { fontSize: 11, color: colors.textMuted, marginTop: 6, lineHeight: 15 },
   errorBoxInline: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: colors.errorBg, padding: 10, borderRadius: radius.md },
 });

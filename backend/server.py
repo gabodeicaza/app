@@ -3279,7 +3279,7 @@ async def project_ai_summary(pid: str, user: dict = Depends(current_user)):
                 system_message=system_message,
             )
             .with_model("openai", "gpt-4o-mini")
-            .with_max_tokens(400)
+            .with_params(max_tokens=400)
         )
         reply = await chat.send_message(UserMessage(text=user_text))
         summary = (reply or "").strip() if isinstance(reply, str) else str(reply).strip()

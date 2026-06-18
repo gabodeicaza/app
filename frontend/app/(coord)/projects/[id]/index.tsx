@@ -903,4 +903,78 @@ const styles = StyleSheet.create({
     marginTop: spacing.md,
     fontStyle: 'italic',
   },
+
+  // === Botón IA · Resumen Ejecutivo =========================================
+  aiBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    backgroundColor: '#7C3AED',
+    paddingHorizontal: spacing.md,
+    paddingVertical: 16,
+    borderRadius: radius.lg,
+    minHeight: 64,
+    ...shadow.card,
+  },
+  aiBtnTitle: {
+    color: '#fff',
+    fontSize: 15,
+    fontWeight: '800',
+    letterSpacing: 0.3,
+  },
+  aiBtnSub: {
+    color: 'rgba(255,255,255,0.85)',
+    fontSize: 12,
+    fontWeight: '600',
+    marginTop: 2,
+  },
+
+  // === Filtro de tramos / áreas (chips horizontales) ========================
+  chipWrap: {
+    backgroundColor: colors.surface,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: colors.border,
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.sm,
+    gap: 8,
+  },
+  chipTitle: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: colors.textMuted,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    paddingHorizontal: 4,
+  },
+  chipRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingRight: spacing.sm,
+  },
+  chip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.bg,
+    minHeight: 36,
+  },
+  chipActive: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
+  },
+  chipText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: colors.text,
+  },
+  chipTextActive: {
+    color: '#fff',
+  },
 });
