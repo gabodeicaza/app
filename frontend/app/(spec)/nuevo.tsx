@@ -1599,6 +1599,3 @@ const styles = StyleSheet.create({
   coordsTargetLabel: { fontSize: 10, fontWeight: '800', color: colors.primary, letterSpacing: 0.6 },
   coordsTargetValue: { fontSize: 14, fontWeight: '800', color: colors.text },
 });
-erSpacing: 0.6 },
-  coordsTargetValue: { fontSize: 14, fontWeight: '800', color: colors.text },
-});
