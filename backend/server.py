@@ -174,6 +174,9 @@ class LocationNodeIn(BaseModel):
     target_lat: Optional[float] = None
     target_lon: Optional[float] = None
     target_elev: Optional[float] = None
+    # Meta/objetivo numérico del nodo (p.ej. metros lineales, puntos, etc.).
+    # Se utiliza para calcular % de avance vs. última lectura registrada.
+    meta: Optional[float] = None
 
 
 class LocationNodeOut(BaseModel):
@@ -188,6 +191,7 @@ class LocationNodeOut(BaseModel):
     target_lat: Optional[float] = None
     target_lon: Optional[float] = None
     target_elev: Optional[float] = None
+    meta: Optional[float] = None
     path: List[str] = Field(default_factory=list)  # cadena de ids desde raíz hasta self
 
 
@@ -708,6 +712,7 @@ async def create_node(pid: str, body: LocationNodeIn, user: dict = Depends(requi
         "target_lat": body.target_lat if is_coord_leaf else None,
         "target_lon": body.target_lon if is_coord_leaf else None,
         "target_elev": body.target_elev if is_coord_leaf else None,
+        "meta": body.meta if body.is_leaf else None,
         "created_at": datetime.now(timezone.utc),
     }
     await db.location_nodes.insert_one(doc)
@@ -723,6 +728,7 @@ class NodePatch(BaseModel):
     target_lat: Optional[float] = None
     target_lon: Optional[float] = None
     target_elev: Optional[float] = None
+    meta: Optional[float] = None
 
 
 @api.patch("/nodes/{nid}")
@@ -769,6 +775,13 @@ async def update_node(nid: str, body: NodePatch, user: dict = Depends(require_ro
     for fld, val in (("target_lat", body.target_lat), ("target_lon", body.target_lon), ("target_elev", body.target_elev)):
         if val is not None and is_coord_leaf:
             upd[fld] = val
+    # Meta numérica: válida sólo para nodos hoja; si se manda en no-hoja se ignora.
+    if body.meta is not None:
+        if final_is_leaf:
+            upd["meta"] = float(body.meta)
+        # Si el nodo deja de ser hoja, limpiamos meta más abajo.
+    if upd.get("is_leaf") is False:
+        upd["meta"] = None
     if upd:
         await db.location_nodes.update_one({"id": nid}, {"$set": upd})
     out = await db.location_nodes.find_one({"id": nid})
@@ -3098,6 +3111,87 @@ async def export_reports_pptx(
         media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
         headers={"Content-Disposition": f'attachment; filename="{fname}"'},
     )
+
+
+# === DAILY GOALS (Metas del día por proyecto) ==============================
+class DailyGoalIn(BaseModel):
+    text: str
+
+
+class DailyGoalPatch(BaseModel):
+    text: Optional[str] = None
+    is_completed: Optional[bool] = None
+
+
+def _goal_out(doc: dict) -> dict:
+    doc.pop("_id", None)
+    return doc
+
+
+@api.get("/projects/{pid}/daily_goals")
+async def list_daily_goals(pid: str, user: dict = Depends(current_user)):
+    await ensure_project_access(user, pid)
+    cur = db.daily_goals.find({"project_id": pid}).sort("created_at", 1)
+    out = []
+    async for d in cur:
+        out.append(_goal_out(d))
+    return out
+
+
+@api.post("/projects/{pid}/daily_goals")
+async def create_daily_goal(pid: str, body: DailyGoalIn, user: dict = Depends(current_user)):
+    if user["role"] not in (ROLE_COORD, ROLE_JEFE):
+        raise HTTPException(403, "Solo coord o jefe pueden crear metas")
+    await ensure_project_access(user, pid)
+    text = (body.text or "").strip()
+    if not text:
+        raise HTTPException(400, "El texto es obligatorio")
+    gid = str(uuid.uuid4())
+    doc = {
+        "id": gid,
+        "project_id": pid,
+        "text": text,
+        "is_completed": False,
+        "created_at": datetime.now(timezone.utc),
+        "created_by": user["id"],
+        "created_by_name": user.get("name", ""),
+    }
+    await db.daily_goals.insert_one(doc)
+    return _goal_out(doc)
+
+
+@api.patch("/projects/{pid}/daily_goals/{gid}")
+async def update_daily_goal(pid: str, gid: str, body: DailyGoalPatch, user: dict = Depends(current_user)):
+    if user["role"] not in (ROLE_COORD, ROLE_JEFE):
+        raise HTTPException(403, "Solo coord o jefe pueden modificar metas")
+    await ensure_project_access(user, pid)
+    upd: dict = {}
+    if body.text is not None:
+        t = body.text.strip()
+        if not t:
+            raise HTTPException(400, "Texto inválido")
+        upd["text"] = t
+    if body.is_completed is not None:
+        upd["is_completed"] = bool(body.is_completed)
+    if upd:
+        res = await db.daily_goals.update_one({"id": gid, "project_id": pid}, {"$set": upd})
+        if res.matched_count == 0:
+            raise HTTPException(404, "Meta no encontrada")
+    out = await db.daily_goals.find_one({"id": gid, "project_id": pid})
+    if not out:
+        raise HTTPException(404, "Meta no encontrada")
+    return _goal_out(out)
+
+
+@api.delete("/projects/{pid}/daily_goals/{gid}")
+async def delete_daily_goal(pid: str, gid: str, user: dict = Depends(current_user)):
+    if user["role"] not in (ROLE_COORD, ROLE_JEFE):
+        raise HTTPException(403, "Solo coord o jefe pueden eliminar metas")
+    await ensure_project_access(user, pid)
+    res = await db.daily_goals.delete_one({"id": gid, "project_id": pid})
+    if res.deleted_count == 0:
+        raise HTTPException(404, "Meta no encontrada")
+    return {"ok": True}
 
 
 # === MOUNT ==================================================================

@@ -22,6 +22,9 @@ import { confirm } from '@/src/utils/confirm';
 import { api, FeedItem, FeedResponse, Project } from '@/src/api';
 import { ReportPeriod } from '@/src/components/PeriodSheet';
 import { downloadBlob } from '@/src/utils/downloadBlob';
+import { DailyGoalsPanel } from '@/src/components/DailyGoalsPanel';
+import { NodeProgressPanel } from '@/src/components/NodeProgressPanel';
+import { HistoryCalendarModal } from '@/src/components/HistoryCalendarModal';
 
 // === Configuración del flujo de exportación en 2 pasos ============================
 type ExportFormat = 'pdf' | 'docx' | 'pptx';
@@ -64,6 +67,8 @@ export default function SpecFeedScreen() {
   const [exportStep, setExportStep] = useState<ExportStep>('period');
   const [exportPeriod, setExportPeriod] = useState<ReportPeriod>('today');
   const [exportBusy, setExportBusy] = useState(false);
+  const [calendarOpen, setCalendarOpen] = useState(false);
+  const [selectedDate, setSelectedDate] = useState<string | null>(null);
 
   const load = useCallback(async (nextRange: RangeKey = range, silent = false) => {
     if (!projectId) {
@@ -155,6 +160,10 @@ export default function SpecFeedScreen() {
 
   const stats = feed?.stats || { total: 0, mine: 0, others: 0 };
   const reports = feed?.reports || [];
+  const filteredReports = useMemo(() => {
+    if (!selectedDate) return reports;
+    return reports.filter((r) => (r.created_at || '').slice(0, 10) === selectedDate);
+  }, [reports, selectedDate]);
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
@@ -244,6 +253,20 @@ export default function SpecFeedScreen() {
           />
         </View>
 
+        {/* Sprint 2 — Metas diarias (solo lectura para especialistas) */}
+        {projectId ? (
+          <View style={styles.sprintBlock}>
+            <DailyGoalsPanel projectId={projectId} />
+          </View>
+        ) : null}
+
+        {/* Sprint 2 — Avance por nodo (gráficas circulares) */}
+        {projectId ? (
+          <View style={styles.sprintBlock}>
+            <NodeProgressPanel projectId={projectId} reports={reports} />
+          </View>
+        ) : null}
+
         {/* Botón único de exportación (abre modal de 2 pasos: Período → Formato) */}
         <View style={styles.exportRow}>
           <Pressable
@@ -281,11 +304,11 @@ export default function SpecFeedScreen() {
             contentContainerStyle={{ paddingHorizontal: spacing.md, gap: spacing.sm }}
           >
             {RANGE_OPTIONS.map((opt) => {
-              const active = range === opt.key;
+              const active = range === opt.key && !selectedDate;
               return (
                 <Pressable
                   key={opt.key}
-                  onPress={() => onPickRange(opt.key)}
+                  onPress={() => { setSelectedDate(null); onPickRange(opt.key); }}
                   style={[styles.chip, active && styles.chipActive]}
                 >
                   <Text style={[styles.chipTxt, active && styles.chipTxtActive]}>
@@ -294,6 +317,26 @@ export default function SpecFeedScreen() {
                 </Pressable>
               );
             })}
+            <Pressable
+              onPress={() => setCalendarOpen(true)}
+              style={[styles.chip, !!selectedDate && styles.chipActive]}
+            >
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <Ionicons
+                  name="calendar-outline"
+                  size={14}
+                  color={selectedDate ? '#fff' : colors.textBody}
+                />
+                <Text style={[styles.chipTxt, !!selectedDate && styles.chipTxtActive]}>
+                  {selectedDate ? selectedDate : 'Calendario'}
+                </Text>
+                {selectedDate ? (
+                  <Pressable hitSlop={8} onPress={() => setSelectedDate(null)}>
+                    <Ionicons name="close-circle" size={14} color="#fff" />
+                  </Pressable>
+                ) : null}
+              </View>
+            </Pressable>
           </ScrollView>
         </View>
 
@@ -317,11 +360,27 @@ export default function SpecFeedScreen() {
               <Text style={styles.retryTxt}>Reintentar</Text>
             </Pressable>
           </View>
-        ) : reports.length === 0 ? (
-          <EmptyFeed range={range} onNew={() => router.push('/(spec)/nuevo' as any)} />
+        ) : filteredReports.length === 0 ? (
+          selectedDate ? (
+            <View style={styles.emptyBox}>
+              <View style={styles.emptyIcon}>
+                <Ionicons name="calendar-outline" size={28} color={colors.primary} />
+              </View>
+              <Text style={styles.emptyTitle}>Sin reportes el {selectedDate}</Text>
+              <Text style={styles.emptyMsg}>
+                Prueba otra fecha o vuelve a los filtros generales.
+              </Text>
+              <Pressable style={styles.emptyBtn} onPress={() => setSelectedDate(null)}>
+                <Ionicons name="refresh" size={18} color="#fff" />
+                <Text style={styles.emptyBtnTxt}>Limpiar fecha</Text>
+              </Pressable>
+            </View>
+          ) : (
+            <EmptyFeed range={range} onNew={() => router.push('/(spec)/nuevo' as any)} />
+          )
         ) : (
           <FlatList
-            data={reports}
+            data={filteredReports}
             keyExtractor={(it) => it.id}
             scrollEnabled={false}
             contentContainerStyle={{ paddingHorizontal: spacing.md, gap: spacing.sm, paddingBottom: spacing.md }}
@@ -329,6 +388,18 @@ export default function SpecFeedScreen() {
           />
         )}
       </ScrollView>
+
+      {/* Sprint 2 — Modal Calendario Histórico */}
+      <HistoryCalendarModal
+        visible={calendarOpen}
+        reports={reports}
+        onClose={() => setCalendarOpen(false)}
+        selectedDate={selectedDate}
+        onPickDate={(d) => {
+          setSelectedDate(d);
+          setCalendarOpen(false);
+        }}
+      />
 
       {/* Modal de exportación en 2 pasos: Período → Formato */}
       <Modal
@@ -677,6 +748,12 @@ const styles = StyleSheet.create({
   },
   statValue: { fontSize: 22, fontWeight: '800', color: colors.text },
   statLabel: { fontSize: 11, color: colors.textMuted, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.4 },
+
+  // Sprint 2 — bloques de metas/avance
+  sprintBlock: {
+    paddingHorizontal: spacing.md,
+    marginTop: spacing.md,
+  },
 
   // PDF Button
   pdfBtnWrap: {

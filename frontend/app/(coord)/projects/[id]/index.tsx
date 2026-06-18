@@ -8,6 +8,7 @@ import { colors, radius, spacing } from '@/src/theme';
 import { confirm } from '@/src/utils/confirm';
 import { PeriodSheet, ReportPeriod } from '@/src/components/PeriodSheet';
 import { downloadBlob } from '@/src/utils/downloadBlob';
+import { DailyGoalsPanel } from '@/src/components/DailyGoalsPanel';
 
 export default function ProjectDetailScreen() {
   const insets = useSafeAreaInsets();

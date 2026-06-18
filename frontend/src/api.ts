@@ -88,6 +88,8 @@ export interface LocationNode {
   target_lat?: number | null;
   target_lon?: number | null;
   target_elev?: number | null;
+  // Meta/objetivo numérico para gráficas circulares de avance.
+  meta?: number | null;
 }
 
 export interface LocationNodeTree extends LocationNode {
@@ -236,6 +238,16 @@ export interface ProjectEvent {
   updated_at: string;
 }
 
+export interface DailyGoal {
+  id: string;
+  project_id: string;
+  text: string;
+  is_completed: boolean;
+  created_at: string;
+  created_by: string;
+  created_by_name?: string;
+}
+
 // ---- API client -----------------------------------------------------------
 export const api = {
   // Auth
@@ -282,6 +294,7 @@ export const api = {
     target_lat?: number | null;
     target_lon?: number | null;
     target_elev?: number | null;
+    meta?: number | null;
   }) => request<LocationNode>('POST', `/projects/${pid}/nodes`, body),
   updateNode: (nid: string, body: {
     name?: string;
@@ -291,6 +304,7 @@ export const api = {
     target_lat?: number | null;
     target_lon?: number | null;
     target_elev?: number | null;
+    meta?: number | null;
   }) => request<LocationNode>('PATCH', `/nodes/${nid}`, body),
   deleteNode: (nid: string) => request<{ ok: boolean; deleted_count: number }>('DELETE', `/nodes/${nid}`),
 
@@ -503,6 +517,16 @@ export const api = {
 
   // Users (admin)
   listProjectUsers: (pid: string) => request<User[]>('GET', `/projects/${pid}/users`),
+
+  // ---- Daily Goals (Metas del día) ----------------------------------------
+  listDailyGoals: (pid: string) =>
+    request<DailyGoal[]>('GET', `/projects/${pid}/daily_goals`),
+  createDailyGoal: (pid: string, text: string) =>
+    request<DailyGoal>('POST', `/projects/${pid}/daily_goals`, { text }),
+  updateDailyGoal: (pid: string, gid: string, payload: { text?: string; is_completed?: boolean }) =>
+    request<DailyGoal>('PATCH', `/projects/${pid}/daily_goals/${gid}`, payload),
+  deleteDailyGoal: (pid: string, gid: string) =>
+    request<{ ok: boolean }>('DELETE', `/projects/${pid}/daily_goals/${gid}`),
 };
 
 export { BASE };
