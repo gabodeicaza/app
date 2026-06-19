@@ -733,7 +733,7 @@ class NodePatch(BaseModel):
 
 
 @api.patch("/nodes/{nid}")
-async def update_node(nid: str, body: NodePatch, user: dict = Depends(require_role(ROLE_COORD))):
+async def update_node(nid: str, body: NodePatch, user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB))):
     node = await db.location_nodes.find_one({"id": nid})
     if not node:
         raise HTTPException(404, "Nodo no existe")
@@ -3146,8 +3146,8 @@ async def list_daily_goals(pid: str, user: dict = Depends(current_user)):
 
 @api.post("/projects/{pid}/daily_goals")
 async def create_daily_goal(pid: str, body: DailyGoalIn, user: dict = Depends(current_user)):
-    if user["role"] not in (ROLE_COORD, ROLE_JEFE):
-        raise HTTPException(403, "Solo coord o jefe pueden crear metas")
+    if user["role"] not in (ROLE_COORD, ROLE_JEFE, ROLE_SUB):
+        raise HTTPException(403, "Solo coord, jefe o sub-coordinador pueden crear metas")
     await ensure_project_access(user, pid)
     text = (body.text or "").strip()
     if not text:
@@ -3168,8 +3168,8 @@ async def create_daily_goal(pid: str, body: DailyGoalIn, user: dict = Depends(cu
 
 @api.patch("/projects/{pid}/daily_goals/{gid}")
 async def update_daily_goal(pid: str, gid: str, body: DailyGoalPatch, user: dict = Depends(current_user)):
-    if user["role"] not in (ROLE_COORD, ROLE_JEFE):
-        raise HTTPException(403, "Solo coord o jefe pueden modificar metas")
+    if user["role"] not in (ROLE_COORD, ROLE_JEFE, ROLE_SUB):
+        raise HTTPException(403, "Solo coord, jefe o sub-coordinador pueden modificar metas")
     await ensure_project_access(user, pid)
     upd: dict = {}
     if body.text is not None:
@@ -3191,8 +3191,8 @@ async def update_daily_goal(pid: str, gid: str, body: DailyGoalPatch, user: dict
 
 @api.delete("/projects/{pid}/daily_goals/{gid}")
 async def delete_daily_goal(pid: str, gid: str, user: dict = Depends(current_user)):
-    if user["role"] not in (ROLE_COORD, ROLE_JEFE):
-        raise HTTPException(403, "Solo coord o jefe pueden eliminar metas")
+    if user["role"] not in (ROLE_COORD, ROLE_JEFE, ROLE_SUB):
+        raise HTTPException(403, "Solo coord, jefe o sub-coordinador pueden eliminar metas")
     await ensure_project_access(user, pid)
     res = await db.daily_goals.delete_one({"id": gid, "project_id": pid})
     if res.deleted_count == 0:
@@ -3262,10 +3262,14 @@ async def project_ai_summary(pid: str, user: dict = Depends(current_user)):
     body = "\n".join(lines)
 
     system_message = (
-        "Actúa como un Sub-coordinador de Obra Civil. Resume los avances, "
-        "equipo y personal del día en 3 viñetas ejecutivas. Sé conciso y profesional. "
-        "Responde SIEMPRE en español, con exactamente 3 bullets que empiecen con '• '. "
-        "Una viñeta para avances, una para equipo/maquinaria y una para personal. "
+        "ERES UN ANALISTA DE OBRA CIVIL DE NIVEL EJECUTIVO. TUS REGLAS SON INQUEBRANTABLES:\n"
+        "1) NO PUEDES INVENTAR DATOS (ALUCINAR). SI NO HAY INFORMACIÓN, REPORTA QUE EL DATO NO ESTÁ DISPONIBLE.\n"
+        "2) NO PUEDES FALLAR.\n"
+        "3) TU ÚNICA FUNCIÓN ES RESUMIR EXACTAMENTE LO QUE DICEN LOS REPORTES SIN AGREGAR INTERPRETACIONES AJENAS.\n"
+        "4) ESTRUCTURA: SOLO 3 VIÑETAS EJECUTIVAS Y NADA MÁS.\n\n"
+        "Responde SIEMPRE en español. Cada viñeta debe iniciar con '• '. "
+        "Distribución sugerida: una viñeta para avances, una para equipo/maquinaria y una para personal. "
+        "Si alguna categoría no tiene datos, indícalo explícitamente como 'No disponible en los reportes'. "
         "Cero relleno, sin introducciones ni cierres."
     )
     user_text = (

@@ -57,6 +57,9 @@ export default function ProjectDetailScreen() {
   const [aiMeta, setAiMeta] = useState<{ reports_count: number; period_hours: number } | null>(null);
   const [aiCopied, setAiCopied] = useState(false);
 
+  // Tabs: Detalle / Resumen IA
+  const [activeTab, setActiveTab] = useState<'detalle' | 'resumen'>('detalle');
+
   // Exportación unificada (2 pasos: período → formato)
   const [exportOpen, setExportOpen] = useState(false);
   const [exportStep, setExportStep] = useState<ExportStep>('period');
@@ -310,6 +313,63 @@ export default function ProjectDetailScreen() {
               {project.description ? <InfoRow icon="chatbox-ellipses-outline" label="Descripción" value={project.description} /> : null}
             </View>
 
+            {/* ===== Pestañas: Detalle / Resumen IA ===== */}
+            <View style={styles.tabBar}>
+              <Pressable
+                onPress={() => setActiveTab('detalle')}
+                style={[styles.tabBtn, activeTab === 'detalle' && styles.tabBtnActive]}
+              >
+                <Ionicons
+                  name="list-outline"
+                  size={16}
+                  color={activeTab === 'detalle' ? '#fff' : colors.text}
+                />
+                <Text style={[styles.tabTxt, activeTab === 'detalle' && styles.tabTxtActive]}>
+                  Detalle
+                </Text>
+              </Pressable>
+              <Pressable
+                onPress={() => setActiveTab('resumen')}
+                style={[styles.tabBtn, activeTab === 'resumen' && styles.tabBtnActive]}
+              >
+                <Ionicons
+                  name="sparkles-outline"
+                  size={16}
+                  color={activeTab === 'resumen' ? '#fff' : colors.text}
+                />
+                <Text style={[styles.tabTxt, activeTab === 'resumen' && styles.tabTxtActive]}>
+                  Resumen
+                </Text>
+              </Pressable>
+            </View>
+
+            {activeTab === 'resumen' ? (
+              <Pressable
+                onPress={openAiSummary}
+                disabled={aiBusy}
+                style={({ pressed }) => [
+                  styles.aiBtn,
+                  aiBusy && { opacity: 0.7 },
+                  pressed && !aiBusy && { opacity: 0.92 },
+                ]}
+              >
+                {aiBusy ? (
+                  <ActivityIndicator color="#fff" size="small" />
+                ) : (
+                  <Ionicons name="sparkles" size={22} color="#fff" />
+                )}
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.aiBtnTitle}>✨ Generar Resumen Ejecutivo con IA</Text>
+                  <Text style={styles.aiBtnSub}>
+                    {aiBusy ? 'Analizando reportes del día…' : 'Resumen ejecutivo en 3 viñetas (últimas 24h)'}
+                  </Text>
+                </View>
+                {!aiBusy && (
+                  <Ionicons name="chevron-forward" size={20} color="rgba(255,255,255,0.85)" />
+                )}
+              </Pressable>
+            ) : (
+              <>
             {/* ===== Botón GRANDE: Exportar Reportes (PDF / Word / PPT / Excel) ===== */}
             <Pressable
               onPress={openExportFlow}
@@ -547,6 +607,8 @@ export default function ProjectDetailScreen() {
               <Ionicons name="archive-outline" size={16} color={colors.error} />
               <Text style={styles.archiveText}>Archivar proyecto</Text>
             </Pressable>
+              </>
+            )}
           </>
         )}
       </ScrollView>
@@ -718,6 +780,38 @@ function ActionTile({ icon, title, subtitle, disabled, comingSoon, onPress, busy
 
 const styles = StyleSheet.create({
   flex: { flex: 1, backgroundColor: colors.bg },
+  // ===== Tabs (Detalle / Resumen IA) =====
+  tabBar: {
+    flexDirection: 'row',
+    backgroundColor: colors.surface,
+    borderRadius: radius.lg,
+    padding: 4,
+    borderWidth: 1,
+    borderColor: colors.border,
+    gap: 4,
+  },
+  tabBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 10,
+    borderRadius: radius.md,
+    backgroundColor: 'transparent',
+  },
+  tabBtnActive: {
+    backgroundColor: colors.primary,
+    ...shadow.sm,
+  },
+  tabTxt: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: colors.text,
+  },
+  tabTxtActive: {
+    color: '#fff',
+  },
   header: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
     paddingHorizontal: spacing.md, paddingVertical: spacing.sm, gap: spacing.md,

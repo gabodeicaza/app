@@ -8,6 +8,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Modal,
   Platform,
   Pressable,
   RefreshControl,
@@ -16,6 +17,7 @@ import {
   Text,
   View,
 } from 'react-native';
+import * as Clipboard from 'expo-clipboard';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -24,6 +26,8 @@ import { api, FeedItem, LocationNode, Project } from '@/src/api';
 import { colors, radius, shadow, spacing } from '@/src/theme';
 import { roleLabel } from '@/src/utils/roles';
 import { confirm } from '@/src/utils/confirm';
+import { DailyGoalsPanel } from '@/src/components/DailyGoalsPanel';
+import { NodeProgressPanel } from '@/src/components/NodeProgressPanel';
 
 type ProgressRow = {
   node: LocationNode;
@@ -43,6 +47,17 @@ export default function SubCoordDashboard() {
   const [refreshing, setRefreshing] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Tabs: Detalle / Resumen IA
+  const [activeTab, setActiveTab] = useState<'detalle' | 'resumen'>('detalle');
+
+  // Resumen Ejecutivo con IA
+  const [aiOpen, setAiOpen] = useState(false);
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiSummary, setAiSummary] = useState<string | null>(null);
+  const [aiError, setAiError] = useState<string | null>(null);
+  const [aiMeta, setAiMeta] = useState<{ reports_count: number; period_hours: number } | null>(null);
+  const [aiCopied, setAiCopied] = useState(false);
 
   const loadProjects = useCallback(async () => {
     try {
@@ -134,6 +149,42 @@ export default function SubCoordDashboard() {
     if (!ok) return;
     await logout();
     router.replace('/(auth)/login');
+  }
+
+  // === Resumen Ejecutivo con IA ===========================================
+  async function openAiSummary() {
+    setAiOpen(true);
+    setAiCopied(false);
+    if (aiSummary) return;
+    await runAiSummary();
+  }
+
+  async function runAiSummary() {
+    if (!pid) return;
+    try {
+      setAiBusy(true);
+      setAiError(null);
+      setAiSummary(null);
+      setAiMeta(null);
+      const res = await api.aiSummary(pid);
+      setAiSummary(res.summary);
+      setAiMeta({ reports_count: res.reports_count, period_hours: res.period_hours });
+    } catch (e: any) {
+      setAiError(e?.message || 'No se pudo generar el resumen.');
+    } finally {
+      setAiBusy(false);
+    }
+  }
+
+  async function copyAiSummary() {
+    if (!aiSummary) return;
+    try {
+      await Clipboard.setStringAsync(aiSummary);
+      setAiCopied(true);
+      setTimeout(() => setAiCopied(false), 1800);
+    } catch {
+      Alert.alert('No se pudo copiar', 'Intenta seleccionar el texto manualmente.');
+    }
   }
 
   async function onExport() {
@@ -270,6 +321,63 @@ export default function SubCoordDashboard() {
           </View>
         ) : (
           <>
+            {/* ===== Pestañas: Detalle / Resumen IA ===== */}
+            <View style={styles.tabBar}>
+              <Pressable
+                onPress={() => setActiveTab('detalle')}
+                style={[styles.tabBtn, activeTab === 'detalle' && styles.tabBtnActive]}
+              >
+                <Ionicons
+                  name="list-outline"
+                  size={16}
+                  color={activeTab === 'detalle' ? '#fff' : colors.text}
+                />
+                <Text style={[styles.tabTxt, activeTab === 'detalle' && styles.tabTxtActive]}>
+                  Detalle
+                </Text>
+              </Pressable>
+              <Pressable
+                onPress={() => setActiveTab('resumen')}
+                style={[styles.tabBtn, activeTab === 'resumen' && styles.tabBtnActive]}
+              >
+                <Ionicons
+                  name="sparkles-outline"
+                  size={16}
+                  color={activeTab === 'resumen' ? '#fff' : colors.text}
+                />
+                <Text style={[styles.tabTxt, activeTab === 'resumen' && styles.tabTxtActive]}>
+                  Resumen
+                </Text>
+              </Pressable>
+            </View>
+
+            {activeTab === 'resumen' ? (
+              <Pressable
+                onPress={openAiSummary}
+                disabled={aiBusy}
+                style={({ pressed }) => [
+                  styles.aiBtn,
+                  aiBusy && { opacity: 0.7 },
+                  pressed && !aiBusy && { opacity: 0.92 },
+                ]}
+              >
+                {aiBusy ? (
+                  <ActivityIndicator color="#fff" size="small" />
+                ) : (
+                  <Ionicons name="sparkles" size={22} color="#fff" />
+                )}
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.aiBtnTitle}>✨ Generar Resumen Ejecutivo con IA</Text>
+                  <Text style={styles.aiBtnSub}>
+                    {aiBusy ? 'Analizando reportes del día…' : 'Resumen ejecutivo en 3 viñetas (últimas 24h)'}
+                  </Text>
+                </View>
+                {!aiBusy && (
+                  <Ionicons name="chevron-forward" size={20} color="rgba(255,255,255,0.85)" />
+                )}
+              </Pressable>
+            ) : (
+              <>
             {/* Resumen Ejecutivo */}
             <View style={styles.card}>
               <View style={styles.cardHeader}>
@@ -455,9 +563,92 @@ export default function SubCoordDashboard() {
                 </View>
               )}
             </View>
+
+            {/* ===== Unificación con Coordinador: Metas y Progreso ===== */}
+            {pid && (
+              <>
+                <DailyGoalsPanel projectId={pid} />
+                <NodeProgressPanel projectId={pid} />
+              </>
+            )}
+              </>
+            )}
           </>
         )}
       </ScrollView>
+
+      {/* ===== Modal: Resumen Ejecutivo con IA ===== */}
+      <Modal
+        visible={aiOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setAiOpen(false)}
+      >
+        <View style={styles.aiBackdrop}>
+          <View style={styles.aiCard}>
+            <View style={styles.aiHeader}>
+              <View style={styles.aiTitleRow}>
+                <Ionicons name="sparkles" size={20} color={colors.primary} />
+                <Text style={styles.aiTitle}>Resumen Ejecutivo</Text>
+              </View>
+              <Pressable
+                onPress={() => setAiOpen(false)}
+                hitSlop={10}
+                style={({ pressed }) => [styles.aiClose, pressed && { opacity: 0.6 }]}
+              >
+                <Ionicons name="close" size={22} color={colors.text} />
+              </Pressable>
+            </View>
+
+            {aiMeta && (
+              <Text style={styles.aiMeta}>
+                {aiMeta.reports_count} reportes · últimas {aiMeta.period_hours}h
+              </Text>
+            )}
+
+            <ScrollView style={{ maxHeight: 360 }} contentContainerStyle={{ paddingVertical: spacing.sm }}>
+              {aiBusy ? (
+                <View style={styles.aiLoading}>
+                  <ActivityIndicator size="small" color={colors.primary} />
+                  <Text style={styles.aiLoadingTxt}>Analizando reportes…</Text>
+                </View>
+              ) : aiError ? (
+                <Text style={styles.aiError}>{aiError}</Text>
+              ) : aiSummary ? (
+                <Text style={styles.aiBody}>{aiSummary}</Text>
+              ) : (
+                <Text style={styles.aiBody}>Sin contenido.</Text>
+              )}
+            </ScrollView>
+
+            <View style={styles.aiActions}>
+              <Pressable
+                onPress={runAiSummary}
+                disabled={aiBusy}
+                style={({ pressed }) => [
+                  styles.aiSecBtn,
+                  (aiBusy || pressed) && { opacity: 0.7 },
+                ]}
+              >
+                <Ionicons name="refresh" size={16} color={colors.text} />
+                <Text style={styles.aiSecTxt}>Regenerar</Text>
+              </Pressable>
+              <Pressable
+                onPress={copyAiSummary}
+                disabled={!aiSummary || aiBusy}
+                style={({ pressed }) => [
+                  styles.aiPrimBtn,
+                  (!aiSummary || aiBusy) && { opacity: 0.5 },
+                  pressed && { opacity: 0.85 },
+                ]}
+              >
+                <Ionicons name={aiCopied ? 'checkmark' : 'copy-outline'} size={16} color="#fff" />
+                <Text style={styles.aiPrimTxt}>{aiCopied ? 'Copiado' : 'Copiar'}</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -643,4 +834,95 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
   },
   emptyInlineTxt: { fontSize: 13, color: colors.textMuted, flex: 1, fontWeight: '600' },
+
+  // ===== Tabs Detalle / Resumen IA =====
+  tabBar: {
+    flexDirection: 'row',
+    backgroundColor: colors.surface,
+    borderRadius: radius.full,
+    padding: 4,
+    gap: 4,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  tabBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 9,
+    paddingHorizontal: spacing.md,
+    borderRadius: radius.full,
+  },
+  tabBtnActive: { backgroundColor: colors.primary },
+  tabTxt: { fontSize: 13, fontWeight: '800', color: colors.text },
+  tabTxtActive: { color: '#fff' },
+
+  // ===== Botón AI Summary (vista Resumen) =====
+  aiBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    backgroundColor: colors.primary,
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.lg,
+    borderRadius: radius.lg,
+    ...shadow.md,
+  },
+  aiBtnTitle: { color: '#fff', fontSize: 15, fontWeight: '900' },
+  aiBtnSub: { color: 'rgba(255,255,255,0.85)', fontSize: 12, fontWeight: '600', marginTop: 2 },
+
+  // ===== Modal AI Summary =====
+  aiBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    justifyContent: 'center',
+    paddingHorizontal: spacing.lg,
+  },
+  aiCard: {
+    backgroundColor: colors.surface,
+    borderRadius: radius.lg,
+    padding: spacing.lg,
+    gap: spacing.sm,
+    ...shadow.lg,
+  },
+  aiHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  aiTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  aiTitle: { fontSize: 17, fontWeight: '900', color: colors.text },
+  aiClose: { padding: 4 },
+  aiMeta: { fontSize: 11, color: colors.textMuted, fontWeight: '700' },
+  aiBody: { fontSize: 14, color: colors.text, lineHeight: 21, fontWeight: '500' },
+  aiError: { fontSize: 13, color: '#dc2626', fontWeight: '700' },
+  aiLoading: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: spacing.md },
+  aiLoadingTxt: { fontSize: 13, color: colors.textMuted, fontWeight: '700' },
+  aiActions: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.sm },
+  aiSecBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 11,
+    borderRadius: radius.md,
+    backgroundColor: colors.bg,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  aiSecTxt: { fontSize: 13, fontWeight: '800', color: colors.text },
+  aiPrimBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 11,
+    borderRadius: radius.md,
+    backgroundColor: colors.primary,
+  },
+  aiPrimTxt: { fontSize: 13, fontWeight: '800', color: '#fff' },
 });
