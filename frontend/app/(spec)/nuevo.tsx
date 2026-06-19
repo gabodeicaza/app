@@ -65,10 +65,25 @@ export default function SpecCaptureScreen() {
   const { user, logout } = useAuth();
 
   const projectId = (user?.project_ids || [])[0] || '';
-  const allowedLeafIds = useMemo(
-    () => new Set<string>(user?.scope_node_ids || []),
-    [user?.scope_node_ids],
-  );
+  // Para especialistas: scope_node_ids (lista de hojas asignadas).
+  // Para sub-coordinadores: scope_node_id (un nodo padre) → todas las hojas descendientes son válidas.
+  const isSubCoord = user?.role === 'sub_coordinador';
+  const allowedLeafIds = useMemo(() => {
+    if (isSubCoord) {
+      // Marcamos como "permitido" cualquier nodo hoja presente en el árbol
+      // (el backend ya filtra el árbol al scope del sub-coord).
+      const set = new Set<string>();
+      const walk = (nodes: any[]) => {
+        for (const n of nodes || []) {
+          if (n?.is_leaf) set.add(n.id);
+          if (n?.children?.length) walk(n.children);
+        }
+      };
+      walk(tree as any[]);
+      return set;
+    }
+    return new Set<string>(user?.scope_node_ids || []);
+  }, [isSubCoord, user?.scope_node_ids, tree]);
 
   // ----- Estado remoto ------------------------------------------------------
   const [project, setProject] = useState<Project | null>(null);

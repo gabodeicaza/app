@@ -654,6 +654,24 @@ async def set_reference_files(
 async def list_nodes(pid: str, user: dict = Depends(current_user)):
     await ensure_project_access(user, pid)
     items = await db.location_nodes.find({"project_id": pid}).sort([("depth", 1), ("order", 1)]).to_list(length=10000)
+    # Filtrado por scope para Sub-coordinador / Especialista
+    role = user.get("role")
+    if role == ROLE_SUB and user.get("scope_node_id"):
+        allowed = set(await descendants_ids(user["scope_node_id"]))
+        items = [it for it in items if it["id"] in allowed]
+    elif role == ROLE_SPEC and (user.get("scope_node_ids") or []):
+        allowed_leaves = set(user.get("scope_node_ids") or [])
+        # incluir ancestros para que el árbol sea navegable
+        ancestors: set = set()
+        # construir mapa id->parent
+        all_nodes = await db.location_nodes.find({"project_id": pid}).to_list(length=10000)
+        parent_of = {n["id"]: n.get("parent_id") for n in all_nodes}
+        for leaf in allowed_leaves:
+            cur = leaf
+            while cur:
+                ancestors.add(cur)
+                cur = parent_of.get(cur)
+        items = [it for it in items if it["id"] in ancestors]
     for it in items:
         it.pop("_id", None)
     return items
@@ -664,12 +682,28 @@ async def get_tree(pid: str, user: dict = Depends(current_user)):
     """Devuelve el árbol completo como estructura jerárquica."""
     await ensure_project_access(user, pid)
     items = await db.location_nodes.find({"project_id": pid}).sort([("depth", 1), ("order", 1)]).to_list(length=10000)
+    # Filtrado por scope (sub-coord / especialista)
+    role = user.get("role")
+    if role == ROLE_SUB and user.get("scope_node_id"):
+        allowed = set(await descendants_ids(user["scope_node_id"]))
+        items = [it for it in items if it["id"] in allowed]
+    elif role == ROLE_SPEC and (user.get("scope_node_ids") or []):
+        allowed_leaves = set(user.get("scope_node_ids") or [])
+        ancestors: set = set()
+        parent_of = {n["id"]: n.get("parent_id") for n in items}
+        for leaf in allowed_leaves:
+            cur = leaf
+            while cur:
+                ancestors.add(cur)
+                cur = parent_of.get(cur)
+        items = [it for it in items if it["id"] in ancestors]
     by_id = {}
     for it in items:
         it.pop("_id", None)
         it["children"] = []
         by_id[it["id"]] = it
     roots = []
+    # Para sub-coord/especialista, "root" debe ser el primer nodo cuyo padre no está en el set filtrado
     for it in items:
         if it.get("parent_id") and it["parent_id"] in by_id:
             by_id[it["parent_id"]]["children"].append(it)

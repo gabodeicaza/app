@@ -957,6 +957,74 @@ const styles = StyleSheet.create({
     right: 0,
     backgroundColor: colors.primary,
   },
+
+  // === Chips de tiempo (P4) ==================================================
+  timeChipsRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: spacing.md,
+    paddingHorizontal: spacing.md,
+  },
+  timeChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: radius.full,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+  },
+  timeChipActive: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
+  },
+  timeChipTxt: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: colors.textBody,
+  },
+  timeChipTxtActive: {
+    color: '#fff',
+  },
+
+  // === Chips de áreas (P5) ===================================================
+  areaChipsContent: {
+    paddingHorizontal: spacing.md,
+    gap: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  areaChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: radius.full,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+    maxWidth: 180,
+  },
+  areaChipActive: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
+  },
+  areaChipDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  areaChipTxt: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: colors.textBody,
+  },
+  areaChipTxtActive: {
+    color: '#fff',
+  },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
