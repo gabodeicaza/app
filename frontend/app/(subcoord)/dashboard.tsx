@@ -1,18 +1,16 @@
-// Dashboard de Sub-coordinador (Fase 4)
-// Vista de lectura con:
-//   - Resumen Ejecutivo (% avance global del proyecto)
-//   - Alertas Semáforo (nodos con avance < 50%)
-//   - Feed de Reportes Recientes (del día)
-//   - Exportar Reportes (XLSX)
+// Dashboard de Sub-coordinador (Fase 4) — UI unificada con (spec)/index.tsx
+// Layout: fondo azul + hero card + stat cards + paneles + exportar + alertas + feed
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Image,
   Modal,
   Platform,
   Pressable,
   RefreshControl,
   ScrollView,
+  StatusBar,
   StyleSheet,
   Text,
   View,
@@ -25,7 +23,7 @@ import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '@/src/auth-context';
 import { api, FeedItem, LocationNode, Project } from '@/src/api';
-import { colors, radius, shadow, spacing } from '@/src/theme';
+import { colors, radius, shadow, spacing, areaTone } from '@/src/theme';
 import { roleLabel } from '@/src/utils/roles';
 import { confirm } from '@/src/utils/confirm';
 import { DailyGoalsPanel } from '@/src/components/DailyGoalsPanel';
@@ -50,9 +48,6 @@ export default function SubCoordDashboard() {
   const [exporting, setExporting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Tabs: Detalle / Resumen IA
-  const [activeTab, setActiveTab] = useState<'detalle' | 'resumen'>('detalle');
-
   // Resumen Ejecutivo con IA
   const [aiOpen, setAiOpen] = useState(false);
   const [aiBusy, setAiBusy] = useState(false);
@@ -60,6 +55,9 @@ export default function SubCoordDashboard() {
   const [aiError, setAiError] = useState<string | null>(null);
   const [aiMeta, setAiMeta] = useState<{ reports_count: number; period_hours: number } | null>(null);
   const [aiCopied, setAiCopied] = useState(false);
+
+  // Estado para compartir reporte individual
+  const [sharingReportId, setSharingReportId] = useState<string | null>(null);
 
   const loadProjects = useCallback(async () => {
     try {
@@ -189,7 +187,7 @@ export default function SubCoordDashboard() {
     }
   }
 
-  async function shareToWhatsApp() {
+  async function shareSummaryWhatsApp() {
     if (!aiSummary) return;
     try {
       const available = await Sharing.isAvailableAsync();
@@ -215,6 +213,63 @@ export default function SubCoordDashboard() {
     }
   }
 
+  // === Compartir reporte individual en WhatsApp (foto + texto) ============
+  async function shareReportWhatsApp(item: FeedItem) {
+    if (sharingReportId) return;
+    try {
+      setSharingReportId(item.id);
+      const available = await Sharing.isAvailableAsync();
+      if (!available) {
+        Alert.alert('No disponible', 'Compartir no está disponible en este dispositivo.');
+        return;
+      }
+
+      const path = (item.node_path_names || []).join(' › ') || '—';
+      const ts = item.created_at ? new Date(item.created_at).toLocaleString('es-MX') : '';
+      const captionLines = [
+        '📋 *Reporte de obra — SynCo*',
+        '',
+        `📍 *Ubicación:* ${path}`,
+        `👤 *Capturado por:* ${item.captured_by_name || '—'}`,
+        ts ? `🕒 *Fecha:* ${ts}` : '',
+        item.area_name ? `🏷️ *Área:* ${item.area_name}` : '',
+        item.avance ? `\n📝 *Avance:*\n${item.avance}` : '',
+      ].filter(Boolean);
+      const caption = captionLines.join('\n');
+
+      // Si hay miniatura, escribimos la imagen a caché y compartimos
+      if (item.thumbnail_base64) {
+        const fileUri = `${FileSystem.cacheDirectory}reporte_${item.id}.jpg`;
+        await FileSystem.writeAsStringAsync(fileUri, item.thumbnail_base64, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+        // Copiar texto al portapapeles antes de abrir el share sheet,
+        // así el usuario puede pegarlo como caption en WhatsApp.
+        try { await Clipboard.setStringAsync(caption); } catch {}
+        await Sharing.shareAsync(fileUri, {
+          mimeType: 'image/jpeg',
+          dialogTitle: 'Compartir reporte',
+          UTI: 'public.jpeg',
+        });
+      } else {
+        // Sin imagen, compartimos solo el texto
+        const fileUri = `${FileSystem.cacheDirectory}reporte_${item.id}.txt`;
+        await FileSystem.writeAsStringAsync(fileUri, caption, {
+          encoding: FileSystem.EncodingType.UTF8,
+        });
+        await Sharing.shareAsync(fileUri, {
+          mimeType: 'text/plain',
+          dialogTitle: 'Compartir reporte',
+          UTI: 'public.plain-text',
+        });
+      }
+    } catch (e: any) {
+      Alert.alert('No se pudo compartir', e?.message || 'Inténtalo nuevamente.');
+    } finally {
+      setSharingReportId(null);
+    }
+  }
+
   async function onExport() {
     if (!pid || exporting) return;
     try {
@@ -237,11 +292,9 @@ export default function SubCoordDashboard() {
           reader.readAsDataURL(blob);
         });
         const base64 = dataUri.split(',')[1] || '';
-        const FileSystem: any = await import('expo-file-system/legacy');
-        const Sharing: any = await import('expo-sharing');
         const dest = `${FileSystem.cacheDirectory || ''}${filename}`;
         await FileSystem.writeAsStringAsync(dest, base64, {
-          encoding: FileSystem.EncodingType?.Base64 || 'base64',
+          encoding: FileSystem.EncodingType.Base64,
         });
         if (await Sharing.isAvailableAsync()) {
           await Sharing.shareAsync(dest, {
@@ -279,69 +332,126 @@ export default function SubCoordDashboard() {
   }
 
   const currentProject = projects.find((p) => p.id === pid);
+  const totalReports = reports.length;
 
   return (
-    <View style={[styles.flex, { paddingTop: insets.top }]}>
-      <View style={styles.header}>
-        <View style={{ flex: 1 }}>
-          <Text style={styles.brand}>SynCo</Text>
-          <Text style={styles.role}>Sub-coordinador · {roleLabel(user?.role)}</Text>
+    <View style={{ flex: 1, backgroundColor: colors.bg }}>
+      <StatusBar barStyle="light-content" />
+      {/* Fondo azul superior */}
+      <View style={[styles.blueTop, { height: 240 + insets.top }]} />
+
+      {/* Header sobre el azul */}
+      <View style={[styles.header, { paddingTop: insets.top + spacing.xs }]}>
+        <Pressable hitSlop={10} style={styles.headerBtn} onPress={onLogout}>
+          <Ionicons name="log-out-outline" size={22} color="#fff" />
+        </Pressable>
+        <View style={{ flex: 1, alignItems: 'center' }}>
+          <Text style={styles.headerTitle}>SynCo</Text>
+          <Text style={styles.headerSubtitle} numberOfLines={1}>
+            Sub-coordinador · {roleLabel(user?.role)}
+          </Text>
         </View>
-        <Pressable onPress={onLogout} hitSlop={8} style={styles.logoutBtn}>
-          <Ionicons name="log-out-outline" size={22} color={colors.text} />
+        <Pressable hitSlop={10} style={styles.headerBtn}>
+          <Ionicons name="notifications-outline" size={22} color="#fff" />
         </Pressable>
       </View>
 
       <ScrollView
-        contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + 32 }]}
+        style={{ flex: 1 }}
+        contentContainerStyle={{ paddingBottom: insets.bottom + spacing.xl }}
         refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primary} />
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor="#fff"
+            colors={[colors.primary]}
+          />
         }
       >
-        <Text style={styles.greeting}>Hola, {user?.name}</Text>
+        {/* Hero Card: PROYECTO COORDINADO */}
+        <View style={[styles.heroWrap, { marginTop: spacing.sm }]}>
+          <View style={styles.heroCard}>
+            <View style={styles.heroHeaderRow}>
+              <View style={styles.heroIcon}>
+                <Ionicons name="briefcase" size={18} color="#fff" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.heroLabel}>PROYECTO COORDINADO</Text>
+                <Text style={styles.heroTitle} numberOfLines={1}>
+                  {currentProject?.name || 'Sin proyecto'}
+                </Text>
+              </View>
+              <View style={styles.heroLeavesPill}>
+                <Ionicons name="speedometer" size={11} color={colors.primary} />
+                <Text style={styles.heroLeavesTxt}>{globalPct}%</Text>
+              </View>
+            </View>
+            <Text style={styles.heroPuesto}>
+              Hola, {user?.name || 'Sub-coordinador'}
+            </Text>
+            {currentProject?.contract_number ? (
+              <Text style={styles.heroMeta}>
+                Contrato {currentProject.contract_number}
+                {currentProject.constructora ? `  ·  ${currentProject.constructora}` : ''}
+              </Text>
+            ) : null}
+          </View>
+        </View>
 
-        {/* Selector de proyecto */}
+        {/* Selector de proyectos (si hay más de uno) */}
         {projects.length > 1 && (
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.projRow}
-          >
-            {projects.map((p) => {
-              const sel = p.id === pid;
-              return (
-                <Pressable
-                  key={p.id}
-                  onPress={() => setPid(p.id)}
-                  style={[styles.projChip, sel && styles.projChipSel]}
-                >
-                  <Text style={[styles.projChipTxt, sel && styles.projChipTxtSel]} numberOfLines={1}>
-                    {p.name}
-                  </Text>
-                </Pressable>
-              );
-            })}
-          </ScrollView>
+          <View style={{ paddingHorizontal: spacing.md, marginTop: spacing.md }}>
+            <Text style={styles.sectionLabel}>Cambiar proyecto</Text>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={{ gap: spacing.sm, paddingVertical: 4 }}
+            >
+              {projects.map((p) => {
+                const sel = p.id === pid;
+                return (
+                  <Pressable
+                    key={p.id}
+                    onPress={() => setPid(p.id)}
+                    style={[styles.chip, sel && styles.chipActive]}
+                  >
+                    <Text
+                      style={[styles.chipTxt, sel && styles.chipTxtActive]}
+                      numberOfLines={1}
+                    >
+                      {p.name}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+          </View>
         )}
 
-        {!!currentProject && (
-          <Text style={styles.projTitle} numberOfLines={1}>
-            {currentProject.name}
-          </Text>
-        )}
+        {/* Stat Cards: Total · Nodos con meta · Alertas */}
+        <View style={styles.statsRow}>
+          <StatCard label="Reportes" value={totalReports} icon="albums-outline" tint={colors.primary} />
+          <StatCard label="Nodos" value={progressRows.length} icon="git-network-outline" tint="#0EA5E9" />
+          <StatCard label="Alertas" value={alerts.length} icon="warning-outline" tint={colors.error} />
+        </View>
 
         {loading ? (
-          <View style={styles.centerBox}>
+          <View style={styles.centerPad}>
             <ActivityIndicator color={colors.primary} />
           </View>
         ) : error ? (
-          <View style={styles.errBox}>
-            <Ionicons name="alert-circle-outline" size={16} color={colors.error} />
-            <Text style={styles.errTxt}>{error}</Text>
+          <View style={styles.errorBox}>
+            <Ionicons name="alert-circle-outline" size={24} color={colors.error} />
+            <Text style={styles.errorTxt}>{error}</Text>
+            <Pressable onPress={() => pid && loadData(pid)} style={styles.retryBtn}>
+              <Text style={styles.retryTxt}>Reintentar</Text>
+            </Pressable>
           </View>
         ) : !pid ? (
-          <View style={styles.emptyCard}>
-            <Ionicons name="folder-open-outline" size={36} color={colors.textMuted} />
+          <View style={styles.emptyBox}>
+            <View style={styles.emptyIcon}>
+              <Ionicons name="folder-open-outline" size={28} color={colors.primary} />
+            </View>
             <Text style={styles.emptyTitle}>Sin proyectos asignados</Text>
             <Text style={styles.emptyMsg}>
               Pídele a tu Coordinador General que te asigne a un proyecto para ver el panel.
@@ -349,42 +459,23 @@ export default function SubCoordDashboard() {
           </View>
         ) : (
           <>
-            {/* ===== Pestañas: Detalle / Resumen IA ===== */}
-            <View style={styles.tabBar}>
-              <Pressable
-                onPress={() => setActiveTab('detalle')}
-                style={[styles.tabBtn, activeTab === 'detalle' && styles.tabBtnActive]}
-              >
-                <Ionicons
-                  name="list-outline"
-                  size={16}
-                  color={activeTab === 'detalle' ? '#fff' : colors.text}
-                />
-                <Text style={[styles.tabTxt, activeTab === 'detalle' && styles.tabTxtActive]}>
-                  Detalle
-                </Text>
-              </Pressable>
-              <Pressable
-                onPress={() => setActiveTab('resumen')}
-                style={[styles.tabBtn, activeTab === 'resumen' && styles.tabBtnActive]}
-              >
-                <Ionicons
-                  name="sparkles-outline"
-                  size={16}
-                  color={activeTab === 'resumen' ? '#fff' : colors.text}
-                />
-                <Text style={[styles.tabTxt, activeTab === 'resumen' && styles.tabTxtActive]}>
-                  Resumen
-                </Text>
-              </Pressable>
+            {/* DailyGoalsPanel */}
+            <View style={styles.sprintBlock}>
+              <DailyGoalsPanel projectId={pid} />
             </View>
 
-            {activeTab === 'resumen' ? (
+            {/* NodeProgressPanel — con guardia defensiva */}
+            <View style={styles.sprintBlock}>
+              <NodeProgressPanel projectId={pid} reports={reports || []} />
+            </View>
+
+            {/* Botón Resumen Ejecutivo IA */}
+            <View style={styles.exportRow}>
               <Pressable
                 onPress={openAiSummary}
                 disabled={aiBusy}
                 style={({ pressed }) => [
-                  styles.aiBtn,
+                  styles.aiMainBtn,
                   aiBusy && { opacity: 0.7 },
                   pressed && !aiBusy && { opacity: 0.92 },
                 ]}
@@ -395,189 +486,176 @@ export default function SubCoordDashboard() {
                   <Ionicons name="sparkles" size={22} color="#fff" />
                 )}
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.aiBtnTitle}>✨ Generar Resumen Ejecutivo con IA</Text>
-                  <Text style={styles.aiBtnSub}>
-                    {aiBusy ? 'Analizando reportes del día…' : 'Resumen ejecutivo en 3 viñetas (últimas 24h)'}
+                  <Text style={styles.exportMainTitle}>Resumen Ejecutivo con IA</Text>
+                  <Text style={styles.exportMainSub}>
+                    {aiBusy ? 'Analizando reportes…' : 'Análisis ejecutivo · últimas 24h'}
                   </Text>
                 </View>
                 {!aiBusy && (
                   <Ionicons name="chevron-forward" size={20} color="rgba(255,255,255,0.85)" />
                 )}
               </Pressable>
-            ) : (
-              <>
-            {/* Resumen Ejecutivo */}
-            <View style={styles.card}>
-              <View style={styles.cardHeader}>
-                <View style={[styles.cardIcon, { backgroundColor: colors.primary }]}>
-                  <Ionicons name="speedometer" size={16} color="#fff" />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.cardTitle}>Resumen Ejecutivo</Text>
-                  <Text style={styles.cardSubtitle}>
-                    Promedio de avance sobre nodos con meta definida
-                  </Text>
-                </View>
-              </View>
+            </View>
 
-              <View style={styles.summaryBody}>
-                <View style={styles.bigPctBox}>
-                  <Text style={[styles.bigPctValue, { color: progressTint(globalPct) }]}>
-                    {globalPct}%
-                  </Text>
-                  <Text style={styles.bigPctLabel}>Avance global</Text>
-                </View>
-
-                <View style={styles.summaryStats}>
-                  <View style={styles.statRow}>
-                    <Ionicons name="git-network-outline" size={14} color={colors.textMuted} />
-                    <Text style={styles.statTxt}>
-                      {progressRows.length} nodos con meta
-                    </Text>
-                  </View>
-                  <View style={styles.statRow}>
-                    <Ionicons name="document-text-outline" size={14} color={colors.textMuted} />
-                    <Text style={styles.statTxt}>
-                      {reports.length} reportes hoy
-                    </Text>
-                  </View>
-                  <View style={styles.statRow}>
-                    <Ionicons name="alert-circle-outline" size={14} color={colors.error} />
-                    <Text style={styles.statTxt}>
-                      {alerts.length} en alerta
-                    </Text>
-                  </View>
-                </View>
-              </View>
-
-              <View style={styles.barTrack}>
-                <View
-                  style={[
-                    styles.barFill,
-                    { width: `${globalPct}%`, backgroundColor: progressTint(globalPct) },
-                  ]}
-                />
-              </View>
-
+            {/* Botón Exportar Excel */}
+            <View style={styles.exportRow}>
               <Pressable
                 onPress={onExport}
                 disabled={exporting}
                 style={({ pressed }) => [
-                  styles.exportBtn,
-                  pressed && { opacity: 0.85 },
+                  styles.exportMainBtn,
                   exporting && { opacity: 0.65 },
+                  pressed && !exporting && { opacity: 0.92 },
                 ]}
               >
                 {exporting ? (
                   <ActivityIndicator color="#fff" size="small" />
                 ) : (
-                  <Ionicons name="download-outline" size={16} color="#fff" />
+                  <Ionicons name="download-outline" size={22} color="#fff" />
                 )}
-                <Text style={styles.exportBtnTxt}>
-                  {exporting ? 'Exportando…' : 'Exportar Reportes (Excel)'}
-                </Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.exportMainTitle}>Exportar Reportes</Text>
+                  <Text style={styles.exportMainSub}>
+                    {exporting ? 'Generando archivo…' : 'Hoja de cálculo Excel (XLSX)'}
+                  </Text>
+                </View>
+                {!exporting && (
+                  <Ionicons name="chevron-forward" size={20} color="rgba(255,255,255,0.85)" />
+                )}
               </Pressable>
             </View>
 
             {/* Alertas Semáforo */}
-            <View style={styles.card}>
-              <View style={styles.cardHeader}>
-                <View style={[styles.cardIcon, { backgroundColor: colors.error }]}>
-                  <Ionicons name="warning" size={16} color="#fff" />
+            <View style={styles.cardWrap}>
+              <View style={styles.card}>
+                <View style={styles.cardHeader}>
+                  <View style={[styles.cardIcon, { backgroundColor: colors.error }]}>
+                    <Ionicons name="warning" size={16} color="#fff" />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.cardTitle}>Alertas Semáforo</Text>
+                    <Text style={styles.cardSubtitle}>
+                      Nodos con avance menor al 50% de su meta
+                    </Text>
+                  </View>
+                  <View style={styles.badge}>
+                    <Text style={styles.badgeTxt}>{alerts.length}</Text>
+                  </View>
                 </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.cardTitle}>Alertas Semáforo</Text>
-                  <Text style={styles.cardSubtitle}>
-                    Nodos con avance menor al 50% de su meta
-                  </Text>
-                </View>
-                <View style={styles.badge}>
-                  <Text style={styles.badgeTxt}>{alerts.length}</Text>
-                </View>
-              </View>
 
-              {alerts.length === 0 ? (
-                <View style={styles.emptyInline}>
-                  <Ionicons name="checkmark-circle" size={18} color={colors.success} />
-                  <Text style={styles.emptyInlineTxt}>
-                    Sin alertas activas. Todos los nodos con meta van bien.
-                  </Text>
-                </View>
-              ) : (
-                <View style={{ gap: spacing.sm }}>
-                  {alerts.slice(0, 10).map((r) => (
-                    <View key={r.node.id} style={styles.alertRow}>
-                      <View style={[styles.dot, { backgroundColor: progressTint(r.pct) }]} />
-                      <View style={{ flex: 1 }}>
-                        <Text style={styles.alertName} numberOfLines={1}>
-                          {r.node.name}
-                        </Text>
-                        <View style={styles.alertMiniBar}>
-                          <View
-                            style={[
-                              styles.alertMiniFill,
-                              {
-                                width: `${Math.max(4, r.pct)}%`,
-                                backgroundColor: progressTint(r.pct),
-                              },
-                            ]}
-                          />
+                {alerts.length === 0 ? (
+                  <View style={styles.emptyInline}>
+                    <Ionicons name="checkmark-circle" size={18} color={colors.success} />
+                    <Text style={styles.emptyInlineTxt}>
+                      Sin alertas activas. Todos los nodos con meta van bien.
+                    </Text>
+                  </View>
+                ) : (
+                  <View style={{ gap: spacing.sm }}>
+                    {alerts.slice(0, 10).map((r) => (
+                      <View key={r.node.id} style={styles.alertRow}>
+                        <View style={[styles.dot, { backgroundColor: progressTint(r.pct) }]} />
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.alertName} numberOfLines={1}>
+                            {r.node.name}
+                          </Text>
+                          <View style={styles.alertMiniBar}>
+                            <View
+                              style={[
+                                styles.alertMiniFill,
+                                {
+                                  width: `${Math.max(4, r.pct)}%`,
+                                  backgroundColor: progressTint(r.pct),
+                                },
+                              ]}
+                            />
+                          </View>
+                          <Text style={styles.alertMeta}>
+                            {r.count} / {r.node.meta} reportes
+                          </Text>
                         </View>
-                        <Text style={styles.alertMeta}>
-                          {r.count} / {r.node.meta} reportes
+                        <Text style={[styles.alertPct, { color: progressTint(r.pct) }]}>
+                          {r.pct}%
                         </Text>
                       </View>
-                      <Text style={[styles.alertPct, { color: progressTint(r.pct) }]}>
-                        {r.pct}%
-                      </Text>
-                    </View>
-                  ))}
-                  {alerts.length > 10 && (
-                    <Text style={styles.alertMore}>+{alerts.length - 10} más…</Text>
-                  )}
-                </View>
-              )}
+                    ))}
+                    {alerts.length > 10 && (
+                      <Text style={styles.alertMore}>+{alerts.length - 10} más…</Text>
+                    )}
+                  </View>
+                )}
+              </View>
             </View>
 
-            {/* Feed de Reportes Recientes */}
-            <View style={styles.card}>
-              <View style={styles.cardHeader}>
-                <View style={[styles.cardIcon, { backgroundColor: colors.success }]}>
-                  <Ionicons name="albums" size={16} color="#fff" />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.cardTitle}>Reportes Recientes</Text>
-                  <Text style={styles.cardSubtitle}>Capturas del día de hoy</Text>
-                </View>
-              </View>
+            {/* Reportes Recientes con botón compartir WhatsApp */}
+            <View style={styles.feedHeaderRow}>
+              <Text style={styles.feedTitle}>Reportes Recientes</Text>
+              {todayReports.length > 0 ? (
+                <Text style={styles.feedCount}>{todayReports.length}</Text>
+              ) : null}
+            </View>
 
-              {todayReports.length === 0 ? (
-                <View style={styles.emptyInline}>
-                  <Ionicons name="time-outline" size={18} color={colors.textMuted} />
-                  <Text style={styles.emptyInlineTxt}>
-                    Aún no hay reportes capturados hoy.
-                  </Text>
+            {todayReports.length === 0 ? (
+              <View style={styles.emptyBox}>
+                <View style={styles.emptyIcon}>
+                  <Ionicons name="time-outline" size={26} color={colors.primary} />
                 </View>
-              ) : (
-                <View style={{ gap: spacing.sm }}>
-                  {todayReports.map((r) => (
-                    <View key={r.id} style={styles.feedRow}>
-                      <View
-                        style={[
-                          styles.feedAvatar,
-                          { backgroundColor: r.area_color || colors.primary },
-                        ]}
-                      >
-                        <Text style={styles.feedAvatarTxt}>
-                          {(r.captured_by_name || '?').slice(0, 1).toUpperCase()}
-                        </Text>
+                <Text style={styles.emptyTitle}>Aún sin reportes hoy</Text>
+                <Text style={styles.emptyMsg}>
+                  Cuando tu equipo capture actividad, aparecerá aquí.
+                </Text>
+              </View>
+            ) : (
+              <View style={{ paddingHorizontal: spacing.md, gap: spacing.sm }}>
+                {todayReports.map((r) => {
+                  const tone = areaTone(r.area_color || undefined);
+                  const path = r.node_path_names || [];
+                  const leafName = path[path.length - 1] || 'Sin ubicación';
+                  const parentName = path.length >= 2 ? path[path.length - 2] : '';
+                  const subtitle = parentName ? `${parentName} · ${leafName}` : leafName;
+                  const isSharing = sharingReportId === r.id;
+                  return (
+                    <View key={r.id} style={styles.feedCard}>
+                      <View style={styles.thumbWrap}>
+                        {r.thumbnail_base64 ? (
+                          <Image
+                            source={{ uri: `data:image/jpeg;base64,${r.thumbnail_base64}` }}
+                            style={styles.thumb}
+                          />
+                        ) : (
+                          <View style={[styles.thumb, styles.thumbPlaceholder]}>
+                            <Ionicons name="image-outline" size={24} color={colors.textMuted} />
+                          </View>
+                        )}
                       </View>
-                      <View style={{ flex: 1 }}>
-                        <Text style={styles.feedName} numberOfLines={1}>
-                          {r.captured_by_name}
+                      <View style={{ flex: 1, minWidth: 0 }}>
+                        <View style={styles.feedTopRow}>
+                          {r.area_name ? (
+                            <View
+                              style={[
+                                styles.areaBadge,
+                                { backgroundColor: tone.bg, borderColor: tone.border },
+                              ]}
+                            >
+                              <View style={[styles.areaDot, { backgroundColor: tone.text }]} />
+                              <Text
+                                style={[styles.areaBadgeTxt, { color: tone.text }]}
+                                numberOfLines={1}
+                              >
+                                {r.area_name}
+                              </Text>
+                            </View>
+                          ) : null}
+                          <Text style={styles.feedTime}>{formatTime(r.created_at)}</Text>
+                        </View>
+                        <Text style={styles.feedCardTitle} numberOfLines={1}>
+                          {leafName}
                         </Text>
-                        <Text style={styles.feedPath} numberOfLines={1}>
-                          {(r.node_path_names || []).join(' › ') || '—'}
+                        <Text style={styles.feedCardSub} numberOfLines={1}>
+                          {subtitle}
+                        </Text>
+                        <Text style={styles.feedMetaTxt} numberOfLines={1}>
+                          👤 {r.captured_by_name || '—'}
                         </Text>
                         {!!r.avance && (
                           <Text style={styles.feedAvance} numberOfLines={2}>
@@ -585,21 +663,25 @@ export default function SubCoordDashboard() {
                           </Text>
                         )}
                       </View>
-                      <Text style={styles.feedTime}>{formatTime(r.created_at)}</Text>
+                      <Pressable
+                        onPress={() => shareReportWhatsApp(r)}
+                        disabled={isSharing}
+                        hitSlop={8}
+                        style={({ pressed }) => [
+                          styles.waMiniBtn,
+                          (isSharing || pressed) && { opacity: 0.7 },
+                        ]}
+                      >
+                        {isSharing ? (
+                          <ActivityIndicator color="#fff" size="small" />
+                        ) : (
+                          <Ionicons name="logo-whatsapp" size={18} color="#fff" />
+                        )}
+                      </Pressable>
                     </View>
-                  ))}
-                </View>
-              )}
-            </View>
-
-            {/* ===== Unificación con Coordinador: Metas y Progreso ===== */}
-            {pid && (
-              <>
-                <DailyGoalsPanel projectId={pid} />
-                <NodeProgressPanel projectId={pid} reports={reports} />
-              </>
-            )}
-              </>
+                  );
+                })}
+              </View>
             )}
           </>
         )}
@@ -676,7 +758,7 @@ export default function SubCoordDashboard() {
             </View>
 
             <Pressable
-              onPress={shareToWhatsApp}
+              onPress={shareSummaryWhatsApp}
               disabled={!aiSummary || aiBusy}
               style={({ pressed }) => [
                 styles.waBtn,
@@ -694,63 +776,136 @@ export default function SubCoordDashboard() {
   );
 }
 
+// ============================================================================
+// Componente StatCard
+// ============================================================================
+function StatCard({
+  label,
+  value,
+  icon,
+  tint,
+}: {
+  label: string;
+  value: number;
+  icon: keyof typeof Ionicons.glyphMap;
+  tint: string;
+}) {
+  return (
+    <View style={styles.statCard}>
+      <View style={[styles.statIcon, { backgroundColor: tint + '1A' }]}>
+        <Ionicons name={icon} size={16} color={tint} />
+      </View>
+      <Text style={styles.statValue}>{value}</Text>
+      <Text style={styles.statLabel}>{label}</Text>
+    </View>
+  );
+}
+
+// ============================================================================
+// Styles — sincronizados con (spec)/index.tsx
+// ============================================================================
 const styles = StyleSheet.create({
-  flex: { flex: 1, backgroundColor: colors.bg },
+  blueTop: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    backgroundColor: colors.primary,
+  },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+    paddingBottom: spacing.sm,
     gap: spacing.sm,
   },
-  brand: { fontSize: 18, fontWeight: '900', color: colors.primary, letterSpacing: -0.4 },
-  role: { fontSize: 11, color: colors.textMuted, fontWeight: '700', marginTop: 2 },
-  logoutBtn: { padding: 6, borderRadius: radius.full },
-
-  scroll: {
-    paddingHorizontal: spacing.lg,
-    gap: spacing.md,
-    paddingTop: spacing.sm,
-  },
-  greeting: { fontSize: 22, fontWeight: '900', color: colors.text },
-  projRow: { gap: spacing.sm, paddingVertical: 4 },
-  projChip: {
-    paddingHorizontal: spacing.md,
-    paddingVertical: 8,
+  headerBtn: {
+    width: 36,
+    height: 36,
     borderRadius: radius.full,
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.border,
-    maxWidth: 220,
-  },
-  projChipSel: { backgroundColor: colors.primary, borderColor: colors.primary },
-  projChipTxt: { fontSize: 12, fontWeight: '800', color: colors.textBody },
-  projChipTxtSel: { color: '#fff' },
-  projTitle: { fontSize: 14, fontWeight: '800', color: colors.textBody },
-
-  centerBox: { padding: spacing.xl, alignItems: 'center' },
-  errBox: {
-    flexDirection: 'row',
+    backgroundColor: 'rgba(255,255,255,0.15)',
     alignItems: 'center',
-    gap: 8,
-    padding: spacing.md,
-    backgroundColor: colors.errorBg,
-    borderRadius: radius.md,
+    justifyContent: 'center',
   },
-  errTxt: { color: colors.error, fontSize: 13, flex: 1, fontWeight: '700' },
+  headerTitle: { color: '#fff', fontSize: 16, fontWeight: '800', letterSpacing: 0.4 },
+  headerSubtitle: { color: 'rgba(255,255,255,0.85)', fontSize: 11, marginTop: 1, maxWidth: '80%' },
 
-  emptyCard: {
+  // Hero
+  heroWrap: { paddingHorizontal: spacing.md },
+  heroCard: {
     backgroundColor: colors.surface,
     borderRadius: radius.lg,
-    padding: spacing.xl,
-    alignItems: 'center',
-    gap: spacing.sm,
-    borderWidth: 1,
-    borderColor: colors.border,
+    padding: spacing.md,
+    gap: 4,
+    ...shadow.card,
   },
-  emptyTitle: { fontSize: 16, fontWeight: '800', color: colors.text },
-  emptyMsg: { fontSize: 13, color: colors.textMuted, textAlign: 'center', lineHeight: 19 },
+  heroHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  heroIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: radius.full,
+    backgroundColor: colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  heroLabel: { fontSize: 10, fontWeight: '800', color: colors.textMuted, letterSpacing: 1.2 },
+  heroTitle: { fontSize: 17, fontWeight: '800', color: colors.text, marginTop: 1 },
+  heroPuesto: { fontSize: 13, color: colors.textBody, marginTop: 4, marginLeft: 36 + spacing.sm },
+  heroMeta: { fontSize: 11, color: colors.textMuted, marginTop: 2, marginLeft: 36 + spacing.sm },
+  heroLeavesPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: colors.primaryLight,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: radius.full,
+  },
+  heroLeavesTxt: { color: colors.primary, fontSize: 10, fontWeight: '800' },
 
+  // Stat row
+  statsRow: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+    paddingHorizontal: spacing.md,
+    marginTop: spacing.md,
+  },
+  statCard: {
+    flex: 1,
+    backgroundColor: colors.surface,
+    borderRadius: radius.md,
+    padding: spacing.sm + 2,
+    alignItems: 'flex-start',
+    gap: 4,
+    ...shadow.card,
+  },
+  statIcon: {
+    width: 28,
+    height: 28,
+    borderRadius: radius.full,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  statValue: { fontSize: 22, fontWeight: '800', color: colors.text },
+  statLabel: {
+    fontSize: 11,
+    color: colors.textMuted,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+  },
+
+  // Sprint blocks
+  sprintBlock: {
+    paddingHorizontal: spacing.md,
+    marginTop: spacing.md,
+  },
+
+  // Card wrap (alerts)
+  cardWrap: {
+    paddingHorizontal: spacing.md,
+    marginTop: spacing.md,
+  },
   card: {
     backgroundColor: colors.surface,
     borderRadius: radius.lg,
@@ -768,7 +923,6 @@ const styles = StyleSheet.create({
   },
   cardTitle: { fontSize: 15, fontWeight: '800', color: colors.text },
   cardSubtitle: { fontSize: 11, color: colors.textMuted, marginTop: 2, fontWeight: '600' },
-
   badge: {
     minWidth: 26,
     paddingHorizontal: 8,
@@ -780,55 +934,58 @@ const styles = StyleSheet.create({
   },
   badgeTxt: { fontSize: 12, fontWeight: '900', color: colors.error },
 
-  summaryBody: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.md,
-    paddingVertical: spacing.sm,
+  // Chips
+  sectionLabel: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: colors.textMuted,
+    letterSpacing: 1,
+    textTransform: 'uppercase',
+    marginBottom: 8,
   },
-  bigPctBox: {
-    width: 110,
-    height: 110,
-    borderRadius: 55,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: colors.bg,
-    borderWidth: 4,
-    borderColor: colors.border,
-  },
-  bigPctValue: { fontSize: 26, fontWeight: '900' },
-  bigPctLabel: { fontSize: 10, fontWeight: '800', color: colors.textMuted, marginTop: 2 },
-  summaryStats: { flex: 1, gap: 8 },
-  statRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  statTxt: { fontSize: 13, color: colors.textBody, fontWeight: '700' },
-
-  barTrack: {
-    height: 8,
+  chip: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
     borderRadius: radius.full,
-    backgroundColor: colors.border,
-    overflow: 'hidden',
-  },
-  barFill: { height: '100%', borderRadius: radius.full },
-
-  exportBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    minHeight: 36,
     justifyContent: 'center',
-    gap: 8,
-    backgroundColor: colors.primary,
-    paddingVertical: 12,
-    borderRadius: radius.md,
-    marginTop: 4,
-    minHeight: 44,
   },
-  exportBtnTxt: { color: '#fff', fontWeight: '800', fontSize: 14 },
+  chipActive: { backgroundColor: colors.primary, borderColor: colors.primary },
+  chipTxt: { fontSize: 13, fontWeight: '700', color: colors.textBody },
+  chipTxtActive: { color: '#fff' },
 
-  alertRow: {
+  // Export & AI buttons
+  exportRow: { paddingHorizontal: spacing.md, marginTop: spacing.md },
+  exportMainBtn: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: spacing.sm,
-    paddingVertical: 6,
+    gap: 12,
+    backgroundColor: colors.primary,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 16,
+    borderRadius: radius.lg,
+    minHeight: 64,
+    ...shadow.card,
   },
+  aiMainBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    backgroundColor: '#7C3AED',
+    paddingHorizontal: spacing.md,
+    paddingVertical: 16,
+    borderRadius: radius.lg,
+    minHeight: 64,
+    ...shadow.card,
+  },
+  exportMainTitle: { color: '#fff', fontSize: 16, fontWeight: '800', letterSpacing: 0.3 },
+  exportMainSub: { color: 'rgba(255,255,255,0.85)', fontSize: 12, fontWeight: '600', marginTop: 2 },
+
+  // Alerts list
+  alertRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingVertical: 6 },
   dot: { width: 10, height: 10, borderRadius: 5 },
   alertName: { fontSize: 13, fontWeight: '800', color: colors.text },
   alertMiniBar: {
@@ -849,72 +1006,132 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
 
-  feedRow: {
+  // Feed
+  feedHeaderRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: spacing.sm,
-    paddingVertical: 4,
+    justifyContent: 'space-between',
+    paddingHorizontal: spacing.md,
+    marginTop: spacing.lg,
+    marginBottom: spacing.sm,
   },
-  feedAvatar: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    alignItems: 'center',
-    justifyContent: 'center',
+  feedTitle: { fontSize: 15, fontWeight: '800', color: colors.text },
+  feedCount: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: colors.primary,
+    backgroundColor: colors.primaryLight,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: radius.full,
   },
-  feedAvatarTxt: { color: '#fff', fontWeight: '900', fontSize: 14 },
-  feedName: { fontSize: 13, fontWeight: '800', color: colors.text },
-  feedPath: { fontSize: 11, color: colors.textMuted, fontWeight: '600', marginTop: 1 },
-  feedAvance: { fontSize: 12, color: colors.textBody, marginTop: 3 },
-  feedTime: { fontSize: 11, color: colors.textMuted, fontWeight: '700' },
-
-  emptyInline: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingVertical: 8,
-  },
-  emptyInlineTxt: { fontSize: 13, color: colors.textMuted, flex: 1, fontWeight: '600' },
-
-  // ===== Tabs Detalle / Resumen IA =====
-  tabBar: {
+  feedCard: {
     flexDirection: 'row',
     backgroundColor: colors.surface,
+    borderRadius: radius.md,
+    padding: spacing.sm + 2,
+    gap: spacing.sm,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: colors.border,
+    ...shadow.card,
+  },
+  thumbWrap: {
+    width: 64,
+    height: 64,
+    borderRadius: radius.md,
+    overflow: 'hidden',
+    backgroundColor: colors.bg,
+  },
+  thumb: { width: '100%', height: '100%' },
+  thumbPlaceholder: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.primaryLight,
+  },
+  feedTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 6,
+    marginBottom: 2,
+  },
+  feedTime: { fontSize: 10, color: colors.textMuted, fontWeight: '700' },
+  areaBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 7,
+    paddingVertical: 2,
     borderRadius: radius.full,
-    padding: 4,
-    gap: 4,
+    borderWidth: 1,
+    maxWidth: 140,
+  },
+  areaDot: { width: 6, height: 6, borderRadius: 3 },
+  areaBadgeTxt: { fontSize: 10, fontWeight: '800', letterSpacing: 0.3 },
+  feedCardTitle: { fontSize: 14, fontWeight: '800', color: colors.text },
+  feedCardSub: { fontSize: 11, color: colors.textMuted, marginTop: 1 },
+  feedMetaTxt: { fontSize: 11, color: colors.textBody, marginTop: 3 },
+  feedAvance: { fontSize: 11, color: colors.textBody, marginTop: 4, fontStyle: 'italic' },
+  waMiniBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: radius.full,
+    backgroundColor: '#25D366',
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...shadow.card,
+  },
+
+  // States
+  centerPad: { padding: spacing.xl, alignItems: 'center' },
+  errorBox: {
+    padding: spacing.lg,
+    alignItems: 'center',
+    gap: spacing.sm,
+    marginHorizontal: spacing.md,
+    marginTop: spacing.md,
+    backgroundColor: colors.surface,
+    borderRadius: radius.md,
     borderWidth: 1,
     borderColor: colors.border,
   },
-  tabBtn: {
-    flex: 1,
-    flexDirection: 'row',
+  errorTxt: { textAlign: 'center', color: colors.textBody, fontSize: 13 },
+  retryBtn: {
+    backgroundColor: colors.primary,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: radius.md,
+  },
+  retryTxt: { color: '#fff', fontWeight: '800', fontSize: 13 },
+
+  emptyBox: {
+    marginHorizontal: spacing.md,
+    marginTop: spacing.md,
+    backgroundColor: colors.surface,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: spacing.lg,
+    alignItems: 'center',
+    gap: 6,
+    ...shadow.card,
+  },
+  emptyIcon: {
+    width: 56,
+    height: 56,
+    borderRadius: radius.full,
+    backgroundColor: colors.primaryLight,
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 6,
-    paddingVertical: 9,
-    paddingHorizontal: spacing.md,
-    borderRadius: radius.full,
+    marginBottom: 4,
   },
-  tabBtnActive: { backgroundColor: colors.primary },
-  tabTxt: { fontSize: 13, fontWeight: '800', color: colors.text },
-  tabTxtActive: { color: '#fff' },
+  emptyTitle: { fontSize: 15, fontWeight: '800', color: colors.text },
+  emptyMsg: { fontSize: 12, color: colors.textBody, textAlign: 'center', lineHeight: 18 },
+  emptyInline: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 8 },
+  emptyInlineTxt: { fontSize: 13, color: colors.textMuted, flex: 1, fontWeight: '600' },
 
-  // ===== Botón AI Summary (vista Resumen) =====
-  aiBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.md,
-    backgroundColor: colors.primary,
-    paddingVertical: spacing.md,
-    paddingHorizontal: spacing.lg,
-    borderRadius: radius.lg,
-    ...shadow.md,
-  },
-  aiBtnTitle: { color: '#fff', fontSize: 15, fontWeight: '900' },
-  aiBtnSub: { color: 'rgba(255,255,255,0.85)', fontSize: 12, fontWeight: '600', marginTop: 2 },
-
-  // ===== Modal AI Summary =====
+  // AI Modal
   aiBackdrop: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.55)',
@@ -928,11 +1145,7 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
     ...shadow.lg,
   },
-  aiHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
+  aiHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   aiTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   aiTitle: { fontSize: 17, fontWeight: '900', color: colors.text },
   aiClose: { padding: 4 },
@@ -966,4 +1179,15 @@ const styles = StyleSheet.create({
     backgroundColor: colors.primary,
   },
   aiPrimTxt: { fontSize: 13, fontWeight: '800', color: '#fff' },
+  waBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 12,
+    borderRadius: radius.md,
+    backgroundColor: '#25D366',
+    marginTop: spacing.sm,
+  },
+  waTxt: { fontSize: 14, fontWeight: '800', color: '#fff' },
 });
