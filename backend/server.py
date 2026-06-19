@@ -659,7 +659,7 @@ async def list_nodes(pid: str, user: dict = Depends(current_user)):
     if role == ROLE_SUB and user.get("scope_node_id"):
         allowed = set(await descendants_ids(user["scope_node_id"]))
         items = [it for it in items if it["id"] in allowed]
-    elif role == ROLE_SPEC and (user.get("scope_node_ids") or []):
+    elif role == ROLE_ESPECIALISTA and (user.get("scope_node_ids") or []):
         allowed_leaves = set(user.get("scope_node_ids") or [])
         # incluir ancestros para que el árbol sea navegable
         ancestors: set = set()
@@ -687,7 +687,7 @@ async def get_tree(pid: str, user: dict = Depends(current_user)):
     if role == ROLE_SUB and user.get("scope_node_id"):
         allowed = set(await descendants_ids(user["scope_node_id"]))
         items = [it for it in items if it["id"] in allowed]
-    elif role == ROLE_SPEC and (user.get("scope_node_ids") or []):
+    elif role == ROLE_ESPECIALISTA and (user.get("scope_node_ids") or []):
         allowed_leaves = set(user.get("scope_node_ids") or [])
         ancestors: set = set()
         parent_of = {n["id"]: n.get("parent_id") for n in items}
