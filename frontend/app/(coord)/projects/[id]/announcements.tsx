@@ -1,6 +1,6 @@
 // SynCo v2.0 — Administración de Noticias (Coordinador General).
 // CRUD completo con fijado, editar y eliminar.
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator, KeyboardAvoidingView, Modal, Platform, Pressable,
   RefreshControl, ScrollView, StyleSheet, Switch, Text, TextInput, View,
@@ -9,11 +9,25 @@ import { Ionicons } from '@expo/vector-icons';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { api, Announcement } from '@/src/api';
+import { api, Announcement, Area } from '@/src/api';
 import { colors, radius, shadow, spacing } from '@/src/theme';
 import { confirm } from '@/src/utils/confirm';
 
-type Editing = { id?: string; title: string; body: string; pinned: boolean } | null;
+type Jerarquia = 'urgente' | 'importante' | 'informativo' | null;
+type Editing = {
+  id?: string;
+  title: string;
+  body: string;
+  pinned: boolean;
+  jerarquia: Jerarquia;
+  audiencia: string; // 'general' o area_id
+} | null;
+
+const JERARQUIA_COLORS: Record<string, { bg: string; bd: string; fg: string; label: string; icon: any }> = {
+  urgente: { bg: '#FEE2E2', bd: '#EF4444', fg: '#991B1B', label: 'Urgente', icon: 'flame' },
+  importante: { bg: '#FEF3C7', bd: '#F59E0B', fg: '#92400E', label: 'Importante', icon: 'warning' },
+  informativo: { bg: '#DBEAFE', bd: '#3B82F6', fg: '#1E40AF', label: 'Informativo', icon: 'information-circle' },
+};
 
 export default function CoordAnnouncementsScreen() {
   const insets = useSafeAreaInsets();
@@ -21,6 +35,7 @@ export default function CoordAnnouncementsScreen() {
   const pid = (Array.isArray(id) ? id[0] : id) || '';
 
   const [items, setItems] = useState<Announcement[]>([]);
+  const [areas, setAreas] = useState<Area[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [editing, setEditing] = useState<Editing>(null);
@@ -31,8 +46,12 @@ export default function CoordAnnouncementsScreen() {
     try {
       if (!silent) setLoading(true);
       setError(null);
-      const data = await api.listAnnouncements(pid);
+      const [data, ars] = await Promise.all([
+        api.listAnnouncements(pid),
+        api.listAreas(pid).catch(() => [] as Area[]),
+      ]);
       setItems(data);
+      setAreas(ars || []);
     } catch (e: any) {
       setError(e?.message || 'Error al cargar');
     } finally {
@@ -52,10 +71,19 @@ export default function CoordAnnouncementsScreen() {
     try {
       setSaving(true);
       setError(null);
+      const aud = editing.audiencia || 'general';
       if (editing.id) {
-        await api.updateAnnouncement(editing.id, { title: t, body: b, pinned: editing.pinned });
+        await api.updateAnnouncement(editing.id, {
+          title: t, body: b, pinned: editing.pinned,
+          jerarquia: editing.jerarquia,
+          audiencia: aud,
+        });
       } else {
-        await api.createAnnouncement(pid, { title: t, body: b, pinned: editing.pinned });
+        await api.createAnnouncement(pid, {
+          title: t, body: b, pinned: editing.pinned,
+          jerarquia: editing.jerarquia,
+          audiencia: aud,
+        });
       }
       setEditing(null);
       await load(true);
@@ -101,7 +129,7 @@ export default function CoordAnnouncementsScreen() {
           <Text style={styles.subtitle}>Anuncios visibles para todo el proyecto</Text>
         </View>
         <Pressable
-          onPress={() => setEditing({ title: '', body: '', pinned: false })}
+          onPress={() => setEditing({ title: '', body: '', pinned: false, jerarquia: null, audiencia: 'general' })}
           style={styles.newBtn}
         >
           <Ionicons name="add" size={18} color="#fff" />
@@ -133,28 +161,56 @@ export default function CoordAnnouncementsScreen() {
             <Text style={styles.emptyMsg}>
               Publica anuncios visibles para Sub-Coordinadores y Especialistas del proyecto.
             </Text>
-            <Pressable style={styles.emptyBtn} onPress={() => setEditing({ title: '', body: '', pinned: false })}>
+            <Pressable style={styles.emptyBtn} onPress={() => setEditing({ title: '', body: '', pinned: false, jerarquia: null, audiencia: 'general' })}>
               <Ionicons name="add" size={16} color="#fff" />
               <Text style={styles.emptyBtnTxt}>Publicar primera</Text>
             </Pressable>
           </View>
         ) : (
-          items.map((a) => (
-            <View key={a.id} style={[styles.card, a.pinned && styles.cardPinned]}>
+          items.map((a) => {
+            const j = (a.jerarquia || '').toLowerCase();
+            const jCfg = JERARQUIA_COLORS[j];
+            const audName = a.audiencia && a.audiencia !== 'general'
+              ? (areas.find((ar) => ar.id === a.audiencia)?.name || 'Área específica')
+              : 'Todo el proyecto';
+            return (
+            <View
+              key={a.id}
+              style={[
+                styles.card,
+                a.pinned && styles.cardPinned,
+                jCfg && { borderLeftColor: jCfg.bd, borderLeftWidth: 4, backgroundColor: jCfg.bg + '40' },
+              ]}
+            >
               <View style={styles.cardTopRow}>
-                <Pressable style={styles.pinChip} onPress={() => onTogglePin(a)}>
-                  <Ionicons
-                    name={a.pinned ? 'pin' : 'pin-outline'}
-                    size={12}
-                    color={a.pinned ? colors.primary : colors.textMuted}
-                  />
-                  <Text style={[styles.pinChipTxt, a.pinned && { color: colors.primary }]}>
-                    {a.pinned ? 'Fijado' : 'Fijar'}
-                  </Text>
-                </Pressable>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap', flex: 1 }}>
+                  <Pressable style={styles.pinChip} onPress={() => onTogglePin(a)}>
+                    <Ionicons
+                      name={a.pinned ? 'pin' : 'pin-outline'}
+                      size={12}
+                      color={a.pinned ? colors.primary : colors.textMuted}
+                    />
+                    <Text style={[styles.pinChipTxt, a.pinned && { color: colors.primary }]}>
+                      {a.pinned ? 'Fijado' : 'Fijar'}
+                    </Text>
+                  </Pressable>
+                  {jCfg ? (
+                    <View style={[styles.jerChip, { backgroundColor: jCfg.bg, borderColor: jCfg.bd }]}>
+                      <Ionicons name={jCfg.icon} size={11} color={jCfg.fg} />
+                      <Text style={[styles.jerChipTxt, { color: jCfg.fg }]}>{jCfg.label}</Text>
+                    </View>
+                  ) : null}
+                </View>
                 <View style={{ flexDirection: 'row', gap: 6 }}>
                   <Pressable
-                    onPress={() => setEditing({ id: a.id, title: a.title, body: a.body, pinned: a.pinned })}
+                    onPress={() => setEditing({
+                      id: a.id,
+                      title: a.title,
+                      body: a.body,
+                      pinned: a.pinned,
+                      jerarquia: (j === 'urgente' || j === 'importante' || j === 'informativo') ? (j as Jerarquia) : null,
+                      audiencia: a.audiencia || 'general',
+                    })}
                     style={styles.iconAction}
                   >
                     <Ionicons name="create-outline" size={16} color={colors.primary} />
@@ -170,11 +226,15 @@ export default function CoordAnnouncementsScreen() {
                 <Ionicons name="person-outline" size={11} color={colors.textMuted} />
                 <Text style={styles.cardMetaTxt}>{a.author_name}</Text>
                 <Text style={styles.cardMetaDot}>·</Text>
+                <Ionicons name="people-outline" size={11} color={colors.textMuted} />
+                <Text style={styles.cardMetaTxt}>{audName}</Text>
+                <Text style={styles.cardMetaDot}>·</Text>
                 <Ionicons name="time-outline" size={11} color={colors.textMuted} />
                 <Text style={styles.cardMetaTxt}>{new Date(a.created_at).toLocaleString('es-MX')}</Text>
               </View>
             </View>
-          ))
+            );
+          })
         )}
       </ScrollView>
 
@@ -227,6 +287,63 @@ export default function CoordAnnouncementsScreen() {
                   trackColor={{ true: colors.primary, false: colors.border }}
                   thumbColor="#fff"
                 />
+              </View>
+
+              <View>
+                <Text style={styles.label}>Jerarquía</Text>
+                <View style={styles.chipsRow}>
+                  <Pressable
+                    onPress={() => setEditing((e) => e ? { ...e, jerarquia: null } : e)}
+                    style={[styles.audChip, !editing?.jerarquia && styles.audChipActive]}
+                  >
+                    <Text style={[styles.audChipTxt, !editing?.jerarquia && styles.audChipTxtActive]}>Sin nivel</Text>
+                  </Pressable>
+                  {(['urgente', 'importante', 'informativo'] as const).map((k) => {
+                    const cfg = JERARQUIA_COLORS[k];
+                    const active = editing?.jerarquia === k;
+                    return (
+                      <Pressable
+                        key={k}
+                        onPress={() => setEditing((e) => e ? { ...e, jerarquia: k } : e)}
+                        style={[
+                          styles.audChip,
+                          { borderColor: cfg.bd },
+                          active && { backgroundColor: cfg.bg, borderWidth: 1.5 },
+                        ]}
+                      >
+                        <Ionicons name={cfg.icon} size={12} color={cfg.fg} />
+                        <Text style={[styles.audChipTxt, { color: cfg.fg, fontWeight: '800' }]}>{cfg.label}</Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              </View>
+
+              <View>
+                <Text style={styles.label}>Audiencia</Text>
+                <Text style={styles.helper}>Elige a quién va dirigida la noticia.</Text>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6, paddingVertical: 6 }}>
+                  <Pressable
+                    onPress={() => setEditing((e) => e ? { ...e, audiencia: 'general' } : e)}
+                    style={[styles.audChip, (editing?.audiencia || 'general') === 'general' && styles.audChipActive]}
+                  >
+                    <Ionicons name="globe-outline" size={12} color={(editing?.audiencia || 'general') === 'general' ? '#fff' : colors.textMuted} />
+                    <Text style={[styles.audChipTxt, (editing?.audiencia || 'general') === 'general' && styles.audChipTxtActive]}>Todo el proyecto</Text>
+                  </Pressable>
+                  {areas.map((ar) => {
+                    const active = editing?.audiencia === ar.id;
+                    return (
+                      <Pressable
+                        key={ar.id}
+                        onPress={() => setEditing((e) => e ? { ...e, audiencia: ar.id } : e)}
+                        style={[styles.audChip, active && styles.audChipActive]}
+                      >
+                        <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: ar.color || colors.primary }} />
+                        <Text style={[styles.audChipTxt, active && styles.audChipTxtActive]}>{ar.name}</Text>
+                      </Pressable>
+                    );
+                  })}
+                </ScrollView>
               </View>
               {error ? <Text style={[styles.errorText, { textAlign: 'center' }]}>{error}</Text> : null}
             </ScrollView>
@@ -342,4 +459,22 @@ const styles = StyleSheet.create({
   btnGhostTxt: { color: colors.text, fontWeight: '800', fontSize: 14 },
   btnPrimary: { backgroundColor: colors.primary },
   btnPrimaryTxt: { color: '#fff', fontWeight: '800', fontSize: 14 },
+
+  // Chips de jerarquía y audiencia
+  chipsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 4 },
+  jerChip: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    paddingHorizontal: 8, paddingVertical: 3,
+    borderRadius: radius.full, borderWidth: 1,
+  },
+  jerChipTxt: { fontSize: 10, fontWeight: '800', letterSpacing: 0.2 },
+  audChip: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    paddingHorizontal: 10, paddingVertical: 6,
+    borderRadius: radius.full,
+    backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.border,
+  },
+  audChipActive: { backgroundColor: colors.primary, borderColor: colors.primary },
+  audChipTxt: { fontSize: 12, fontWeight: '700', color: colors.text },
+  audChipTxtActive: { color: '#fff' },
 });

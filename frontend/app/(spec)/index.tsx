@@ -73,6 +73,7 @@ export default function SpecFeedScreen() {
   const [calendarOpen, setCalendarOpen] = useState(false);
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [sharingReportId, setSharingReportId] = useState<string | null>(null);
+  const [previewItem, setPreviewItem] = useState<FeedItem | null>(null);
 
   // === Compartir reporte individual en WhatsApp (foto + texto) ===========
   const shareReportWhatsApp = useCallback(async (item: FeedItem) => {
@@ -444,6 +445,7 @@ export default function SpecFeedScreen() {
                 item={item}
                 onShare={shareReportWhatsApp}
                 sharing={sharingReportId === item.id}
+                onPreview={() => setPreviewItem(item)}
               />
             )}
           />
@@ -582,6 +584,123 @@ export default function SpecFeedScreen() {
           </View>
         </View>
       </Modal>
+
+      {/* Preview del reporte (P3) */}
+      <Modal
+        visible={!!previewItem}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setPreviewItem(null)}
+      >
+        <Pressable style={styles.exportBackdrop} onPress={() => setPreviewItem(null)} />
+        <View style={styles.previewSheet} pointerEvents="box-none">
+          <View style={styles.previewInner}>
+            <View style={styles.exportHandle} />
+            <View style={styles.previewHeader}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.previewTitle} numberOfLines={1}>
+                  {(previewItem?.node_path_names || []).slice(-1)[0] || 'Reporte'}
+                </Text>
+                <Text style={styles.previewSubtitle} numberOfLines={2}>
+                  {(previewItem?.node_path_names || []).join(' › ') || '—'}
+                </Text>
+              </View>
+              <Pressable
+                hitSlop={10}
+                style={styles.exportBack}
+                onPress={() => setPreviewItem(null)}
+              >
+                <Ionicons name="close" size={22} color={colors.text} />
+              </Pressable>
+            </View>
+
+            <ScrollView contentContainerStyle={{ paddingHorizontal: spacing.md, paddingBottom: spacing.lg }}>
+              {previewItem?.thumbnail_base64 ? (
+                <Image
+                  source={{ uri: `data:image/jpeg;base64,${previewItem.thumbnail_base64}` }}
+                  style={styles.previewImage}
+                />
+              ) : (
+                <View style={[styles.previewImage, styles.thumbPlaceholder]}>
+                  <Ionicons name="image-outline" size={42} color={colors.textMuted} />
+                </View>
+              )}
+
+              {previewItem?.area_name ? (
+                <View style={styles.previewMetaBlock}>
+                  <Text style={styles.previewMetaLabel}>Área</Text>
+                  <View
+                    style={[
+                      styles.areaBadge,
+                      {
+                        backgroundColor: areaTone(previewItem.area_color || undefined).bg,
+                        borderColor: areaTone(previewItem.area_color || undefined).border,
+                        alignSelf: 'flex-start',
+                      },
+                    ]}
+                  >
+                    <View style={[styles.areaDot, { backgroundColor: areaTone(previewItem.area_color || undefined).text }]} />
+                    <Text style={[styles.areaBadgeTxt, { color: areaTone(previewItem.area_color || undefined).text }]}>
+                      {previewItem.area_name}
+                    </Text>
+                  </View>
+                </View>
+              ) : null}
+
+              <View style={styles.previewMetaBlock}>
+                <Text style={styles.previewMetaLabel}>Capturado por</Text>
+                <Text style={styles.previewMetaValue}>{previewItem?.captured_by_name || '—'}</Text>
+              </View>
+
+              <View style={styles.previewMetaBlock}>
+                <Text style={styles.previewMetaLabel}>Fecha</Text>
+                <Text style={styles.previewMetaValue}>
+                  {previewItem?.created_at
+                    ? new Date(previewItem.created_at).toLocaleString('es-MX')
+                    : '—'}
+                </Text>
+              </View>
+
+              {formatMeasurement(previewItem?.measurement_type, previewItem?.measurement_value) ? (
+                <View style={styles.previewMetaBlock}>
+                  <Text style={styles.previewMetaLabel}>Medición</Text>
+                  <Text style={styles.previewMetaValue}>
+                    {formatMeasurement(previewItem?.measurement_type, previewItem?.measurement_value)}
+                  </Text>
+                </View>
+              ) : null}
+
+              {previewItem?.avance ? (
+                <View style={styles.previewMetaBlock}>
+                  <Text style={styles.previewMetaLabel}>Avance</Text>
+                  <Text style={styles.previewAvance}>{previewItem.avance}</Text>
+                </View>
+              ) : null}
+
+              {previewItem?.images_count && previewItem.images_count > 1 ? (
+                <View style={styles.previewMetaBlock}>
+                  <Text style={styles.previewMetaLabel}>Fotos</Text>
+                  <Text style={styles.previewMetaValue}>{previewItem.images_count} imágenes adjuntas</Text>
+                </View>
+              ) : null}
+
+              <TouchableOpacity
+                style={styles.previewShareBtn}
+                onPress={() => {
+                  if (previewItem) {
+                    const it = previewItem;
+                    setPreviewItem(null);
+                    setTimeout(() => shareReportWhatsApp(it), 250);
+                  }
+                }}
+              >
+                <Ionicons name="logo-whatsapp" size={18} color="#fff" />
+                <Text style={styles.previewShareTxt}>Compartir por WhatsApp</Text>
+              </TouchableOpacity>
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -607,10 +726,12 @@ function FeedCard({
   item,
   onShare,
   sharing,
+  onPreview,
 }: {
   item: FeedItem;
   onShare?: (item: FeedItem) => void;
   sharing?: boolean;
+  onPreview?: () => void;
 }) {
   const tone = areaTone(item.area_color || undefined);
   const path = item.node_path_names || [];
@@ -623,7 +744,7 @@ function FeedCard({
   return (
     <Pressable
       style={({ pressed }) => [styles.feedCard, pressed && { opacity: 0.85 }]}
-      onPress={() => { /* preview no implementado todavía */ }}
+      onPress={() => onPreview?.()}
     >
       {/* Thumbnail */}
       <View style={styles.thumbWrap}>
@@ -1127,6 +1248,84 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginTop: spacing.md,
     fontStyle: 'italic',
+  },
+
+  // === Modal Preview Reporte (P3) ============================================
+  previewSheet: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: 'flex-end',
+  },
+  previewInner: {
+    backgroundColor: colors.surface,
+    borderTopLeftRadius: radius.xl ?? 20,
+    borderTopRightRadius: radius.xl ?? 20,
+    paddingTop: 10,
+    paddingBottom: 24,
+    maxHeight: '90%',
+    ...shadow.card,
+  },
+  previewHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: spacing.md,
+    paddingBottom: spacing.sm,
+    gap: 8,
+  },
+  previewTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: colors.text,
+  },
+  previewSubtitle: {
+    fontSize: 12,
+    color: colors.textMuted,
+    marginTop: 2,
+    fontWeight: '600',
+  },
+  previewImage: {
+    width: '100%',
+    aspectRatio: 4 / 3,
+    borderRadius: radius.md,
+    backgroundColor: colors.primaryLight,
+    marginBottom: spacing.md,
+  },
+  previewMetaBlock: {
+    paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.border,
+  },
+  previewMetaLabel: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: colors.textMuted,
+    letterSpacing: 1,
+    textTransform: 'uppercase',
+    marginBottom: 4,
+  },
+  previewMetaValue: {
+    fontSize: 14,
+    color: colors.text,
+    fontWeight: '600',
+  },
+  previewAvance: {
+    fontSize: 14,
+    color: colors.text,
+    lineHeight: 20,
+  },
+  previewShareBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: '#25D366',
+    paddingVertical: 14,
+    borderRadius: radius.md,
+    marginTop: spacing.md,
+  },
+  previewShareTxt: {
+    color: '#fff',
+    fontSize: 15,
+    fontWeight: '800',
   },
 });
 

@@ -11,7 +11,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useAuth } from '@/src/auth-context';
-import { api, Announcement } from '@/src/api';
+import { api, Announcement, Area } from '@/src/api';
 import { colors, radius, shadow, spacing } from '@/src/theme';
 
 const POLL_MS = 60000;
@@ -34,6 +34,7 @@ export default function NoticiasScreen() {
   const isCoord = user?.role === 'coordinador_general';
 
   const [items, setItems] = useState<Announcement[]>([]);
+  const [areas, setAreas] = useState<Area[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -56,6 +57,11 @@ export default function NoticiasScreen() {
   }, [projectId]);
 
   useEffect(() => { load(false); }, [load]);
+
+  useEffect(() => {
+    if (!projectId) return;
+    api.listAreas(projectId).then(setAreas).catch(() => setAreas([]));
+  }, [projectId]);
 
   useEffect(() => {
     function start() {
@@ -144,6 +150,7 @@ export default function NoticiasScreen() {
             <AnnouncementCard
               key={a.id}
               item={a}
+              areas={areas}
               canEdit={isCoord || a.author_id === user?.id}
               onEdit={() => setEditor({ kind: 'edit', item: a })}
               onDelete={() => onDelete(a)}
@@ -160,6 +167,7 @@ export default function NoticiasScreen() {
         visible={!!editor}
         editor={editor}
         canPin={isCoord}
+        areas={areas}
         onClose={() => setEditor(null)}
         onSaved={() => { setEditor(null); load(true); }}
         projectId={projectId}
@@ -169,15 +177,22 @@ export default function NoticiasScreen() {
 }
 
 function AnnouncementCard({
-  item, canEdit, onEdit, onDelete,
+  item, areas, canEdit, onEdit, onDelete,
 }: {
   item: Announcement;
+  areas: Area[];
   canEdit: boolean;
   onEdit: () => void;
   onDelete: () => void;
 }) {
   const jq = (item.jerarquia || '').toString().toLowerCase();
   const jStyle = JERARQUIA_COLORS[jq];
+  const audKey = (item.audiencia || '').toString().toLowerCase();
+  const audArea = areas.find(a => a.name.toLowerCase() === audKey);
+  const audLabel = item.audiencia
+    ? (audArea ? audArea.name : item.audiencia)
+    : null;
+  const audColor = audArea?.color || colors.primary;
   return (
     <View style={[
       styles.card,
@@ -195,6 +210,12 @@ function AnnouncementCard({
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: jStyle.bd, paddingHorizontal: 8, paddingVertical: 2, borderRadius: 999 }}>
             <Ionicons name={jStyle.icon} size={11} color="#fff" />
             <Text style={{ color: '#fff', fontSize: 10, fontWeight: '800', letterSpacing: 0.5 }}>{jStyle.label.toUpperCase()}</Text>
+          </View>
+        ) : null}
+        {audLabel ? (
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: audColor + '22', borderColor: audColor, borderWidth: 1, paddingHorizontal: 8, paddingVertical: 2, borderRadius: 999 }}>
+            <Ionicons name="people" size={11} color={audColor} />
+            <Text style={{ color: audColor, fontSize: 10, fontWeight: '800', letterSpacing: 0.5 }}>{audLabel.toUpperCase()}</Text>
           </View>
         ) : null}
       </View>
@@ -223,11 +244,12 @@ function AnnouncementCard({
 }
 
 function AnnouncementEditor({
-  visible, editor, canPin, onClose, onSaved, projectId,
+  visible, editor, canPin, areas, onClose, onSaved, projectId,
 }: {
   visible: boolean;
   editor: EditorState;
   canPin: boolean;
+  areas: Area[];
   onClose: () => void;
   onSaved: () => void;
   projectId: string;
@@ -237,6 +259,7 @@ function AnnouncementEditor({
   const [body, setBody] = useState('');
   const [pinned, setPinned] = useState(false);
   const [jerarquia, setJerarquia] = useState<'urgente' | 'importante' | 'informativo' | null>(null);
+  const [audiencia, setAudiencia] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -248,8 +271,9 @@ function AnnouncementEditor({
       setPinned(!!editor.item.pinned);
       const j = (editor.item.jerarquia || '').toString().toLowerCase();
       setJerarquia((['urgente', 'importante', 'informativo'].includes(j) ? j : null) as any);
+      setAudiencia(editor.item.audiencia || null);
     } else {
-      setTitle(''); setBody(''); setPinned(false); setJerarquia(null);
+      setTitle(''); setBody(''); setPinned(false); setJerarquia(null); setAudiencia(null);
     }
     setErr(null);
   }, [visible, editor]);
@@ -263,11 +287,11 @@ function AnnouncementEditor({
     setBusy(true);
     try {
       if (editor?.kind === 'edit') {
-        const payload: any = { title: t, body: b, jerarquia };
+        const payload: any = { title: t, body: b, jerarquia, audiencia };
         if (canPin) payload.pinned = pinned;
         await api.updateAnnouncement(editor.item.id, payload);
       } else {
-        await api.createAnnouncement(projectId, { title: t, body: b, pinned: canPin ? pinned : false, jerarquia });
+        await api.createAnnouncement(projectId, { title: t, body: b, pinned: canPin ? pinned : false, jerarquia, audiencia });
       }
       onSaved();
     } catch (e: any) {
@@ -327,6 +351,37 @@ function AnnouncementEditor({
                       }}
                     >
                       <Text style={{ color: active ? '#fff' : opt.bd, fontWeight: '700', fontSize: 12 }}>{opt.label}</Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+              <Text style={styles.modalLabel}>Audiencia (opcional)</Text>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+                <Pressable
+                  onPress={() => setAudiencia(null)}
+                  disabled={busy}
+                  style={{
+                    paddingHorizontal: 12, paddingVertical: 8, borderRadius: 999,
+                    borderWidth: 1.5, borderColor: colors.textMuted,
+                    backgroundColor: audiencia === null ? colors.textMuted : 'transparent',
+                  }}
+                >
+                  <Text style={{ color: audiencia === null ? '#fff' : colors.textMuted, fontWeight: '700', fontSize: 12 }}>Todos</Text>
+                </Pressable>
+                {areas.map((a) => {
+                  const active = (audiencia || '').toLowerCase() === a.name.toLowerCase();
+                  return (
+                    <Pressable
+                      key={a.id}
+                      onPress={() => setAudiencia(a.name)}
+                      disabled={busy}
+                      style={{
+                        paddingHorizontal: 12, paddingVertical: 8, borderRadius: 999,
+                        borderWidth: 1.5, borderColor: a.color,
+                        backgroundColor: active ? a.color : 'transparent',
+                      }}
+                    >
+                      <Text style={{ color: active ? '#fff' : a.color, fontWeight: '700', fontSize: 12 }}>{a.name}</Text>
                     </Pressable>
                   );
                 })}

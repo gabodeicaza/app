@@ -63,6 +63,13 @@ export default function SubCoordDashboard() {
   const [selectedAreas, setSelectedAreas] = useState<Set<string>>(new Set());
   const [advExportOpen, setAdvExportOpen] = useState(false);
 
+  // P4 - Filtro de tiempo (Hoy/Semana/Mes)
+  const [period, setPeriod] = useState<'today' | 'week' | 'month'>('today');
+
+  // P4 - Estado del modal de exportación avanzada
+  const [expFormat, setExpFormat] = useState<'xlsx' | 'pdf' | 'docx' | 'pptx'>('xlsx');
+  const [expPeriod, setExpPeriod] = useState<'today' | 'yesterday' | 'week' | 'month'>('today');
+
   const loadProjects = useCallback(async () => {
     try {
       const list = await api.listProjects();
@@ -80,14 +87,14 @@ export default function SubCoordDashboard() {
       setError(null);
       const [ns, feed] = await Promise.all([
         api.listNodes(projectId),
-        api.feed(projectId, 'today', 100),
+        api.feed(projectId, period, 200),
       ]);
       setNodes(ns || []);
       setReports(feed?.reports || []);
     } catch (e: any) {
       setError(e?.message || 'No se pudo cargar la información');
     }
-  }, []);
+  }, [period]);
 
   useEffect(() => {
     (async () => {
@@ -414,6 +421,21 @@ export default function SubCoordDashboard() {
             <Text style={styles.heroPuesto}>
               Hola, {user?.name || 'Sub-coordinador'}
             </Text>
+            {scopeNodeName ? (
+              <View style={styles.heroScopeRow}>
+                <Ionicons name="location" size={12} color={colors.primary} />
+                <Text style={styles.heroScopeTxt} numberOfLines={1}>
+                  Tramo asignado: <Text style={styles.heroScopeName}>{scopeNodeName}</Text>
+                </Text>
+              </View>
+            ) : (
+              <View style={styles.heroScopeRow}>
+                <Ionicons name="alert-circle" size={12} color={colors.textMuted} />
+                <Text style={[styles.heroScopeTxt, { color: colors.textMuted }]} numberOfLines={1}>
+                  Sin tramo asignado
+                </Text>
+              </View>
+            )}
             {currentProject?.contract_number ? (
               <Text style={styles.heroMeta}>
                 Contrato {currentProject.contract_number}
@@ -459,6 +481,104 @@ export default function SubCoordDashboard() {
           <StatCard label="Nodos" value={progressRows.length} icon="git-network-outline" tint="#0EA5E9" />
           <StatCard label="Alertas" value={alerts.length} icon="warning-outline" tint={colors.error} />
         </View>
+
+        {/* P4 - Chips de Tiempo (Hoy / Semana / Mes) */}
+        <View style={styles.timeChipsRow}>
+          {([
+            { k: 'today', label: 'Hoy', icon: 'today-outline' },
+            { k: 'week', label: 'Semana', icon: 'calendar-outline' },
+            { k: 'month', label: 'Mes', icon: 'calendar-clear-outline' },
+          ] as const).map((t) => {
+            const sel = period === t.k;
+            return (
+              <Pressable
+                key={t.k}
+                onPress={() => setPeriod(t.k)}
+                style={[styles.timeChip, sel && styles.timeChipActive]}
+              >
+                <Ionicons
+                  name={t.icon as any}
+                  size={13}
+                  color={sel ? '#fff' : colors.primary}
+                />
+                <Text style={[styles.timeChipTxt, sel && styles.timeChipTxtActive]}>
+                  {t.label}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+
+        {/* P5 - Chips de Áreas (filtros visuales) */}
+        {allAreas.length > 0 && (
+          <View style={{ marginTop: spacing.sm }}>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.areaChipsContent}
+            >
+              <Pressable
+                onPress={() => setSelectedAreas(new Set())}
+                style={[
+                  styles.areaChip,
+                  selectedAreas.size === 0 && styles.areaChipActive,
+                ]}
+              >
+                <Ionicons
+                  name="apps-outline"
+                  size={12}
+                  color={selectedAreas.size === 0 ? '#fff' : colors.textBody}
+                />
+                <Text
+                  style={[
+                    styles.areaChipTxt,
+                    selectedAreas.size === 0 && styles.areaChipTxtActive,
+                  ]}
+                >
+                  Todas
+                </Text>
+              </Pressable>
+              {allAreas.map((a) => {
+                const sel = selectedAreas.has(a.name);
+                const tone = areaTone(a.color || undefined);
+                return (
+                  <Pressable
+                    key={a.name}
+                    onPress={() => {
+                      const next = new Set(selectedAreas);
+                      if (sel) next.delete(a.name);
+                      else next.add(a.name);
+                      setSelectedAreas(next);
+                    }}
+                    style={[
+                      styles.areaChip,
+                      {
+                        backgroundColor: sel ? tone.text : tone.bg,
+                        borderColor: tone.border,
+                      },
+                    ]}
+                  >
+                    <View
+                      style={[
+                        styles.areaChipDot,
+                        { backgroundColor: sel ? '#fff' : tone.text },
+                      ]}
+                    />
+                    <Text
+                      style={[
+                        styles.areaChipTxt,
+                        { color: sel ? '#fff' : tone.text },
+                      ]}
+                      numberOfLines={1}
+                    >
+                      {a.name}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+          </View>
+        )}
 
         {loading ? (
           <View style={styles.centerPad}>

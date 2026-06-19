@@ -1304,6 +1304,7 @@ class AnnouncementIn(BaseModel):
     body: str
     pinned: bool = False
     jerarquia: Optional[str] = None  # 'urgente' | 'importante' | 'informativo' | None
+    audiencia: Optional[str] = None  # 'general' o area_id
 
 
 class AnnouncementPatch(BaseModel):
@@ -1311,6 +1312,7 @@ class AnnouncementPatch(BaseModel):
     body: Optional[str] = None
     pinned: Optional[bool] = None
     jerarquia: Optional[str] = None
+    audiencia: Optional[str] = None
 
 
 def _announcement_out(doc: dict) -> dict:
@@ -1352,6 +1354,12 @@ async def create_announcement(
     jerarquia = (body.jerarquia or "").strip().lower() or None
     if jerarquia and jerarquia not in ("urgente", "importante", "informativo"):
         raise HTTPException(400, "Jerarquía inválida")
+    # Audiencia: "general" (proyecto completo) o area_id
+    audiencia = (body.audiencia or "").strip() or "general"
+    if audiencia != "general":
+        area = await db.areas.find_one({"id": audiencia, "project_id": pid})
+        if not area:
+            raise HTTPException(400, "Audiencia (área) inválida")
     now = datetime.now(timezone.utc)
     doc = {
         "id": str(uuid.uuid4()),
@@ -1360,6 +1368,7 @@ async def create_announcement(
         "body": text,
         "pinned": bool(body.pinned),
         "jerarquia": jerarquia,
+        "audiencia": audiencia,
         "author_id": user["id"],
         "author_name": user["name"],
         "author_role": user["role"],
@@ -1413,6 +1422,13 @@ async def update_announcement(
             update["jerarquia"] = j
         else:
             raise HTTPException(400, "Jerarquía inválida")
+    if body.audiencia is not None:
+        aud = (body.audiencia or "").strip() or "general"
+        if aud != "general":
+            area = await db.areas.find_one({"id": aud, "project_id": a["project_id"]})
+            if not area:
+                raise HTTPException(400, "Audiencia (área) inválida")
+        update["audiencia"] = aud
     if not update:
         return _announcement_out(a)
     update["updated_at"] = datetime.now(timezone.utc)
