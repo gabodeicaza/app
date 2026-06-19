@@ -10,8 +10,11 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator, Alert, FlatList, Image, Linking, Modal, Platform, Pressable, RefreshControl,
-  ScrollView, StatusBar, StyleSheet, Text, View,
+  ScrollView, StatusBar, StyleSheet, Text, TouchableOpacity, View,
 } from 'react-native';
+import * as Clipboard from 'expo-clipboard';
+import * as Sharing from 'expo-sharing';
+import * as FileSystem from 'expo-file-system/legacy';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -69,6 +72,58 @@ export default function SpecFeedScreen() {
   const [exportBusy, setExportBusy] = useState(false);
   const [calendarOpen, setCalendarOpen] = useState(false);
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
+  const [sharingReportId, setSharingReportId] = useState<string | null>(null);
+
+  // === Compartir reporte individual en WhatsApp (foto + texto) ===========
+  const shareReportWhatsApp = useCallback(async (item: FeedItem) => {
+    if (sharingReportId) return;
+    try {
+      setSharingReportId(item.id);
+      const available = await Sharing.isAvailableAsync();
+      if (!available) {
+        Alert.alert('No disponible', 'Compartir no está disponible en este dispositivo.');
+        return;
+      }
+      const path = (item.node_path_names || []).join(' › ') || '—';
+      const ts = item.created_at ? new Date(item.created_at).toLocaleString('es-MX') : '';
+      const captionLines = [
+        '📋 *Reporte de obra — SynCo*',
+        '',
+        `📍 *Ubicación:* ${path}`,
+        `👤 *Capturado por:* ${item.captured_by_name || '—'}`,
+        ts ? `🕒 *Fecha:* ${ts}` : '',
+        item.area_name ? `🏷️ *Área:* ${item.area_name}` : '',
+        item.avance ? `\n📝 *Avance:*\n${item.avance}` : '',
+      ].filter(Boolean);
+      const caption = captionLines.join('\n');
+      if (item.thumbnail_base64) {
+        const fileUri = `${FileSystem.cacheDirectory}reporte_${item.id}.jpg`;
+        await FileSystem.writeAsStringAsync(fileUri, item.thumbnail_base64, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+        try { await Clipboard.setStringAsync(caption); } catch {}
+        await Sharing.shareAsync(fileUri, {
+          mimeType: 'image/jpeg',
+          dialogTitle: 'Compartir reporte',
+          UTI: 'public.jpeg',
+        });
+      } else {
+        const fileUri = `${FileSystem.cacheDirectory}reporte_${item.id}.txt`;
+        await FileSystem.writeAsStringAsync(fileUri, caption, {
+          encoding: FileSystem.EncodingType.UTF8,
+        });
+        await Sharing.shareAsync(fileUri, {
+          mimeType: 'text/plain',
+          dialogTitle: 'Compartir reporte',
+          UTI: 'public.plain-text',
+        });
+      }
+    } catch (e: any) {
+      Alert.alert('No se pudo compartir', e?.message || 'Inténtalo nuevamente.');
+    } finally {
+      setSharingReportId(null);
+    }
+  }, [sharingReportId]);
 
   const load = useCallback(async (nextRange: RangeKey = range, silent = false) => {
     if (!projectId) {
@@ -384,7 +439,13 @@ export default function SpecFeedScreen() {
             keyExtractor={(it) => it.id}
             scrollEnabled={false}
             contentContainerStyle={{ paddingHorizontal: spacing.md, gap: spacing.sm, paddingBottom: spacing.md }}
-            renderItem={({ item }) => <FeedCard item={item} />}
+            renderItem={({ item }) => (
+              <FeedCard
+                item={item}
+                onShare={shareReportWhatsApp}
+                sharing={sharingReportId === item.id}
+              />
+            )}
           />
         )}
       </ScrollView>
@@ -542,7 +603,15 @@ function StatCard({ label, value, icon, tint }: {
   );
 }
 
-function FeedCard({ item }: { item: FeedItem }) {
+function FeedCard({
+  item,
+  onShare,
+  sharing,
+}: {
+  item: FeedItem;
+  onShare?: (item: FeedItem) => void;
+  sharing?: boolean;
+}) {
   const tone = areaTone(item.area_color || undefined);
   const path = item.node_path_names || [];
   const leafName = path[path.length - 1] || 'Sin ubicación';
@@ -619,7 +688,32 @@ function FeedCard({ item }: { item: FeedItem }) {
         ) : null}
       </View>
 
-      <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+      <View style={{ alignItems: 'center', gap: 8, justifyContent: 'center' }}>
+        {onShare ? (
+          <TouchableOpacity
+            onPress={(e) => { e.stopPropagation?.(); onShare(item); }}
+            disabled={!!sharing}
+            style={{
+              width: 36,
+              height: 36,
+              borderRadius: 18,
+              backgroundColor: '#25D366',
+              alignItems: 'center',
+              justifyContent: 'center',
+              opacity: sharing ? 0.6 : 1,
+            }}
+            accessibilityLabel="Compartir por WhatsApp"
+            hitSlop={8}
+          >
+            {sharing ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <Ionicons name="logo-whatsapp" size={18} color="#fff" />
+            )}
+          </TouchableOpacity>
+        ) : null}
+        <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+      </View>
     </Pressable>
   );
 }
