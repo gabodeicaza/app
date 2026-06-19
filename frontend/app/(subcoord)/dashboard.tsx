@@ -18,6 +18,8 @@ import {
   View,
 } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
+import * as Sharing from 'expo-sharing';
+import * as FileSystem from 'expo-file-system/legacy';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -184,6 +186,32 @@ export default function SubCoordDashboard() {
       setTimeout(() => setAiCopied(false), 1800);
     } catch {
       Alert.alert('No se pudo copiar', 'Intenta seleccionar el texto manualmente.');
+    }
+  }
+
+  async function shareToWhatsApp() {
+    if (!aiSummary) return;
+    try {
+      const available = await Sharing.isAvailableAsync();
+      if (!available) {
+        Alert.alert('No disponible', 'Compartir no está disponible en este dispositivo.');
+        return;
+      }
+      const ts = Date.now();
+      const fileUri = `${FileSystem.cacheDirectory}resumen_ejecutivo_${ts}.txt`;
+      const header = `📋 Resumen Ejecutivo — SynCo\n${
+        aiMeta ? `${aiMeta.reports_count} reportes · últimas ${aiMeta.period_hours}h\n` : ''
+      }\n`;
+      await FileSystem.writeAsStringAsync(fileUri, header + aiSummary, {
+        encoding: FileSystem.EncodingType.UTF8,
+      });
+      await Sharing.shareAsync(fileUri, {
+        mimeType: 'text/plain',
+        dialogTitle: 'Compartir resumen ejecutivo',
+        UTI: 'public.plain-text',
+      });
+    } catch (e: any) {
+      Alert.alert('No se pudo compartir', e?.message || 'Inténtalo nuevamente.');
     }
   }
 
@@ -568,7 +596,7 @@ export default function SubCoordDashboard() {
             {pid && (
               <>
                 <DailyGoalsPanel projectId={pid} />
-                <NodeProgressPanel projectId={pid} />
+                <NodeProgressPanel projectId={pid} reports={reports} />
               </>
             )}
               </>
@@ -646,6 +674,19 @@ export default function SubCoordDashboard() {
                 <Text style={styles.aiPrimTxt}>{aiCopied ? 'Copiado' : 'Copiar'}</Text>
               </Pressable>
             </View>
+
+            <Pressable
+              onPress={shareToWhatsApp}
+              disabled={!aiSummary || aiBusy}
+              style={({ pressed }) => [
+                styles.waBtn,
+                (!aiSummary || aiBusy) && { opacity: 0.5 },
+                pressed && { opacity: 0.85 },
+              ]}
+            >
+              <Ionicons name="logo-whatsapp" size={18} color="#fff" />
+              <Text style={styles.waTxt}>Compartir por WhatsApp</Text>
+            </Pressable>
           </View>
         </View>
       </Modal>

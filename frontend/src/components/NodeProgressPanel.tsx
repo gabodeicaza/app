@@ -9,10 +9,11 @@ import { colors, radius, shadow, spacing } from '@/src/theme';
 
 type Props = {
   projectId: string;
-  reports: FeedItem[];
+  reports?: FeedItem[] | null;
 };
 
 export function NodeProgressPanel({ projectId, reports }: Props) {
+  const safeReports: FeedItem[] = Array.isArray(reports) ? reports : [];
   const [nodes, setNodes] = useState<LocationNode[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -38,11 +39,12 @@ export function NodeProgressPanel({ projectId, reports }: Props) {
 
   const counts = useMemo(() => {
     const map = new Map<string, number>();
-    for (const r of reports) {
+    for (const r of safeReports) {
+      if (!r || !r.node_id) continue;
       map.set(r.node_id, (map.get(r.node_id) || 0) + 1);
     }
     return map;
-  }, [reports]);
+  }, [safeReports]);
 
   const items = useMemo(
     () => nodes

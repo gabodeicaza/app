@@ -12,7 +12,9 @@
       "supportsTablet": true,
       "infoPlist": {
         "NSCameraUsageDescription": "Capturar evidencia de obra en memoria, sin guardarla en tu dispositivo.",
-        "NSPhotoLibraryUsageDescription": "Adjuntar fotos al reporte sin guardarlas en tu dispositivo."
+        "NSPhotoLibraryUsageDescription": "Adjuntar fotos al reporte sin guardarlas en tu dispositivo.",
+        "NSPhotoLibraryAddUsageDescription": "Guardar evidencia compartida en tu galería.",
+        "NSLocationWhenInUseUsageDescription": "Adjuntar ubicación a la evidencia fotográfica."
       }
     },
     "android": {
@@ -22,7 +24,11 @@
       },
       "edgeToEdgeEnabled": true,
       "permissions": [
-        "CAMERA"
+        "CAMERA",
+        "READ_EXTERNAL_STORAGE",
+        "WRITE_EXTERNAL_STORAGE",
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION"
       ]
     },
     "web": {
