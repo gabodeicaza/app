@@ -144,7 +144,11 @@ export default function SubCoordDashboard() {
   const progressRows: ProgressRow[] = useMemo(() => {
     const counts = new Map<string, number>();
     for (const r of filteredReports) {
-      counts.set(r.node_id, (counts.get(r.node_id) || 0) + 1);
+      const anyR: any = r;
+      const raw = anyR.avance ?? anyR.medicion ?? 0;
+      const val = parseFloat(String(raw));
+      const inc = Number.isFinite(val) ? val : 0;
+      counts.set(r.node_id, (counts.get(r.node_id) || 0) + inc);
     }
     const rows: ProgressRow[] = [];
     for (const n of nodes) {

@@ -41,7 +41,11 @@ export function NodeProgressPanel({ projectId, reports }: Props) {
     const map = new Map<string, number>();
     for (const r of safeReports) {
       if (!r || !r.node_id) continue;
-      map.set(r.node_id, (map.get(r.node_id) || 0) + 1);
+      const anyR: any = r;
+      const raw = anyR.avance ?? anyR.medicion ?? 0;
+      const val = parseFloat(String(raw));
+      const inc = Number.isFinite(val) ? val : 0;
+      map.set(r.node_id, (map.get(r.node_id) || 0) + inc);
     }
     return map;
   }, [safeReports]);
