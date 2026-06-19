@@ -179,6 +179,7 @@ export interface Announcement {
   title: string;
   body: string;
   pinned: boolean;
+  jerarquia?: 'urgente' | 'importante' | 'informativo' | null;
   author_id: string;
   author_name: string;
   author_role?: string;
@@ -378,9 +379,9 @@ export const api = {
   // ---- Announcements (Noticias) -------------------------------------------
   listAnnouncements: (pid: string) =>
     request<Announcement[]>('GET', `/projects/${pid}/announcements`),
-  createAnnouncement: (pid: string, payload: { title: string; body: string; pinned?: boolean }) =>
+  createAnnouncement: (pid: string, payload: { title: string; body: string; pinned?: boolean; jerarquia?: 'urgente' | 'importante' | 'informativo' | null }) =>
     request<Announcement>('POST', `/projects/${pid}/announcements`, payload),
-  updateAnnouncement: (aid: string, payload: { title?: string; body?: string; pinned?: boolean }) =>
+  updateAnnouncement: (aid: string, payload: { title?: string; body?: string; pinned?: boolean; jerarquia?: 'urgente' | 'importante' | 'informativo' | null }) =>
     request<Announcement>('PATCH', `/announcements/${aid}`, payload),
   deleteAnnouncement: (aid: string) =>
     request<{ ok: boolean }>('DELETE', `/announcements/${aid}`),

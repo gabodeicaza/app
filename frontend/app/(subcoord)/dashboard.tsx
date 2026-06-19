@@ -59,6 +59,10 @@ export default function SubCoordDashboard() {
   // Estado para compartir reporte individual
   const [sharingReportId, setSharingReportId] = useState<string | null>(null);
 
+  // Filtros Sub-coord por Área + Exportación Avanzada (Task 4)
+  const [selectedAreas, setSelectedAreas] = useState<Set<string>>(new Set());
+  const [advExportOpen, setAdvExportOpen] = useState(false);
+
   const loadProjects = useCallback(async () => {
     try {
       const list = await api.listProjects();
@@ -109,9 +113,30 @@ export default function SubCoordDashboard() {
     setRefreshing(false);
   }, [pid, loadData]);
 
+  const allAreas = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const r of reports) {
+      if (r.area_name) m.set(r.area_name, r.area_color || '');
+    }
+    return Array.from(m, ([name, color]) => ({ name, color }));
+  }, [reports]);
+
+  const filteredReports = useMemo(() => {
+    if (selectedAreas.size === 0) return reports;
+    return reports.filter((r) => r.area_name && selectedAreas.has(r.area_name));
+  }, [reports, selectedAreas]);
+
+  // Nombre del nodo tramo (scope_node_id) para Hero Card (Task 2)
+  const scopeNodeName = useMemo(() => {
+    const sid = (user as any)?.scope_node_id;
+    if (!sid) return null;
+    const n = nodes.find((x) => x.id === sid);
+    return n?.name || null;
+  }, [nodes, user]);
+
   const progressRows: ProgressRow[] = useMemo(() => {
     const counts = new Map<string, number>();
-    for (const r of reports) {
+    for (const r of filteredReports) {
       counts.set(r.node_id, (counts.get(r.node_id) || 0) + 1);
     }
     const rows: ProgressRow[] = [];
@@ -123,7 +148,7 @@ export default function SubCoordDashboard() {
       }
     }
     return rows;
-  }, [nodes, reports]);
+  }, [nodes, filteredReports]);
 
   const globalPct = useMemo(() => {
     if (progressRows.length === 0) return 0;
@@ -137,8 +162,8 @@ export default function SubCoordDashboard() {
   );
 
   const todayReports = useMemo(
-    () => [...reports].sort((a, b) => (a.created_at < b.created_at ? 1 : -1)).slice(0, 12),
-    [reports],
+    () => [...filteredReports].sort((a, b) => (a.created_at < b.created_at ? 1 : -1)).slice(0, 12),
+    [filteredReports],
   );
 
   async function onLogout() {

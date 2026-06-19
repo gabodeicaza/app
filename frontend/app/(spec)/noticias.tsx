@@ -16,6 +16,12 @@ import { colors, radius, shadow, spacing } from '@/src/theme';
 
 const POLL_MS = 60000;
 
+const JERARQUIA_COLORS: Record<string, { bg: string; bd: string; fg: string; label: string; icon: any }> = {
+  urgente: { bg: '#FEE2E2', bd: '#EF4444', fg: '#991B1B', label: 'Urgente', icon: 'flame' },
+  importante: { bg: '#FEF3C7', bd: '#F59E0B', fg: '#92400E', label: 'Importante', icon: 'warning' },
+  informativo: { bg: '#DBEAFE', bd: '#3B82F6', fg: '#1E40AF', label: 'Informativo', icon: 'information-circle' },
+};
+
 type EditorState =
   | { kind: 'create' }
   | { kind: 'edit'; item: Announcement }
@@ -170,14 +176,28 @@ function AnnouncementCard({
   onEdit: () => void;
   onDelete: () => void;
 }) {
+  const jq = (item.jerarquia || '').toString().toLowerCase();
+  const jStyle = JERARQUIA_COLORS[jq];
   return (
-    <View style={[styles.card, item.pinned && styles.cardPinned]}>
-      {item.pinned ? (
-        <View style={styles.pinnedRow}>
-          <Ionicons name="pin" size={11} color={colors.primary} />
-          <Text style={styles.pinnedTxt}>Fijado</Text>
-        </View>
-      ) : null}
+    <View style={[
+      styles.card,
+      item.pinned && styles.cardPinned,
+      jStyle && { borderLeftWidth: 4, borderLeftColor: jStyle.bd, backgroundColor: jStyle.bg },
+    ]}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+        {item.pinned ? (
+          <View style={styles.pinnedRow}>
+            <Ionicons name="pin" size={11} color={colors.primary} />
+            <Text style={styles.pinnedTxt}>Fijado</Text>
+          </View>
+        ) : null}
+        {jStyle ? (
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: jStyle.bd, paddingHorizontal: 8, paddingVertical: 2, borderRadius: 999 }}>
+            <Ionicons name={jStyle.icon} size={11} color="#fff" />
+            <Text style={{ color: '#fff', fontSize: 10, fontWeight: '800', letterSpacing: 0.5 }}>{jStyle.label.toUpperCase()}</Text>
+          </View>
+        ) : null}
+      </View>
       <Text style={styles.cardTitle}>{item.title}</Text>
       <Text style={styles.cardBody}>{item.body}</Text>
       <View style={styles.cardMeta}>
@@ -216,6 +236,7 @@ function AnnouncementEditor({
   const [title, setTitle] = useState('');
   const [body, setBody] = useState('');
   const [pinned, setPinned] = useState(false);
+  const [jerarquia, setJerarquia] = useState<'urgente' | 'importante' | 'informativo' | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -225,8 +246,10 @@ function AnnouncementEditor({
       setTitle(editor.item.title);
       setBody(editor.item.body);
       setPinned(!!editor.item.pinned);
+      const j = (editor.item.jerarquia || '').toString().toLowerCase();
+      setJerarquia((['urgente', 'importante', 'informativo'].includes(j) ? j : null) as any);
     } else {
-      setTitle(''); setBody(''); setPinned(false);
+      setTitle(''); setBody(''); setPinned(false); setJerarquia(null);
     }
     setErr(null);
   }, [visible, editor]);
@@ -240,11 +263,11 @@ function AnnouncementEditor({
     setBusy(true);
     try {
       if (editor?.kind === 'edit') {
-        const payload: any = { title: t, body: b };
+        const payload: any = { title: t, body: b, jerarquia };
         if (canPin) payload.pinned = pinned;
         await api.updateAnnouncement(editor.item.id, payload);
       } else {
-        await api.createAnnouncement(projectId, { title: t, body: b, pinned: canPin ? pinned : false });
+        await api.createAnnouncement(projectId, { title: t, body: b, pinned: canPin ? pinned : false, jerarquia });
       }
       onSaved();
     } catch (e: any) {
@@ -283,6 +306,31 @@ function AnnouncementEditor({
                 style={[styles.modalInput, { minHeight: 120, textAlignVertical: 'top' }]}
                 multiline editable={!busy} maxLength={4000}
               />
+              <Text style={styles.modalLabel}>Jerarquía (opcional)</Text>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+                {[
+                  { key: null, label: 'Ninguna', bd: colors.textMuted },
+                  { key: 'urgente', label: 'Urgente', bd: '#EF4444' },
+                  { key: 'importante', label: 'Importante', bd: '#F59E0B' },
+                  { key: 'informativo', label: 'Informativo', bd: '#3B82F6' },
+                ].map((opt) => {
+                  const active = jerarquia === opt.key;
+                  return (
+                    <Pressable
+                      key={String(opt.key)}
+                      onPress={() => setJerarquia(opt.key as any)}
+                      disabled={busy}
+                      style={{
+                        paddingHorizontal: 12, paddingVertical: 8, borderRadius: 999,
+                        borderWidth: 1.5, borderColor: opt.bd,
+                        backgroundColor: active ? opt.bd : 'transparent',
+                      }}
+                    >
+                      <Text style={{ color: active ? '#fff' : opt.bd, fontWeight: '700', fontSize: 12 }}>{opt.label}</Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
               {canPin ? (
                 <View style={styles.pinRow}>
                   <Ionicons name="pin" size={14} color={colors.primary} />

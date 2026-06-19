@@ -1303,12 +1303,14 @@ class AnnouncementIn(BaseModel):
     title: str
     body: str
     pinned: bool = False
+    jerarquia: Optional[str] = None  # 'urgente' | 'importante' | 'informativo' | None
 
 
 class AnnouncementPatch(BaseModel):
     title: Optional[str] = None
     body: Optional[str] = None
     pinned: Optional[bool] = None
+    jerarquia: Optional[str] = None
 
 
 def _announcement_out(doc: dict) -> dict:
@@ -1346,6 +1348,10 @@ async def create_announcement(
         raise HTTPException(400, "Título máximo 140 caracteres")
     if len(text) > 4000:
         raise HTTPException(400, "Cuerpo máximo 4000 caracteres")
+    # Normaliza jerarquía: 'urgente' | 'importante' | 'informativo' | None
+    jerarquia = (body.jerarquia or "").strip().lower() or None
+    if jerarquia and jerarquia not in ("urgente", "importante", "informativo"):
+        raise HTTPException(400, "Jerarquía inválida")
     now = datetime.now(timezone.utc)
     doc = {
         "id": str(uuid.uuid4()),
@@ -1353,6 +1359,7 @@ async def create_announcement(
         "title": title,
         "body": text,
         "pinned": bool(body.pinned),
+        "jerarquia": jerarquia,
         "author_id": user["id"],
         "author_name": user["name"],
         "author_role": user["role"],
@@ -1398,6 +1405,14 @@ async def update_announcement(
         if not is_coord:
             raise HTTPException(403, "Sólo el Coordinador puede fijar noticias")
         update["pinned"] = bool(body.pinned)
+    if body.jerarquia is not None:
+        j = (body.jerarquia or "").strip().lower()
+        if j == "":
+            update["jerarquia"] = None
+        elif j in ("urgente", "importante", "informativo"):
+            update["jerarquia"] = j
+        else:
+            raise HTTPException(400, "Jerarquía inválida")
     if not update:
         return _announcement_out(a)
     update["updated_at"] = datetime.now(timezone.utc)
