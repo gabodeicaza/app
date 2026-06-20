@@ -62,6 +62,8 @@ export default function SubCoordDashboard() {
   // Filtros Sub-coord por Área + Exportación Avanzada (Task 4)
   const [selectedAreas, setSelectedAreas] = useState<Set<string>>(new Set());
   const [advExportOpen, setAdvExportOpen] = useState(false);
+  const [previewItem, setPreviewItem] = useState<FeedItem | null>(null);
+  const [advExporting, setAdvExporting] = useState(false);
 
   // P4 - Filtro de tiempo (Hoy/Semana/Mes)
   const [period, setPeriod] = useState<'today' | 'week' | 'month'>('today');
@@ -352,7 +354,64 @@ export default function SubCoordDashboard() {
     }
   }
 
-  function progressTint(pct: number) {
+  // P0 - Exportación Avanzada: PDF / XLSX / DOCX / PPTX × Hoy/Ayer/Semana/Mes
+  async function onAdvExport() {
+    if (!pid || advExporting) return;
+    try {
+      setAdvExporting(true);
+      let blob: Blob;
+      let filename: string;
+      if (expFormat === 'xlsx') {
+        const r = await api.downloadReportsXlsx(pid);
+        blob = r.blob;
+        filename = r.filename;
+      } else if (expFormat === 'pdf') {
+        const r = await api.downloadReportsPdf(pid, expPeriod);
+        blob = r.blob;
+        filename = r.filename;
+      } else if (expFormat === 'docx') {
+        const r = await api.downloadReportsDocx(pid, expPeriod);
+        blob = r.blob;
+        filename = r.filename;
+      } else {
+        const r = await api.downloadReportsPptx(pid, expPeriod);
+        blob = r.blob;
+        filename = r.filename;
+      }
+      if (Platform.OS === 'web') {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+      } else {
+        const reader = new FileReader();
+        const dataUri: string = await new Promise((resolve, reject) => {
+          reader.onerror = () => reject(reader.error);
+          reader.onloadend = () => resolve(reader.result as string);
+          reader.readAsDataURL(blob);
+        });
+        const base64 = dataUri.split(',')[1] || '';
+        const dest = `${FileSystem.cacheDirectory || ''}${filename}`;
+        await FileSystem.writeAsStringAsync(dest, base64, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+        if (await Sharing.isAvailableAsync()) {
+          await Sharing.shareAsync(dest, { dialogTitle: 'Compartir reporte SynCo' });
+        } else {
+          Alert.alert('Listo', `Archivo guardado en caché:\n${dest}`);
+        }
+      }
+      setAdvExportOpen(false);
+    } catch (e: any) {
+      Alert.alert('No se pudo exportar', e?.message || 'Inténtalo nuevamente.');
+    } finally {
+      setAdvExporting(false);
+    }
+  }
     if (pct >= 100) return colors.success;
     if (pct >= 50) return colors.primary;
     return colors.error;
@@ -674,6 +733,26 @@ export default function SubCoordDashboard() {
               </Pressable>
             </View>
 
+            {/* Botón Exportación Avanzada (PDF/XLSX/DOCX/PPTX × período) */}
+            <View style={styles.exportRow}>
+              <Pressable
+                onPress={() => setAdvExportOpen(true)}
+                style={({ pressed }) => [
+                  styles.exportAdvBtn,
+                  pressed && { opacity: 0.92 },
+                ]}
+              >
+                <Ionicons name="options-outline" size={22} color="#fff" />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.exportMainTitle}>Exportación Avanzada</Text>
+                  <Text style={styles.exportMainSub}>
+                    PDF · XLSX · DOCX · PPTX  ×  Hoy/Ayer/Semana/Mes
+                  </Text>
+                </View>
+                <Ionicons name="chevron-forward" size={20} color="rgba(255,255,255,0.85)" />
+              </Pressable>
+            </View>
+
             {/* Alertas Semáforo */}
             <View style={styles.cardWrap}>
               <View style={styles.card}>
@@ -764,7 +843,14 @@ export default function SubCoordDashboard() {
                   const subtitle = parentName ? `${parentName} · ${leafName}` : leafName;
                   const isSharing = sharingReportId === r.id;
                   return (
-                    <View key={r.id} style={styles.feedCard}>
+                    <Pressable
+                      key={r.id}
+                      onPress={() => setPreviewItem(r)}
+                      style={({ pressed }) => [
+                        styles.feedCard,
+                        pressed && { opacity: 0.88, transform: [{ scale: 0.995 }] },
+                      ]}
+                    >
                       <View style={styles.thumbWrap}>
                         {r.thumbnail_base64 ? (
                           <Image
@@ -827,7 +913,7 @@ export default function SubCoordDashboard() {
                           <Ionicons name="logo-whatsapp" size={18} color="#fff" />
                         )}
                       </Pressable>
-                    </View>
+                    </Pressable>
                   );
                 })}
               </View>
@@ -920,6 +1006,178 @@ export default function SubCoordDashboard() {
             </Pressable>
           </View>
         </View>
+      </Modal>
+
+      {/* ===== Modal: Preview de Reporte (centrado) ===== */}
+      <Modal
+        visible={!!previewItem}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setPreviewItem(null)}
+      >
+        <Pressable style={styles.previewBackdrop} onPress={() => setPreviewItem(null)}>
+          <Pressable style={styles.previewCard} onPress={(e) => e.stopPropagation()}>
+            <View style={styles.previewHeader}>
+              <Text style={styles.previewTitle} numberOfLines={1}>
+                {(previewItem?.node_path_names || []).slice(-1)[0] || 'Reporte'}
+              </Text>
+              <Pressable hitSlop={10} onPress={() => setPreviewItem(null)}>
+                <Ionicons name="close" size={22} color="#0f172a" />
+              </Pressable>
+            </View>
+            <ScrollView style={{ maxHeight: 460 }} contentContainerStyle={{ padding: 16, gap: 12 }}>
+              {previewItem?.thumbnail_base64 ? (
+                <Image
+                  source={{ uri: `data:image/jpeg;base64,${previewItem.thumbnail_base64}` }}
+                  style={styles.previewImage}
+                  resizeMode="cover"
+                />
+              ) : null}
+              <View style={styles.previewRow}>
+                <Ionicons name="location-outline" size={16} color="#475569" />
+                <Text style={styles.previewMeta} numberOfLines={2}>
+                  {(previewItem?.node_path_names || []).join(' › ') || '—'}
+                </Text>
+              </View>
+              {previewItem?.area_name ? (
+                <View style={styles.previewRow}>
+                  <Ionicons name="pricetag-outline" size={16} color="#475569" />
+                  <Text style={styles.previewMeta}>{previewItem.area_name}</Text>
+                </View>
+              ) : null}
+              <View style={styles.previewRow}>
+                <Ionicons name="person-outline" size={16} color="#475569" />
+                <Text style={styles.previewMeta}>{previewItem?.captured_by_name || '—'}</Text>
+              </View>
+              <View style={styles.previewRow}>
+                <Ionicons name="time-outline" size={16} color="#475569" />
+                <Text style={styles.previewMeta}>
+                  {previewItem ? formatTime(previewItem.created_at) : ''}
+                </Text>
+              </View>
+              {previewItem?.avance ? (
+                <View style={styles.previewBlock}>
+                  <Text style={styles.previewBlockTitle}>Avance</Text>
+                  <Text style={styles.previewBlockTxt}>{previewItem.avance}</Text>
+                </View>
+              ) : null}
+              {(previewItem as any)?.medicion ? (
+                <View style={styles.previewBlock}>
+                  <Text style={styles.previewBlockTitle}>Medición</Text>
+                  <Text style={styles.previewBlockTxt}>{String((previewItem as any).medicion)}</Text>
+                </View>
+              ) : null}
+            </ScrollView>
+            <View style={styles.previewFooter}>
+              <Pressable
+                onPress={() => previewItem && shareReportWhatsApp(previewItem)}
+                style={({ pressed }) => [styles.previewWaBtn, pressed && { opacity: 0.85 }]}
+              >
+                <Ionicons name="logo-whatsapp" size={18} color="#fff" />
+                <Text style={styles.previewWaTxt}>Compartir</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => setPreviewItem(null)}
+                style={({ pressed }) => [styles.previewCloseBtn, pressed && { opacity: 0.85 }]}
+              >
+                <Text style={styles.previewCloseTxt}>Cerrar</Text>
+              </Pressable>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* ===== Modal: Exportación Avanzada ===== */}
+      <Modal
+        visible={advExportOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => !advExporting && setAdvExportOpen(false)}
+      >
+        <Pressable
+          style={styles.previewBackdrop}
+          onPress={() => !advExporting && setAdvExportOpen(false)}
+        >
+          <Pressable style={styles.advCard} onPress={(e) => e.stopPropagation()}>
+            <View style={styles.previewHeader}>
+              <Text style={styles.previewTitle}>Exportación Avanzada</Text>
+              <Pressable
+                hitSlop={10}
+                disabled={advExporting}
+                onPress={() => setAdvExportOpen(false)}
+              >
+                <Ionicons name="close" size={22} color="#0f172a" />
+              </Pressable>
+            </View>
+            <ScrollView contentContainerStyle={{ padding: 16, gap: 16 }}>
+              <View>
+                <Text style={styles.advLabel}>Formato</Text>
+                <View style={styles.advGrid}>
+                  {(['xlsx', 'pdf', 'docx', 'pptx'] as const).map((f) => {
+                    const active = expFormat === f;
+                    return (
+                      <Pressable
+                        key={f}
+                        onPress={() => setExpFormat(f)}
+                        style={[styles.advChip, active && styles.advChipActive]}
+                      >
+                        <Text style={[styles.advChipTxt, active && styles.advChipTxtActive]}>
+                          {f.toUpperCase()}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              </View>
+              <View>
+                <Text style={styles.advLabel}>Período</Text>
+                <View style={styles.advGrid}>
+                  {([
+                    { k: 'today', l: 'Hoy' },
+                    { k: 'yesterday', l: 'Ayer' },
+                    { k: 'week', l: 'Semana' },
+                    { k: 'month', l: 'Mes' },
+                  ] as const).map((p) => {
+                    const active = expPeriod === p.k;
+                    return (
+                      <Pressable
+                        key={p.k}
+                        onPress={() => setExpPeriod(p.k as any)}
+                        style={[styles.advChip, active && styles.advChipActive]}
+                      >
+                        <Text style={[styles.advChipTxt, active && styles.advChipTxtActive]}>
+                          {p.l}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+                {expFormat === 'xlsx' && (
+                  <Text style={styles.advHint}>
+                    Nota: XLSX exporta todos los reportes vigentes (el período no aplica).
+                  </Text>
+                )}
+              </View>
+              <Pressable
+                onPress={onAdvExport}
+                disabled={advExporting}
+                style={({ pressed }) => [
+                  styles.advExportGo,
+                  (advExporting || pressed) && { opacity: 0.85 },
+                ]}
+              >
+                {advExporting ? (
+                  <ActivityIndicator color="#fff" size="small" />
+                ) : (
+                  <Ionicons name="download-outline" size={20} color="#fff" />
+                )}
+                <Text style={styles.advExportGoTxt}>
+                  {advExporting ? 'Generando…' : 'Exportar ahora'}
+                </Text>
+              </Pressable>
+            </ScrollView>
+          </Pressable>
+        </Pressable>
       </Modal>
     </View>
   );

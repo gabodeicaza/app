@@ -155,7 +155,8 @@ export default function SpecCaptureScreen() {
       setError(null);
       const [p, t] = await Promise.all([api.getProject(projectId), api.getTree(projectId)]);
       setProject(p);
-      setTree(filterTreeByLeafScope(t, allowedLeafIds));
+      // Sub-coordinador: scope GLOBAL (sin filtrado de hojas).
+      setTree(isSubCoord ? t : filterTreeByLeafScope(t, allowedLeafIds));
     } catch (e: any) {
       setError(e?.message || 'No se pudo cargar el proyecto');
     } finally {

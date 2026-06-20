@@ -57,8 +57,8 @@ export default function ProjectDetailScreen() {
   const [aiMeta, setAiMeta] = useState<{ reports_count: number; period_hours: number } | null>(null);
   const [aiCopied, setAiCopied] = useState(false);
 
-  // Tabs: Detalle / Resumen IA
-  const [activeTab, setActiveTab] = useState<'detalle' | 'resumen'>('detalle');
+  // Tabs: Operación / Configuración
+  const [activeTab, setActiveTab] = useState<'operacion' | 'configuracion'>('operacion');
 
   // Exportación unificada (2 pasos: período → formato)
   const [exportOpen, setExportOpen] = useState(false);
@@ -313,37 +313,37 @@ export default function ProjectDetailScreen() {
               {project.description ? <InfoRow icon="chatbox-ellipses-outline" label="Descripción" value={project.description} /> : null}
             </View>
 
-            {/* ===== Pestañas: Detalle / Resumen IA ===== */}
+            {/* ===== Pestañas: Operación / Configuración ===== */}
             <View style={styles.tabBar}>
               <Pressable
-                onPress={() => setActiveTab('detalle')}
-                style={[styles.tabBtn, activeTab === 'detalle' && styles.tabBtnActive]}
+                onPress={() => setActiveTab('operacion')}
+                style={[styles.tabBtn, activeTab === 'operacion' && styles.tabBtnActive]}
               >
                 <Ionicons
-                  name="list-outline"
+                  name="construct-outline"
                   size={16}
-                  color={activeTab === 'detalle' ? '#fff' : colors.text}
+                  color={activeTab === 'operacion' ? '#fff' : colors.text}
                 />
-                <Text style={[styles.tabTxt, activeTab === 'detalle' && styles.tabTxtActive]}>
-                  Detalle
+                <Text style={[styles.tabTxt, activeTab === 'operacion' && styles.tabTxtActive]}>
+                  Operación
                 </Text>
               </Pressable>
               <Pressable
-                onPress={() => setActiveTab('resumen')}
-                style={[styles.tabBtn, activeTab === 'resumen' && styles.tabBtnActive]}
+                onPress={() => setActiveTab('configuracion')}
+                style={[styles.tabBtn, activeTab === 'configuracion' && styles.tabBtnActive]}
               >
                 <Ionicons
-                  name="sparkles-outline"
+                  name="settings-outline"
                   size={16}
-                  color={activeTab === 'resumen' ? '#fff' : colors.text}
+                  color={activeTab === 'configuracion' ? '#fff' : colors.text}
                 />
-                <Text style={[styles.tabTxt, activeTab === 'resumen' && styles.tabTxtActive]}>
-                  Resumen
+                <Text style={[styles.tabTxt, activeTab === 'configuracion' && styles.tabTxtActive]}>
+                  Configuración
                 </Text>
               </Pressable>
             </View>
 
-            {activeTab === 'resumen' ? (
+            {activeTab === 'configuracion' ? (
               <Pressable
                 onPress={openAiSummary}
                 disabled={aiBusy}

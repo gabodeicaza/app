@@ -654,12 +654,9 @@ async def set_reference_files(
 async def list_nodes(pid: str, user: dict = Depends(current_user)):
     await ensure_project_access(user, pid)
     items = await db.location_nodes.find({"project_id": pid}).sort([("depth", 1), ("order", 1)]).to_list(length=10000)
-    # Filtrado por scope para Sub-coordinador / Especialista
+    # Filtrado por scope (Sub-coordinador AHORA tiene scope GLOBAL, igual que Coordinador).
     role = user.get("role")
-    if role == ROLE_SUB and user.get("scope_node_id"):
-        allowed = set(await descendants_ids(user["scope_node_id"]))
-        items = [it for it in items if it["id"] in allowed]
-    elif role == ROLE_ESPECIALISTA and (user.get("scope_node_ids") or []):
+    if role == ROLE_ESPECIALISTA and (user.get("scope_node_ids") or []):
         allowed_leaves = set(user.get("scope_node_ids") or [])
         # incluir ancestros para que el árbol sea navegable
         ancestors: set = set()
@@ -682,12 +679,9 @@ async def get_tree(pid: str, user: dict = Depends(current_user)):
     """Devuelve el árbol completo como estructura jerárquica."""
     await ensure_project_access(user, pid)
     items = await db.location_nodes.find({"project_id": pid}).sort([("depth", 1), ("order", 1)]).to_list(length=10000)
-    # Filtrado por scope (sub-coord / especialista)
+    # Filtrado por scope (Sub-coordinador AHORA tiene scope GLOBAL, igual que Coordinador).
     role = user.get("role")
-    if role == ROLE_SUB and user.get("scope_node_id"):
-        allowed = set(await descendants_ids(user["scope_node_id"]))
-        items = [it for it in items if it["id"] in allowed]
-    elif role == ROLE_ESPECIALISTA and (user.get("scope_node_ids") or []):
+    if role == ROLE_ESPECIALISTA and (user.get("scope_node_ids") or []):
         allowed_leaves = set(user.get("scope_node_ids") or [])
         ancestors: set = set()
         parent_of = {n["id"]: n.get("parent_id") for n in items}
@@ -1065,10 +1059,7 @@ async def create_report(body: ReportIn, user: dict = Depends(current_user)):
     if user["role"] == ROLE_ESPECIALISTA:
         if body.node_id not in (user.get("scope_node_ids") or []):
             raise HTTPException(403, "Nodo no está en tu scope autorizado")
-    elif user["role"] == ROLE_SUB and user.get("scope_node_id"):
-        allowed = await descendants_ids(user["scope_node_id"])
-        if body.node_id not in allowed:
-            raise HTTPException(403, "Nodo fuera de tu scope autorizado")
+    # Sub-coordinador: scope GLOBAL (puede capturar en cualquier hoja del proyecto).
     validate_measurement_value(node["measurement_type"], body.measurement_value)
     path_names = await node_path_names(body.node_id)
     area_name = None
@@ -1132,10 +1123,7 @@ async def node_history(pid: str, nid: str, user: dict = Depends(current_user)):
     if user["role"] == ROLE_ESPECIALISTA:
         if nid not in (user.get("scope_node_ids") or []):
             raise HTTPException(403, "Nodo no está en tu scope autorizado")
-    elif user["role"] == ROLE_SUB and user.get("scope_node_id"):
-        allowed = await descendants_ids(user["scope_node_id"])
-        if nid not in allowed:
-            raise HTTPException(403, "Nodo fuera de tu scope")
+    # Sub-coordinador: acceso GLOBAL (sin restricción de scope).
 
     last = await db.reports.find_one(
         {"project_id": pid, "node_id": nid},
@@ -1171,12 +1159,10 @@ async def node_history(pid: str, nid: str, user: dict = Depends(current_user)):
 async def list_reports(pid: str, user: dict = Depends(current_user)):
     await ensure_project_access(user, pid)
     q: dict = {"project_id": pid}
-    if user["role"] == ROLE_SUB and user.get("scope_node_id"):
-        allowed = await descendants_ids(user["scope_node_id"])
-        q["node_id"] = {"$in": allowed}
-    elif user["role"] == ROLE_ESPECIALISTA:
+    if user["role"] == ROLE_ESPECIALISTA:
         scope = user.get("scope_node_ids") or []
         q["node_id"] = {"$in": scope}
+    # Sub-coordinador: acceso GLOBAL al listado de reportes (sin filtro de scope).
     items = await db.reports.find(q).sort("created_at", -1).to_list(length=2000)
     for it in items:
         it.pop("_id", None)
@@ -1218,12 +1204,10 @@ async def reports_feed(
     """
     await ensure_project_access(user, pid)
     q: dict = {"project_id": pid}
-    if user["role"] == ROLE_SUB and user.get("scope_node_id"):
-        allowed = await descendants_ids(user["scope_node_id"])
-        q["node_id"] = {"$in": allowed}
-    elif user["role"] == ROLE_ESPECIALISTA:
+    if user["role"] == ROLE_ESPECIALISTA:
         scope = user.get("scope_node_ids") or []
         q["node_id"] = {"$in": scope}
+    # Sub-coordinador: feed GLOBAL del proyecto (sin restricción de scope).
 
     start = _feed_range_start(range)
     if start is not None:
@@ -1292,13 +1276,10 @@ async def get_report(rid: str, user: dict = Depends(current_user)):
         raise HTTPException(404, "Reporte no existe")
     await ensure_project_access(user, r["project_id"])
     # Scope check
-    if user["role"] == ROLE_SUB and user.get("scope_node_id"):
-        allowed = await descendants_ids(user["scope_node_id"])
-        if r["node_id"] not in allowed:
-            raise HTTPException(403, "Sin acceso a este reporte")
-    elif user["role"] == ROLE_ESPECIALISTA:
+    if user["role"] == ROLE_ESPECIALISTA:
         if r["node_id"] not in (user.get("scope_node_ids") or []):
             raise HTTPException(403, "Sin acceso a este reporte")
+    # Sub-coordinador: acceso GLOBAL (sin filtro de scope).
     r.pop("_id", None)
     return r
 
@@ -2348,16 +2329,7 @@ async def export_reports_pdf(
     # --- Filtro scope por rol ------------------------------------------------
     role = user["role"]
     allowed_node_ids: Optional[set] = None
-    if role == ROLE_SUB:
-        scope_ids = user.get("scope_node_ids") or []
-        if not scope_ids:
-            allowed_node_ids = set()
-        else:
-            descendants: set = set()
-            for sid in scope_ids:
-                for d in await descendants_ids(sid):
-                    descendants.add(d)
-            allowed_node_ids = descendants
+    # Sub-coordinador: scope GLOBAL (sin restricción) -- igual que Coordinador.
 
     # --- Query reportes del período -----------------------------------------
     q: dict = {
@@ -2696,16 +2668,7 @@ async def _gather_export_data(pid: str, period: str, user: dict) -> dict:
 
     role = user["role"]
     allowed_node_ids: Optional[set] = None
-    if role == ROLE_SUB:
-        scope_ids = user.get("scope_node_ids") or []
-        if not scope_ids:
-            allowed_node_ids = set()
-        else:
-            descendants: set = set()
-            for sid in scope_ids:
-                for d in await descendants_ids(sid):
-                    descendants.add(d)
-            allowed_node_ids = descendants
+    # Sub-coordinador: scope GLOBAL (sin restricción).
 
     q: dict = {
         "project_id": pid,
@@ -3286,12 +3249,10 @@ async def project_ai_summary(pid: str, user: dict = Depends(current_user)):
     since = datetime.now(timezone.utc) - timedelta(hours=24)
     q: dict = {"project_id": pid, "created_at": {"$gte": since}}
     # Aplica el mismo scope RBAC que el feed.
-    if user["role"] == ROLE_SUB and user.get("scope_node_id"):
-        allowed = await descendants_ids(user["scope_node_id"])
-        q["node_id"] = {"$in": allowed}
-    elif user["role"] == ROLE_ESPECIALISTA:
+    if user["role"] == ROLE_ESPECIALISTA:
         scope = user.get("scope_node_ids") or []
         q["node_id"] = {"$in": scope}
+    # Sub-coordinador: scope GLOBAL (sin restricción).
 
     raw = await db.reports.find(q).sort("created_at", -1).to_list(length=500)
 
