@@ -197,17 +197,17 @@ export default function UniversalCalendar({ projectId, userId, isCoord }: Props)
                 firstDay={1}
                 enableSwipeMonths
                 theme={{
-                  backgroundColor: colors.surface,
-                  calendarBackground: colors.surface,
-                  textSectionTitleColor: colors.textMuted,
-                  selectedDayBackgroundColor: colors.primary,
+                  backgroundColor: '#ffffff',
+                  calendarBackground: '#ffffff',
+                  textSectionTitleColor: '#1e293b',
+                  selectedDayBackgroundColor: '#2563eb',
                   selectedDayTextColor: '#ffffff',
-                  todayTextColor: colors.primary,
-                  dayTextColor: colors.text,
-                  textDisabledColor: (colors.textMuted || '#94a3b8') + '66',
-                  monthTextColor: colors.text,
-                  arrowColor: colors.primary,
-                  indicatorColor: colors.primary,
+                  todayTextColor: '#2563eb',
+                  dayTextColor: '#1e293b',
+                  textDisabledColor: '#cbd5e1',
+                  monthTextColor: '#1e293b',
+                  arrowColor: '#2563eb',
+                  indicatorColor: '#2563eb',
                   textDayFontWeight: '600',
                   textMonthFontWeight: '800',
                   textDayHeaderFontWeight: '700',
@@ -636,6 +636,8 @@ function EventEditor({
                     mode={picker === 'startDate' ? 'date' : 'time'}
                     is24Hour
                     display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                    themeVariant="light"
+                    textColor="#000000"
                     onChange={(ev, sel) => applyDateChange(picker, ev, sel)}
                   />
                 ) : null}
