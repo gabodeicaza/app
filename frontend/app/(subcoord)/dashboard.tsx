@@ -412,6 +412,8 @@ export default function SubCoordDashboard() {
       setAdvExporting(false);
     }
   }
+
+  function getProgressColor(pct: number) {
     if (pct >= 100) return colors.success;
     if (pct >= 50) return colors.primary;
     return colors.error;
