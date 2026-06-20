@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, ActivityIndicator, Pressable, Alert, Platform,
-  TextInput, Linking, Modal,
+  TextInput, Linking, Modal, Image,
 } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -789,6 +789,19 @@ export default function ProjectDetailScreen() {
               </Pressable>
             </View>
             <ScrollView style={{ maxHeight: 460 }} contentContainerStyle={{ padding: 16, gap: 12 }}>
+              {previewItem?.thumbnail_base64 ? (
+                <Image
+                  source={{ uri: `data:image/jpeg;base64,${previewItem.thumbnail_base64}` }}
+                  style={{ width: '100%', height: 200, borderRadius: 8 }}
+                  resizeMode="cover"
+                />
+              ) : ((previewItem as any)?.foto || (previewItem as any)?.photo_url) ? (
+                <Image
+                  source={{ uri: (previewItem as any).foto || (previewItem as any).photo_url }}
+                  style={{ width: '100%', height: 200, borderRadius: 8 }}
+                  resizeMode="cover"
+                />
+              ) : null}
               <View style={styles.previewRow}>
                 <Ionicons name="person-outline" size={16} color={colors.textMuted} />
                 <Text style={styles.previewMeta} numberOfLines={2}>
