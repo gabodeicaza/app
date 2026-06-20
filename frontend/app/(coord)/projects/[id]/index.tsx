@@ -46,8 +46,9 @@ export default function ProjectDetailScreen() {
   const [reports, setReports] = useState<FeedItem[]>([]);
   const [calendarOpen, setCalendarOpen] = useState(false);
 
-  // Filtro por Tramo/Área (chips horizontales)
-  const [tramoFilter, setTramoFilter] = useState<string | null>(null);
+  // Filtrado cruzado: Nodo (Tramo/Subtramo/Poste) × Área (Disciplina)
+  const [selectedNodeFilter, setSelectedNodeFilter] = useState<string | null>(null);
+  const [selectedAreaFilter, setSelectedAreaFilter] = useState<string | null>(null);
 
   // Resumen Ejecutivo con IA
   const [aiOpen, setAiOpen] = useState(false);
@@ -100,23 +101,35 @@ export default function ProjectDetailScreen() {
   useFocusEffect(useCallback(() => { load(); }, [load]));
   useEffect(() => { loadFeed(); }, [loadFeed]);
 
-  // === Tramos / Áreas únicos derivados de los reportes ====================
-  const tramos = useMemo<string[]>(() => {
+  // === Nodos (Tramos) y Áreas (Disciplinas) únicos derivados de los reportes ====
+  const nodes = useMemo<string[]>(() => {
     const set = new Set<string>();
     for (const r of reports) {
-      const top = (r.node_path_names && r.node_path_names[0]) || (r as any).area_name || null;
+      const top = r.node_path_names && r.node_path_names[0];
       if (top && typeof top === 'string') set.add(top);
     }
     return Array.from(set).sort((a, b) => a.localeCompare(b, 'es'));
   }, [reports]);
 
+  const areas = useMemo<string[]>(() => {
+    const set = new Set<string>();
+    for (const r of reports) {
+      const a = (r as any).area_name;
+      if (a && typeof a === 'string') set.add(a);
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b, 'es'));
+  }, [reports]);
+
   const filteredReports = useMemo<FeedItem[]>(() => {
-    if (!tramoFilter) return reports;
+    if (!selectedNodeFilter && !selectedAreaFilter) return reports;
     return reports.filter((r) => {
-      const top = (r.node_path_names && r.node_path_names[0]) || (r as any).area_name || null;
-      return top === tramoFilter;
+      const top = (r.node_path_names && r.node_path_names[0]) || null;
+      const areaName = (r as any).area_name || null;
+      const matchesNode = !selectedNodeFilter || top === selectedNodeFilter;
+      const matchesArea = !selectedAreaFilter || areaName === selectedAreaFilter;
+      return matchesNode && matchesArea;
     });
-  }, [reports, tramoFilter]);
+  }, [reports, selectedNodeFilter, selectedAreaFilter]);
 
   // === Resumen Ejecutivo con IA ===========================================
   async function openAiSummary() {
@@ -455,52 +468,99 @@ export default function ProjectDetailScreen() {
               )}
             </Pressable>
 
-            {/* Filtro por Tramo / Área (chips horizontales) */}
-            {tramos.length > 0 && (
+            {/* Filtrado cruzado: Nodos (Tramos) × Áreas (Disciplinas) */}
+            {(nodes.length > 0 || areas.length > 0) && (
               <View style={styles.chipWrap}>
-                <Text style={styles.chipTitle}>Filtrar por tramo / área</Text>
-                <ScrollView
-                  horizontal
-                  showsHorizontalScrollIndicator={false}
-                  contentContainerStyle={styles.chipRow}
-                >
-                  <Pressable
-                    onPress={() => setTramoFilter(null)}
-                    style={[styles.chip, !tramoFilter && styles.chipActive]}
+                <Text style={styles.chipTitle}>Filtrar por tramo y área</Text>
+
+                {/* Fila 1: Nodos / Tramos */}
+                {nodes.length > 0 && (
+                  <ScrollView
+                    horizontal
+                    showsHorizontalScrollIndicator={false}
+                    contentContainerStyle={styles.chipRow}
                   >
-                    <Ionicons
-                      name="apps-outline"
-                      size={14}
-                      color={!tramoFilter ? '#fff' : colors.text}
-                    />
-                    <Text style={[styles.chipText, !tramoFilter && styles.chipTextActive]}>
-                      Todos ({reports.length})
-                    </Text>
-                  </Pressable>
-                  {tramos.map((t) => {
-                    const count = reports.filter((r) => {
-                      const top = (r.node_path_names && r.node_path_names[0]) || (r as any).area_name || null;
-                      return top === t;
-                    }).length;
-                    const active = tramoFilter === t;
-                    return (
-                      <Pressable
-                        key={t}
-                        onPress={() => setTramoFilter(active ? null : t)}
-                        style={[styles.chip, active && styles.chipActive]}
-                      >
-                        <Ionicons
-                          name="location-outline"
-                          size={14}
-                          color={active ? '#fff' : colors.text}
-                        />
-                        <Text style={[styles.chipText, active && styles.chipTextActive]}>
-                          {t} ({count})
-                        </Text>
-                      </Pressable>
-                    );
-                  })}
-                </ScrollView>
+                    <Pressable
+                      onPress={() => setSelectedNodeFilter(null)}
+                      style={[styles.chip, !selectedNodeFilter && styles.chipActive]}
+                    >
+                      <Ionicons
+                        name="apps-outline"
+                        size={14}
+                        color={!selectedNodeFilter ? '#fff' : colors.text}
+                      />
+                      <Text style={[styles.chipText, !selectedNodeFilter && styles.chipTextActive]}>
+                        Todos ({reports.length})
+                      </Text>
+                    </Pressable>
+                    {nodes.map((n) => {
+                      const count = reports.filter((r) => {
+                        const top = (r.node_path_names && r.node_path_names[0]) || null;
+                        return top === n;
+                      }).length;
+                      const active = selectedNodeFilter === n;
+                      return (
+                        <Pressable
+                          key={`node-${n}`}
+                          onPress={() => setSelectedNodeFilter(active ? null : n)}
+                          style={[styles.chip, active && styles.chipActive]}
+                        >
+                          <Ionicons
+                            name="location-outline"
+                            size={14}
+                            color={active ? '#fff' : colors.text}
+                          />
+                          <Text style={[styles.chipText, active && styles.chipTextActive]}>
+                            {n} ({count})
+                          </Text>
+                        </Pressable>
+                      );
+                    })}
+                  </ScrollView>
+                )}
+
+                {/* Fila 2: Áreas / Disciplinas */}
+                {areas.length > 0 && (
+                  <ScrollView
+                    horizontal
+                    showsHorizontalScrollIndicator={false}
+                    contentContainerStyle={[styles.chipRow, { marginTop: 8 }]}
+                  >
+                    <Pressable
+                      onPress={() => setSelectedAreaFilter(null)}
+                      style={[styles.chip, !selectedAreaFilter && styles.chipActive]}
+                    >
+                      <Ionicons
+                        name="grid-outline"
+                        size={14}
+                        color={!selectedAreaFilter ? '#fff' : colors.text}
+                      />
+                      <Text style={[styles.chipText, !selectedAreaFilter && styles.chipTextActive]}>
+                        Todas las Áreas ({reports.length})
+                      </Text>
+                    </Pressable>
+                    {areas.map((a) => {
+                      const count = reports.filter((r) => (r as any).area_name === a).length;
+                      const active = selectedAreaFilter === a;
+                      return (
+                        <Pressable
+                          key={`area-${a}`}
+                          onPress={() => setSelectedAreaFilter(active ? null : a)}
+                          style={[styles.chip, active && styles.chipActive]}
+                        >
+                          <Ionicons
+                            name="construct-outline"
+                            size={14}
+                            color={active ? '#fff' : colors.text}
+                          />
+                          <Text style={[styles.chipText, active && styles.chipTextActive]}>
+                            {a} ({count})
+                          </Text>
+                        </Pressable>
+                      );
+                    })}
+                  </ScrollView>
+                )}
               </View>
             )}
 
