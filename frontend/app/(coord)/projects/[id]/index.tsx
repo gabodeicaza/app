@@ -851,6 +851,17 @@ export default function ProjectDetailScreen() {
                   </Text>
                 </View>
               ) : null}
+              <View style={styles.previewBlock}>
+                <Text style={styles.previewBlockTitle}>Observaciones</Text>
+                <Text
+                  style={[
+                    styles.previewBlockTxt,
+                    !((previewItem as any)?.observaciones) && { fontStyle: 'italic', color: colors.textMuted },
+                  ]}
+                >
+                  {(previewItem as any)?.observaciones || 'Sin observaciones'}
+                </Text>
+              </View>
               {previewItem?.comment ? (
                 <View style={styles.previewBlock}>
                   <Text style={styles.previewBlockTitle}>Comentario</Text>
