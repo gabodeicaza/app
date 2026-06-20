@@ -784,7 +784,7 @@ export default function SubCoordDashboard() {
                   <View style={{ gap: spacing.sm }}>
                     {alerts.slice(0, 10).map((r) => (
                       <View key={r.node.id} style={styles.alertRow}>
-                        <View style={[styles.dot, { backgroundColor: progressTint(r.pct) }]} />
+                        <View style={[styles.dot, { backgroundColor: getProgressColor(r.pct) }]} />
                         <View style={{ flex: 1 }}>
                           <Text style={styles.alertName} numberOfLines={1}>
                             {r.node.name}
@@ -795,7 +795,7 @@ export default function SubCoordDashboard() {
                                 styles.alertMiniFill,
                                 {
                                   width: `${Math.max(4, r.pct)}%`,
-                                  backgroundColor: progressTint(r.pct),
+                                  backgroundColor: getProgressColor(r.pct),
                                 },
                               ]}
                             />
@@ -804,7 +804,7 @@ export default function SubCoordDashboard() {
                             {r.count} / {r.node.meta} reportes
                           </Text>
                         </View>
-                        <Text style={[styles.alertPct, { color: progressTint(r.pct) }]}>
+                        <Text style={[styles.alertPct, { color: getProgressColor(r.pct) }]}>
                           {r.pct}%
                         </Text>
                       </View>
