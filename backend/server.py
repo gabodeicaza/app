@@ -1804,6 +1804,7 @@ class EventIn(BaseModel):
     location: Optional[str] = None
     start_at: str  # ISO 8601
     end_at: Optional[str] = None
+    area_id: Optional[str] = None
 
 
 class EventPatch(BaseModel):
@@ -1812,10 +1813,28 @@ class EventPatch(BaseModel):
     location: Optional[str] = None
     start_at: Optional[str] = None
     end_at: Optional[str] = None
+    area_id: Optional[str] = None
 
 
 def _event_out(doc: dict) -> dict:
     doc.pop("_id", None)
+    return doc
+
+
+async def _enrich_event_with_area(doc: dict) -> dict:
+    """Adjunta area_name + area_color leyendo la colección areas (si hay area_id)."""
+    aid = doc.get("area_id")
+    if aid:
+        a = await db.areas.find_one({"id": aid})
+        if a:
+            doc["area_name"] = a.get("name")
+            doc["area_color"] = a.get("color")
+        else:
+            doc["area_name"] = None
+            doc["area_color"] = None
+    else:
+        doc["area_name"] = None
+        doc["area_color"] = None
     return doc
 
 
@@ -1849,7 +1868,21 @@ async def list_events(
     safe_limit = max(1, min(int(limit or 500), 1000))
     cursor = db.events.find(q).sort("start_at", sort_dir).limit(safe_limit)
     items = await cursor.to_list(length=safe_limit)
-    return [_event_out(it) for it in items]
+    # Enriquecer con area_name + area_color (en batch).
+    area_ids = {it.get("area_id") for it in items if it.get("area_id")}
+    areas_by_id: dict = {}
+    if area_ids:
+        async for a in db.areas.find({"id": {"$in": list(area_ids)}}):
+            areas_by_id[a["id"]] = {"name": a.get("name"), "color": a.get("color")}
+    out = []
+    for it in items:
+        it = _event_out(it)
+        aid = it.get("area_id")
+        info = areas_by_id.get(aid) if aid else None
+        it["area_name"] = (info or {}).get("name")
+        it["area_color"] = (info or {}).get("color")
+        out.append(it)
+    return out
 
 
 @api.post("/projects/{pid}/events")
@@ -1875,6 +1908,11 @@ async def create_event(
         raise HTTPException(400, "Descripción máximo 2000 caracteres")
     if loc and len(loc) > 200:
         raise HTTPException(400, "Ubicación máximo 200 caracteres")
+    area_id_val = (body.area_id or None) or None
+    if area_id_val:
+        a = await db.areas.find_one({"id": area_id_val, "project_id": pid})
+        if not a:
+            raise HTTPException(400, "Área inválida para este proyecto")
     now = datetime.now(timezone.utc)
     doc = {
         "id": str(uuid.uuid4()),
@@ -1884,6 +1922,7 @@ async def create_event(
         "location": loc,
         "start_at": start,
         "end_at": end,
+        "area_id": area_id_val,
         "author_id": user["id"],
         "author_name": user["name"],
         "author_role": user["role"],
@@ -1891,7 +1930,7 @@ async def create_event(
         "updated_at": now,
     }
     await db.events.insert_one(doc)
-    return _event_out(doc)
+    return await _enrich_event_with_area(_event_out(doc))
 
 
 @api.patch("/events/{eid}")
@@ -1931,16 +1970,23 @@ async def update_event(
         update["start_at"] = _parse_iso(body.start_at)
     if body.end_at is not None:
         update["end_at"] = _parse_iso(body.end_at) if body.end_at else None
+    if body.area_id is not None:
+        aid = (body.area_id or None) or None
+        if aid:
+            a = await db.areas.find_one({"id": aid, "project_id": e["project_id"]})
+            if not a:
+                raise HTTPException(400, "Área inválida para este proyecto")
+        update["area_id"] = aid
     start_final = update.get("start_at", e["start_at"])
     end_final = update.get("end_at", e.get("end_at"))
     if end_final and end_final < start_final:
         raise HTTPException(400, "La fecha de fin no puede ser anterior al inicio")
     if not update:
-        return _event_out(e)
+        return await _enrich_event_with_area(_event_out(e))
     update["updated_at"] = datetime.now(timezone.utc)
     await db.events.update_one({"id": eid}, {"$set": update})
     e = await db.events.find_one({"id": eid})
-    return _event_out(e)
+    return await _enrich_event_with_area(_event_out(e))
 
 
 @api.delete("/events/{eid}")

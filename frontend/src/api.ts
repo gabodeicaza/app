@@ -236,6 +236,10 @@ export interface ProjectEvent {
   author_id: string;
   author_name: string;
   author_role?: string;
+  // Disciplina/área asociada (universal: refleja la jerarquía de colores)
+  area_id?: string | null;
+  area_name?: string | null;
+  area_color?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -517,10 +521,12 @@ export const api = {
   createEvent: (pid: string, payload: {
     title: string; start_at: string; end_at?: string | null;
     description?: string | null; location?: string | null;
+    area_id?: string | null;
   }) => request<ProjectEvent>('POST', `/projects/${pid}/events`, payload),
   updateEvent: (eid: string, payload: Partial<{
     title: string; start_at: string; end_at: string | null;
     description: string | null; location: string | null;
+    area_id: string | null;
   }>) => request<ProjectEvent>('PATCH', `/events/${eid}`, payload),
   deleteEvent: (eid: string) =>
     request<{ ok: boolean }>('DELETE', `/events/${eid}`),
