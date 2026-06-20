@@ -524,26 +524,47 @@ export default function ProjectDetailScreen() {
                   const pathLbl = (r.node_path_names || []).join(' › ') || (r as any).area_name || '—';
                   const author = (r as any).author_name || r.user_name || 'Especialista';
                   const valor = (r as any).avance ?? (r as any).medicion ?? '';
+                  const thumb = (r as any).thumbnail_base64;
+                  const photoUrl = (r as any).foto || (r as any).photo_url;
                   return (
-                    <Pressable key={r.id} onPress={() => setPreviewItem(r)} style={({ pressed }) => [styles.feedCard, pressed && { opacity: 0.85 }]}>
-                      <View style={styles.feedRowTop}>
-                        <Ionicons name="person-circle-outline" size={18} color={colors.primary} />
-                        <Text style={styles.feedAuthor} numberOfLines={1}>{author}</Text>
-                        <Text style={styles.feedDate} numberOfLines={1}>{hh}</Text>
-                      </View>
-                      <View style={styles.feedRowMid}>
-                        <Ionicons name="git-branch-outline" size={14} color={colors.textMuted} />
-                        <Text style={styles.feedPath} numberOfLines={2}>{pathLbl}</Text>
-                      </View>
-                      {!!valor && (
-                        <View style={styles.feedRowVal}>
-                          <Ionicons name="speedometer-outline" size={14} color={colors.success} />
-                          <Text style={styles.feedVal}>{String(valor)}</Text>
+                    <Pressable key={r.id} onPress={() => setPreviewItem(r)} style={({ pressed }) => [styles.feedCard, { flexDirection: 'row', gap: 10 }, pressed && { opacity: 0.85 }]}>
+                      {thumb ? (
+                        <Image
+                          source={{ uri: `data:image/jpeg;base64,${thumb}` }}
+                          style={{ width: 72, height: 72, borderRadius: 10, backgroundColor: '#f1f5f9' }}
+                          resizeMode="cover"
+                        />
+                      ) : photoUrl ? (
+                        <Image
+                          source={{ uri: photoUrl }}
+                          style={{ width: 72, height: 72, borderRadius: 10, backgroundColor: '#f1f5f9' }}
+                          resizeMode="cover"
+                        />
+                      ) : (
+                        <View style={{ width: 72, height: 72, borderRadius: 10, backgroundColor: '#f1f5f9', alignItems: 'center', justifyContent: 'center' }}>
+                          <Ionicons name="image-outline" size={24} color={colors.textMuted} />
                         </View>
                       )}
-                      {!!r.comment && (
-                        <Text style={styles.feedComment} numberOfLines={3}>{r.comment}</Text>
-                      )}
+                      <View style={{ flex: 1, minWidth: 0, gap: 4 }}>
+                        <View style={styles.feedRowTop}>
+                          <Ionicons name="person-circle-outline" size={18} color={colors.primary} />
+                          <Text style={styles.feedAuthor} numberOfLines={1}>{author}</Text>
+                          <Text style={styles.feedDate} numberOfLines={1}>{hh}</Text>
+                        </View>
+                        <View style={styles.feedRowMid}>
+                          <Ionicons name="git-branch-outline" size={14} color={colors.textMuted} />
+                          <Text style={styles.feedPath} numberOfLines={2}>{pathLbl}</Text>
+                        </View>
+                        {!!valor && (
+                          <View style={styles.feedRowVal}>
+                            <Ionicons name="speedometer-outline" size={14} color={colors.success} />
+                            <Text style={styles.feedVal}>{String(valor)}</Text>
+                          </View>
+                        )}
+                        {!!r.comment && (
+                          <Text style={styles.feedComment} numberOfLines={3}>{r.comment}</Text>
+                        )}
+                      </View>
                     </Pressable>
                   );
                 })}

@@ -1069,10 +1069,13 @@ export default function SubCoordDashboard() {
         onRequestClose={() => !advExporting && setAdvExportOpen(false)}
       >
         <Pressable
-          style={styles.previewBackdrop}
+          style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', padding: 16 }}
           onPress={() => !advExporting && setAdvExportOpen(false)}
         >
-          <Pressable style={styles.advCard} onPress={(e) => e.stopPropagation()}>
+          <Pressable
+            style={{ width: '92%', maxWidth: 460, maxHeight: '85%', backgroundColor: '#fff', borderRadius: 16, overflow: 'hidden' }}
+            onPress={(e) => e.stopPropagation()}
+          >
             <View style={styles.previewHeader}>
               <Text style={styles.previewTitle}>Exportación Avanzada</Text>
               <Pressable
