@@ -577,7 +577,8 @@ export default function SpecCaptureScreen() {
     );
   }
 
-  const noAllowedLeaves = allowedLeafIds.size === 0;
+  // Sub-coordinador SIEMPRE tiene acceso global: NUNCA mostrar "Sin nodos asignados".
+  const noAllowedLeaves = !isSubCoord && allowedLeafIds.size === 0;
   const noTree = !tree.length;
 
   return (

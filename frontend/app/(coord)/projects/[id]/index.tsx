@@ -504,6 +504,54 @@ export default function ProjectDetailScreen() {
             {/* Avance por Nodo */}
             <NodeProgressPanel projectId={pid} reports={filteredReports} />
 
+            {/* ===== Feed de Reportes (últimos 20) ===== */}
+            <Text style={styles.sectionTitle}>Reportes recientes</Text>
+            {filteredReports.length === 0 ? (
+              <View style={styles.feedEmpty}>
+                <Ionicons name="document-text-outline" size={22} color={colors.textMuted} />
+                <Text style={styles.feedEmptyTxt}>
+                  Aún no hay reportes capturados para este filtro.
+                </Text>
+              </View>
+            ) : (
+              <View style={{ gap: 10 }}>
+                {filteredReports.slice(0, 20).map((r) => {
+                  const when = r.created_at ? new Date(r.created_at) : null;
+                  const hh = when ? when.toLocaleString('es-MX', { dateStyle: 'medium', timeStyle: 'short' }) : '';
+                  const pathLbl = (r.node_path_names || []).join(' › ') || (r as any).area_name || '—';
+                  const author = (r as any).author_name || r.user_name || 'Especialista';
+                  const valor = (r as any).avance ?? (r as any).medicion ?? '';
+                  return (
+                    <View key={r.id} style={styles.feedCard}>
+                      <View style={styles.feedRowTop}>
+                        <Ionicons name="person-circle-outline" size={18} color={colors.primary} />
+                        <Text style={styles.feedAuthor} numberOfLines={1}>{author}</Text>
+                        <Text style={styles.feedDate} numberOfLines={1}>{hh}</Text>
+                      </View>
+                      <View style={styles.feedRowMid}>
+                        <Ionicons name="git-branch-outline" size={14} color={colors.textMuted} />
+                        <Text style={styles.feedPath} numberOfLines={2}>{pathLbl}</Text>
+                      </View>
+                      {!!valor && (
+                        <View style={styles.feedRowVal}>
+                          <Ionicons name="speedometer-outline" size={14} color={colors.success} />
+                          <Text style={styles.feedVal}>{String(valor)}</Text>
+                        </View>
+                      )}
+                      {!!r.comment && (
+                        <Text style={styles.feedComment} numberOfLines={3}>{r.comment}</Text>
+                      )}
+                    </View>
+                  );
+                })}
+                {filteredReports.length > 20 && (
+                  <Text style={styles.feedMore}>
+                    + {filteredReports.length - 20} reportes más (usa los filtros para acotar)
+                  </Text>
+                )}
+              </View>
+            )}
+
             {/* ===== Archivos de Consulta ===== */}
             <Text style={styles.sectionTitle}>Archivos de consulta</Text>
             <View style={styles.refCard}>

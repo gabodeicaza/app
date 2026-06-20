@@ -707,44 +707,16 @@ export default function SubCoordDashboard() {
               </Pressable>
             </View>
 
-            {/* Botón Exportar Excel */}
-            <View style={styles.exportRow}>
-              <Pressable
-                onPress={onExport}
-                disabled={exporting}
-                style={({ pressed }) => [
-                  styles.exportMainBtn,
-                  exporting && { opacity: 0.65 },
-                  pressed && !exporting && { opacity: 0.92 },
-                ]}
-              >
-                {exporting ? (
-                  <ActivityIndicator color="#fff" size="small" />
-                ) : (
-                  <Ionicons name="download-outline" size={22} color="#fff" />
-                )}
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.exportMainTitle}>Exportar Reportes</Text>
-                  <Text style={styles.exportMainSub}>
-                    {exporting ? 'Generando archivo…' : 'Hoja de cálculo Excel (XLSX)'}
-                  </Text>
-                </View>
-                {!exporting && (
-                  <Ionicons name="chevron-forward" size={20} color="rgba(255,255,255,0.85)" />
-                )}
-              </Pressable>
-            </View>
-
             {/* Botón Exportación Avanzada (PDF/XLSX/DOCX/PPTX × período) */}
             <View style={styles.exportRow}>
               <Pressable
                 onPress={() => setAdvExportOpen(true)}
                 style={({ pressed }) => [
-                  styles.exportAdvBtn,
+                  styles.exportMainBtn,
                   pressed && { opacity: 0.92 },
                 ]}
               >
-                <Ionicons name="options-outline" size={22} color="#fff" />
+                <Ionicons name="download-outline" size={22} color="#fff" />
                 <View style={{ flex: 1 }}>
                   <Text style={styles.exportMainTitle}>Exportación Avanzada</Text>
                   <Text style={styles.exportMainSub}>
