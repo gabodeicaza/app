@@ -344,33 +344,60 @@ export default function ProjectDetailScreen() {
             </View>
 
             {activeTab === 'configuracion' ? (
-              <Pressable
-                onPress={openAiSummary}
-                disabled={aiBusy}
-                style={({ pressed }) => [
-                  styles.aiBtn,
-                  aiBusy && { opacity: 0.7 },
-                  pressed && !aiBusy && { opacity: 0.92 },
-                ]}
-              >
-                {aiBusy ? (
-                  <ActivityIndicator color="#fff" size="small" />
-                ) : (
-                  <Ionicons name="sparkles" size={22} color="#fff" />
-                )}
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.aiBtnTitle}>✨ Generar Resumen Ejecutivo con IA</Text>
-                  <Text style={styles.aiBtnSub}>
-                    {aiBusy ? 'Analizando reportes del día…' : 'Resumen ejecutivo en 3 viñetas (últimas 24h)'}
-                  </Text>
-                </View>
-                {!aiBusy && (
-                  <Ionicons name="chevron-forward" size={20} color="rgba(255,255,255,0.85)" />
-                )}
-              </Pressable>
+              <>
+            {/* ===== CONFIGURACIÓN ===== */}
+            {/* Calendario histórico */}
+            <Pressable
+              onPress={() => setCalendarOpen(true)}
+              style={({ pressed }) => [styles.calendarBtn, pressed && { opacity: 0.9 }]}
+            >
+              <View style={styles.tileIcon}>
+                <Ionicons name="calendar-outline" size={20} color={colors.primary} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.tileTitle}>Calendario histórico</Text>
+                <Text style={styles.tileSub}>Explora actividad por día (heatmap del proyecto)</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+            </Pressable>
+
+            <Text style={styles.sectionTitle}>Configuración del proyecto</Text>
+
+            <ActionTile
+              icon="git-network-outline"
+              title="Árbol de nodos"
+              subtitle="Estructura espacial recursiva (tramos, estaciones, hojas)"
+              onPress={() => router.push({ pathname: '/(coord)/projects/[id]/tree', params: { id: pid } })}
+            />
+            <ActionTile
+              icon="color-palette-outline"
+              title="Áreas / Disciplinas"
+              subtitle="Topografía, Geotecnia, Estructuras…"
+              onPress={() => router.push({ pathname: '/(coord)/projects/[id]/areas', params: { id: pid } })}
+            />
+            <ActionTile
+              icon="mail-outline"
+              title="Invitaciones"
+              subtitle="Genera tokens para Sub-Coord. y Especialistas"
+              onPress={() => router.push({ pathname: '/(coord)/projects/[id]/invitations', params: { id: pid } })}
+            />
+            <ActionTile
+              icon="newspaper-outline"
+              title="Noticias"
+              subtitle="Publica anuncios visibles para todos los miembros"
+              onPress={() => router.push({ pathname: '/(coord)/projects/[id]/announcements' as any, params: { id: pid } })}
+            />
+            <ActionTile
+              icon="calendar-outline"
+              title="Eventos del proyecto"
+              subtitle="Programa visitas, hitos y reuniones"
+              onPress={() => router.push({ pathname: '/(coord)/projects/[id]/events' as any, params: { id: pid } })}
+            />
+              </>
             ) : (
               <>
-            {/* ===== Botón GRANDE: Exportar Reportes (PDF / Word / PPT / Excel) ===== */}
+            {/* ===== OPERACIÓN ===== */}
+            {/* Botón GRANDE: Exportar Reportes (PDF / Word / PPT / Excel) */}
             <Pressable
               onPress={openExportFlow}
               disabled={exportBusy}
@@ -396,10 +423,10 @@ export default function ProjectDetailScreen() {
               )}
             </Pressable>
 
-            {/* ===== Sprint 2 · Metas Diarias ===== */}
+            {/* Metas Diarias */}
             <DailyGoalsPanel projectId={pid} />
 
-            {/* ===== Killer Feature · Resumen Ejecutivo con IA ===== */}
+            {/* Killer Feature · Resumen Ejecutivo con IA */}
             <Pressable
               onPress={openAiSummary}
               disabled={aiBusy}
@@ -425,7 +452,7 @@ export default function ProjectDetailScreen() {
               )}
             </Pressable>
 
-            {/* ===== Filtro por Tramo / Área (chips horizontales) ===== */}
+            {/* Filtro por Tramo / Área (chips horizontales) */}
             {tramos.length > 0 && (
               <View style={styles.chipWrap}>
                 <Text style={styles.chipTitle}>Filtrar por tramo / área</Text>
@@ -474,56 +501,8 @@ export default function ProjectDetailScreen() {
               </View>
             )}
 
-            {/* ===== Sprint 2 · Avance por Nodo ===== */}
+            {/* Avance por Nodo */}
             <NodeProgressPanel projectId={pid} reports={filteredReports} />
-
-            {/* ===== Sprint 2 · Calendario Histórico ===== */}
-            <Pressable
-              onPress={() => setCalendarOpen(true)}
-              style={({ pressed }) => [styles.calendarBtn, pressed && { opacity: 0.9 }]}
-            >
-              <View style={styles.tileIcon}>
-                <Ionicons name="calendar-outline" size={20} color={colors.primary} />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.tileTitle}>Calendario histórico</Text>
-                <Text style={styles.tileSub}>Explora actividad por día (heatmap del proyecto)</Text>
-              </View>
-              <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
-            </Pressable>
-
-            <Text style={styles.sectionTitle}>Configuración del proyecto</Text>
-
-            <ActionTile
-              icon="git-network-outline"
-              title="Árbol de nodos"
-              subtitle="Estructura espacial recursiva (tramos, estaciones, hojas)"
-              onPress={() => router.push({ pathname: '/(coord)/projects/[id]/tree', params: { id: pid } })}
-            />
-            <ActionTile
-              icon="color-palette-outline"
-              title="Áreas / Disciplinas"
-              subtitle="Topografía, Geotecnia, Estructuras…"
-              onPress={() => router.push({ pathname: '/(coord)/projects/[id]/areas', params: { id: pid } })}
-            />
-            <ActionTile
-              icon="mail-outline"
-              title="Invitaciones"
-              subtitle="Genera tokens para Sub-Coord. y Especialistas"
-              onPress={() => router.push({ pathname: '/(coord)/projects/[id]/invitations', params: { id: pid } })}
-            />
-            <ActionTile
-              icon="newspaper-outline"
-              title="Noticias"
-              subtitle="Publica anuncios visibles para todos los miembros"
-              onPress={() => router.push({ pathname: '/(coord)/projects/[id]/announcements' as any, params: { id: pid } })}
-            />
-            <ActionTile
-              icon="calendar-outline"
-              title="Eventos del proyecto"
-              subtitle="Programa visitas, hitos y reuniones"
-              onPress={() => router.push({ pathname: '/(coord)/projects/[id]/events' as any, params: { id: pid } })}
-            />
 
             {/* ===== Archivos de Consulta ===== */}
             <Text style={styles.sectionTitle}>Archivos de consulta</Text>
