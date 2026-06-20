@@ -582,11 +582,8 @@ export default function ProjectDetailScreen() {
                   const when = r.created_at ? new Date(r.created_at) : null;
                   const hh = when ? when.toLocaleString('es-MX', { dateStyle: 'medium', timeStyle: 'short' }) : '';
                   const pathLbl = (r.node_path_names || []).join(' › ') || (r as any).area_name || '—';
-                  const author = (r as any).user_name
-                    || (r as any).creado_por
-                    || (r as any).capturado_por
-                    || (r as any).autor
-                    || (r as any).nombre_usuario
+                  const author = (r as any).captured_by_name
+                    || (r as any).user_name
                     || (r as any).author_name
                     || 'Especialista';
                   const valor = (r as any).avance ?? (r as any).medicion ?? '';
@@ -892,13 +889,16 @@ export default function ProjectDetailScreen() {
               <View style={styles.previewRow}>
                 <Ionicons name="person-outline" size={16} color={colors.textMuted} />
                 <Text style={styles.previewMeta} numberOfLines={2}>
-                  {(previewItem as any)?.user_name
-                    || (previewItem as any)?.creado_por
-                    || (previewItem as any)?.capturado_por
-                    || (previewItem as any)?.autor
-                    || (previewItem as any)?.nombre_usuario
+                  {(previewItem as any)?.captured_by_name
+                    || (previewItem as any)?.user_name
                     || (previewItem as any)?.author_name
                     || 'Especialista'}
+                </Text>
+              </View>
+              <View style={styles.previewRow}>
+                <Ionicons name="grid-outline" size={16} color={colors.textMuted} />
+                <Text style={styles.previewMeta} numberOfLines={2}>
+                  {(previewItem as any)?.area_name || 'Sin área asignada'}
                 </Text>
               </View>
               <View style={styles.previewRow}>
@@ -929,21 +929,13 @@ export default function ProjectDetailScreen() {
                   style={[
                     styles.previewBlockTxt,
                     !(
-                      (previewItem as any)?.observaciones
-                      || (previewItem as any)?.comentario
-                      || (previewItem as any)?.comentarios
-                      || (previewItem as any)?.notas
-                      || (previewItem as any)?.nota
-                      || (previewItem as any)?.descripcion
+                      (previewItem as any)?.notes
+                      || (previewItem as any)?.observaciones
                     ) && { fontStyle: 'italic', color: colors.textMuted },
                   ]}
                 >
-                  {(previewItem as any)?.observaciones
-                    || (previewItem as any)?.comentario
-                    || (previewItem as any)?.comentarios
-                    || (previewItem as any)?.notas
-                    || (previewItem as any)?.nota
-                    || (previewItem as any)?.descripcion
+                  {(previewItem as any)?.notes
+                    || (previewItem as any)?.observaciones
                     || 'Sin observaciones'}
                 </Text>
               </View>

@@ -1256,6 +1256,8 @@ async def reports_feed(
             "equipment": it.get("equipment") or [],
             "captured_by": it.get("captured_by"),
             "captured_by_name": it.get("captured_by_name"),
+            "notes": it.get("notes"),
+            "observaciones": it.get("observaciones"),
             "is_mine": it.get("captured_by") == user["id"],
             "images_count": len(imgs),
             "thumbnail_base64": imgs[0] if imgs else None,
