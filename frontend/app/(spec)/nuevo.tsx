@@ -68,6 +68,14 @@ export default function SpecCaptureScreen() {
   // Para especialistas: scope_node_ids (lista de hojas asignadas).
   // Para sub-coordinadores: scope_node_id (un nodo padre) → todas las hojas descendientes son válidas.
   const isSubCoord = user?.role === 'sub_coordinador';
+
+  // ----- Estado remoto (declarado ANTES de los useMemo que lo referencian) --
+  const [project, setProject] = useState<Project | null>(null);
+  const [tree, setTree] = useState<LocationNodeTree[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
   const allowedLeafIds = useMemo(() => {
     if (isSubCoord) {
       // Marcamos como "permitido" cualquier nodo hoja presente en el árbol
@@ -84,13 +92,6 @@ export default function SpecCaptureScreen() {
     }
     return new Set<string>(user?.scope_node_ids || []);
   }, [isSubCoord, user?.scope_node_ids, tree]);
-
-  // ----- Estado remoto ------------------------------------------------------
-  const [project, setProject] = useState<Project | null>(null);
-  const [tree, setTree] = useState<LocationNodeTree[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   // ----- Cascade -----------------------------------------------------------
   const [path, setPath] = useState<LocationNodeTree[]>([]);

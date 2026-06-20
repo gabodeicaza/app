@@ -66,6 +66,9 @@ export default function ProjectDetailScreen() {
   const [exportPeriod, setExportPeriod] = useState<ReportPeriod>('today');
   const [exportBusy, setExportBusy] = useState(false);
 
+  // Preview de reporte (tap en feed)
+  const [previewItem, setPreviewItem] = useState<FeedItem | null>(null);
+
   // Archivos de Consulta (Reference Files)
   const [refName, setRefName] = useState('');
   const [refUrl, setRefUrl] = useState('');
@@ -522,7 +525,7 @@ export default function ProjectDetailScreen() {
                   const author = (r as any).author_name || r.user_name || 'Especialista';
                   const valor = (r as any).avance ?? (r as any).medicion ?? '';
                   return (
-                    <View key={r.id} style={styles.feedCard}>
+                    <Pressable key={r.id} onPress={() => setPreviewItem(r)} style={({ pressed }) => [styles.feedCard, pressed && { opacity: 0.85 }]}>
                       <View style={styles.feedRowTop}>
                         <Ionicons name="person-circle-outline" size={18} color={colors.primary} />
                         <Text style={styles.feedAuthor} numberOfLines={1}>{author}</Text>
@@ -541,7 +544,7 @@ export default function ProjectDetailScreen() {
                       {!!r.comment && (
                         <Text style={styles.feedComment} numberOfLines={3}>{r.comment}</Text>
                       )}
-                    </View>
+                    </Pressable>
                   );
                 })}
                 {filteredReports.length > 20 && (
@@ -766,6 +769,71 @@ export default function ProjectDetailScreen() {
             )}
           </View>
         </View>
+      </Modal>
+
+      {/* ===== Modal: Preview de Reporte ===== */}
+      <Modal
+        visible={!!previewItem}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setPreviewItem(null)}
+      >
+        <Pressable style={styles.previewBackdrop} onPress={() => setPreviewItem(null)}>
+          <Pressable style={styles.previewCard} onPress={(e) => e.stopPropagation()}>
+            <View style={styles.previewHeader}>
+              <Text style={styles.previewTitle} numberOfLines={1}>
+                {(previewItem?.node_path_names || []).slice(-1)[0] || 'Reporte'}
+              </Text>
+              <Pressable hitSlop={10} onPress={() => setPreviewItem(null)}>
+                <Ionicons name="close" size={22} color={colors.text} />
+              </Pressable>
+            </View>
+            <ScrollView style={{ maxHeight: 460 }} contentContainerStyle={{ padding: 16, gap: 12 }}>
+              <View style={styles.previewRow}>
+                <Ionicons name="person-outline" size={16} color={colors.textMuted} />
+                <Text style={styles.previewMeta} numberOfLines={2}>
+                  {(previewItem as any)?.author_name || previewItem?.user_name || 'Especialista'}
+                </Text>
+              </View>
+              <View style={styles.previewRow}>
+                <Ionicons name="location-outline" size={16} color={colors.textMuted} />
+                <Text style={styles.previewMeta} numberOfLines={3}>
+                  {(previewItem?.node_path_names || []).join(' › ') || (previewItem as any)?.area_name || '—'}
+                </Text>
+              </View>
+              <View style={styles.previewRow}>
+                <Ionicons name="time-outline" size={16} color={colors.textMuted} />
+                <Text style={styles.previewMeta}>
+                  {previewItem?.created_at
+                    ? new Date(previewItem.created_at).toLocaleString('es-MX', { dateStyle: 'medium', timeStyle: 'short' })
+                    : '—'}
+                </Text>
+              </View>
+              {((previewItem as any)?.avance || (previewItem as any)?.medicion) ? (
+                <View style={styles.previewBlock}>
+                  <Text style={styles.previewBlockTitle}>Avance / Medición</Text>
+                  <Text style={styles.previewBlockTxt}>
+                    {String((previewItem as any)?.avance ?? (previewItem as any)?.medicion ?? '')}
+                  </Text>
+                </View>
+              ) : null}
+              {previewItem?.comment ? (
+                <View style={styles.previewBlock}>
+                  <Text style={styles.previewBlockTitle}>Comentario</Text>
+                  <Text style={styles.previewBlockTxt}>{previewItem.comment}</Text>
+                </View>
+              ) : null}
+            </ScrollView>
+            <View style={styles.previewFooter}>
+              <Pressable
+                onPress={() => setPreviewItem(null)}
+                style={({ pressed }) => [styles.previewCloseBtn, pressed && { opacity: 0.85 }]}
+              >
+                <Text style={styles.previewCloseTxt}>Cerrar</Text>
+              </Pressable>
+            </View>
+          </Pressable>
+        </Pressable>
       </Modal>
     </View>
   );
@@ -1098,4 +1166,80 @@ const styles = StyleSheet.create({
   chipTextActive: {
     color: '#fff',
   },
+
+  // ===== Feed de Reportes =====
+  feedEmpty: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    paddingVertical: 12, paddingHorizontal: 12,
+    backgroundColor: colors.surface, borderRadius: radius.md,
+    borderWidth: 1, borderColor: colors.border, borderStyle: 'dashed',
+  },
+  feedEmptyTxt: { flex: 1, color: colors.textMuted, fontSize: 12, fontWeight: '600' },
+  feedCard: {
+    backgroundColor: colors.surface,
+    borderRadius: radius.lg,
+    borderWidth: 1, borderColor: colors.border,
+    paddingHorizontal: spacing.md, paddingVertical: 10,
+    gap: 6,
+  },
+  feedRowTop: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  feedAuthor: { flex: 1, fontSize: 13, fontWeight: '800', color: colors.text },
+  feedDate: { fontSize: 11, fontWeight: '600', color: colors.textMuted },
+  feedRowMid: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  feedPath: { flex: 1, fontSize: 12, fontWeight: '600', color: colors.textBody },
+  feedRowVal: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  feedVal: { fontSize: 13, fontWeight: '800', color: colors.success },
+  feedComment: { fontSize: 12, color: colors.textBody, lineHeight: 17, fontStyle: 'italic' },
+  feedMore: { fontSize: 11, color: colors.textMuted, textAlign: 'center', marginTop: 4, fontStyle: 'italic' },
+
+  // ===== Preview Modal (tap en feed) =====
+  previewBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(15,23,42,0.55)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 16,
+  },
+  previewCard: {
+    width: '100%',
+    maxWidth: 480,
+    backgroundColor: colors.surface,
+    borderRadius: (radius as any).xl ?? 16,
+    overflow: 'hidden',
+    ...shadow.card,
+  },
+  previewHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+    gap: 12,
+  },
+  previewTitle: { flex: 1, fontSize: 15, fontWeight: '800', color: colors.text },
+  previewRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  previewMeta: { flex: 1, fontSize: 13, fontWeight: '600', color: colors.textBody },
+  previewBlock: {
+    backgroundColor: colors.bg,
+    borderRadius: radius.md,
+    borderWidth: 1, borderColor: colors.border,
+    padding: 10,
+    gap: 4,
+  },
+  previewBlockTitle: { fontSize: 11, fontWeight: '800', color: colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.4 },
+  previewBlockTxt: { fontSize: 13, color: colors.text, lineHeight: 18 },
+  previewFooter: {
+    padding: 12,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+  },
+  previewCloseBtn: {
+    minHeight: 44,
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: colors.primary,
+    borderRadius: radius.md,
+  },
+  previewCloseTxt: { color: '#fff', fontSize: 14, fontWeight: '800' },
 });
