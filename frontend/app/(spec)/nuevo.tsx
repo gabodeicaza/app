@@ -690,13 +690,13 @@ export default function SpecCaptureScreen() {
           >
             <View style={styles.coordsTargetGrid}>
               <View style={styles.coordsTargetItem}>
-                <Text style={styles.coordsTargetLabel}>Latitud (X)</Text>
+                <Text style={styles.coordsTargetLabel}>Coordenada X (Este)</Text>
                 <Text style={styles.coordsTargetValue} numberOfLines={1}>
                   {(leafNode as any).target_lat != null ? String((leafNode as any).target_lat) : '—'}
                 </Text>
               </View>
               <View style={styles.coordsTargetItem}>
-                <Text style={styles.coordsTargetLabel}>Longitud (Y)</Text>
+                <Text style={styles.coordsTargetLabel}>Coordenada Y (Norte)</Text>
                 <Text style={styles.coordsTargetValue} numberOfLines={1}>
                   {(leafNode as any).target_lon != null ? String((leafNode as any).target_lon) : '—'}
                 </Text>

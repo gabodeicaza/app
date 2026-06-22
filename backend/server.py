@@ -1057,8 +1057,8 @@ def validate_measurement_value(mtype: str, value: dict):
         lat, lon = value.get("lat"), value.get("lon")
         if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
             raise HTTPException(400, "coord_latlon requiere lat y lon numéricos")
-        if not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
-            raise HTTPException(400, "Coordenadas fuera de rango")
+        # Nota: en obra civil usamos UTM (X/Y en cientos de miles o millones),
+        # por lo que NO aplicamos restricción geográfica -90/90, -180/180.
     elif mtype == "cadenamiento":
         v = value.get("cadenamiento") or value.get("value")
         if not isinstance(v, str) or not re.match(r"^\d+\+\d{1,4}(\.\d+)?$", v):

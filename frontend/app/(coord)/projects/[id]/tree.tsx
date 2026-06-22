@@ -365,8 +365,17 @@ function NodeEditorModal({
 
   // Helper para parsear coordenada (admite punto o coma como separador decimal).
   function parseCoord(raw: string): number | null {
-    const s = (raw || '').trim().replace(',', '.');
+    let s = (raw || '').trim();
     if (!s) return null;
+    // Soporte UTM: limpia separadores de miles. Si el string ya tiene punto decimal
+    // o más de una coma, las comas se tratan como separador de miles (ej. "1,234,567.89").
+    // Si solo hay una coma sin punto, se trata como decimal estilo europeo ("1,5").
+    const commaCount = (s.match(/,/g) || []).length;
+    if (s.includes('.') || commaCount > 1) {
+      s = s.replace(/,/g, '');
+    } else if (commaCount === 1) {
+      s = s.replace(',', '.');
+    }
     const n = Number(s);
     return Number.isFinite(n) ? n : NaN as any;
   }
@@ -383,11 +392,11 @@ function NodeEditorModal({
       parsedLat = parseCoord(tLat);
       parsedLon = parseCoord(tLon);
       parsedElev = parseCoord(tElev);
-      if (Number.isNaN(parsedLat as any)) { setErr('Latitud inválida'); return; }
-      if (Number.isNaN(parsedLon as any)) { setErr('Longitud inválida'); return; }
+      if (Number.isNaN(parsedLat as any)) { setErr('Coordenada X (Este) inválida'); return; }
+      if (Number.isNaN(parsedLon as any)) { setErr('Coordenada Y (Norte) inválida'); return; }
       if (Number.isNaN(parsedElev as any)) { setErr('Elevación inválida'); return; }
-      if (parsedLat != null && (parsedLat < -90 || parsedLat > 90)) { setErr('Latitud fuera de rango (-90 a 90)'); return; }
-      if (parsedLon != null && (parsedLon < -180 || parsedLon > 180)) { setErr('Longitud fuera de rango (-180 a 180)'); return; }
+      // Nota: en obra civil se usan coordenadas UTM (cientos de miles / millones).
+      // No se aplica restricción de rango geográfico (-90/90, -180/180).
     }
     setBusy(true);
     try {
@@ -517,13 +526,13 @@ function NodeEditorModal({
                       </Text>
                       <View style={styles.coordRow}>
                         <View style={styles.coordField}>
-                          <Text style={styles.coordLabel}>Latitud (X)</Text>
+                          <Text style={styles.coordLabel}>Coordenada X (Este)</Text>
                           <View style={styles.inputWrap}>
                             <Ionicons name="locate-outline" size={16} color={colors.textMuted} />
                             <TextInput
                               value={tLat}
                               onChangeText={setTLat}
-                              placeholder="19.432608"
+                              placeholder="487256.42"
                               placeholderTextColor={colors.textMuted}
                               style={styles.input}
                               keyboardType="numbers-and-punctuation"
@@ -533,13 +542,13 @@ function NodeEditorModal({
                           </View>
                         </View>
                         <View style={styles.coordField}>
-                          <Text style={styles.coordLabel}>Longitud (Y)</Text>
+                          <Text style={styles.coordLabel}>Coordenada Y (Norte)</Text>
                           <View style={styles.inputWrap}>
                             <Ionicons name="locate-outline" size={16} color={colors.textMuted} />
                             <TextInput
                               value={tLon}
                               onChangeText={setTLon}
-                              placeholder="-99.133209"
+                              placeholder="2148123.18"
                               placeholderTextColor={colors.textMuted}
                               style={styles.input}
                               keyboardType="numbers-and-punctuation"
