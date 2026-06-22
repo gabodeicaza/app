@@ -90,6 +90,8 @@ export interface LocationNode {
   target_elev?: number | null;
   // Meta/objetivo numérico para gráficas circulares de avance.
   meta?: number | null;
+  // Avance acumulado persistido (MAX ultima_lectura). Inyectado por backend.
+  avance_actual?: number | null;
 }
 
 export interface LocationNodeTree extends LocationNode {

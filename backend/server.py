@@ -193,6 +193,7 @@ class LocationNodeOut(BaseModel):
     target_lon: Optional[float] = None
     target_elev: Optional[float] = None
     meta: Optional[float] = None
+    avance_actual: float = 0.0
     path: List[str] = Field(default_factory=list)  # cadena de ids desde raíz hasta self
 
 
@@ -654,6 +655,16 @@ async def set_reference_files(
 async def list_nodes(pid: str, user: dict = Depends(current_user)):
     await ensure_project_access(user, pid)
     items = await db.location_nodes.find({"project_id": pid}).sort([("depth", 1), ("order", 1)]).to_list(length=10000)
+
+    # --- FIX AMNESIA DE ESTADO: usar MAX(ultima_lectura) numérica, no SUM(avance) texto ---
+    pipeline = [
+        {"$match": {"project_id": pid, "ultima_lectura": {"$ne": None}}},
+        {"$group": {"_id": "$node_id", "total_avance": {"$max": "$ultima_lectura"}}},
+    ]
+    aggr = await db.reports.aggregate(pipeline).to_list(length=10000)
+    avances_dict = {doc["_id"]: float(doc.get("total_avance") or 0.0) for doc in aggr}
+    # -------------------------------------------------------------------------------------
+
     # Filtrado por scope (Sub-coordinador AHORA tiene scope GLOBAL, igual que Coordinador).
     role = user.get("role")
     if role == ROLE_ESPECIALISTA and (user.get("scope_node_ids") or []):
@@ -669,8 +680,12 @@ async def list_nodes(pid: str, user: dict = Depends(current_user)):
                 ancestors.add(cur)
                 cur = parent_of.get(cur)
         items = [it for it in items if it["id"] in ancestors]
+        
     for it in items:
         it.pop("_id", None)
+        # Inyectamos el acumulado al nodo
+        it["avance_actual"] = avances_dict.get(it["id"], 0.0)
+        
     return items
 
 
@@ -679,6 +694,16 @@ async def get_tree(pid: str, user: dict = Depends(current_user)):
     """Devuelve el árbol completo como estructura jerárquica."""
     await ensure_project_access(user, pid)
     items = await db.location_nodes.find({"project_id": pid}).sort([("depth", 1), ("order", 1)]).to_list(length=10000)
+    
+    # --- FIX AMNESIA DE ESTADO: usar MAX(ultima_lectura) numérica, no SUM(avance) texto ---
+    pipeline = [
+        {"$match": {"project_id": pid, "ultima_lectura": {"$ne": None}}},
+        {"$group": {"_id": "$node_id", "total_avance": {"$max": "$ultima_lectura"}}},
+    ]
+    aggr = await db.reports.aggregate(pipeline).to_list(length=10000)
+    avances_dict = {doc["_id"]: float(doc.get("total_avance") or 0.0) for doc in aggr}
+    # -------------------------------------------------------------------------------------
+
     # Filtrado por scope (Sub-coordinador AHORA tiene scope GLOBAL, igual que Coordinador).
     role = user.get("role")
     if role == ROLE_ESPECIALISTA and (user.get("scope_node_ids") or []):
@@ -691,11 +716,15 @@ async def get_tree(pid: str, user: dict = Depends(current_user)):
                 ancestors.add(cur)
                 cur = parent_of.get(cur)
         items = [it for it in items if it["id"] in ancestors]
+        
     by_id = {}
     for it in items:
         it.pop("_id", None)
+        # Inyectamos el acumulado al nodo antes de anidarlo
+        it["avance_actual"] = avances_dict.get(it["id"], 0.0)
         it["children"] = []
         by_id[it["id"]] = it
+        
     roots = []
     # Para sub-coord/especialista, "root" debe ser el primer nodo cuyo padre no está en el set filtrado
     for it in items:
@@ -1391,6 +1420,7 @@ async def create_announcement(
         "author_role": user["role"],
         "created_at": now,
         "updated_at": now,
+        "intranet": False,
     }
     await db.announcements.insert_one(doc)
     return _announcement_out(doc)

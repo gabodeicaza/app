@@ -39,16 +39,25 @@ export function NodeProgressPanel({ projectId, reports }: Props) {
 
   const counts = useMemo(() => {
     const map = new Map<string, number>();
+    // Fuente de verdad: avance_actual viene persistido del backend (MAX ultima_lectura).
+    for (const n of nodes) {
+      const anyN: any = n;
+      const persisted = Number(anyN?.avance_actual);
+      if (Number.isFinite(persisted) && persisted > 0) {
+        map.set(n.id, persisted);
+      }
+    }
+    // Si llegan reports recientes en memoria, dejamos que sobrescriban con el MAX local.
     for (const r of safeReports) {
       if (!r || !r.node_id) continue;
       const anyR: any = r;
-      const raw = anyR.avance ?? anyR.medicion ?? 0;
-      const val = parseFloat(String(raw));
-      const inc = Number.isFinite(val) ? val : 0;
-      map.set(r.node_id, (map.get(r.node_id) || 0) + inc);
+      const reading = parseFloat(String(anyR.ultima_lectura ?? anyR.medicion ?? anyR.avance ?? ''));
+      if (!Number.isFinite(reading)) continue;
+      const prev = map.get(r.node_id) || 0;
+      if (reading > prev) map.set(r.node_id, reading);
     }
     return map;
-  }, [safeReports]);
+  }, [nodes, safeReports]);
 
   const items = useMemo(
     () => nodes
