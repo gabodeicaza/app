@@ -919,12 +919,7 @@ async def create_invite(pid: str, body: InvitationIn, user: dict = Depends(requi
         raise HTTPException(400, "project_id mismatch")
     project = await ensure_project_access(user, pid)
     email = body.email.lower()
-    # Validar email no exista YA con cuenta activa
-    existing_user = await db.users.find_one({"email": email})
-    if existing_user:
-        # OK si es el mismo usuario que será agregado a un nuevo proyecto, sino conflicto
-        raise HTTPException(409, "Email ya registrado en el sistema")
-    # Validaciones por rol
+    # Validaciones por rol (deben ejecutarse antes del auto-link para validar pertenencia al proyecto)
     if body.role == "sub_coordinador":
         if not body.scope_node_id:
             raise HTTPException(400, "Sub-coordinador requiere scope_node_id")
@@ -948,6 +943,20 @@ async def create_invite(pid: str, body: InvitationIn, user: dict = Depends(requi
         for n in nodes:
             if not n.get("is_leaf"):
                 raise HTTPException(400, f"Nodo '{n['name']}' no es hoja")
+    # Auto-link multiproyecto: si el usuario ya existe, simplemente vincúlalo a este proyecto
+    existing_user = await db.users.find_one({"email": email})
+    if existing_user:
+        update_ops: dict = {"$addToSet": {"project_ids": pid}}
+        if body.scope_node_ids:
+            update_ops["$addToSet"]["scope_node_ids"] = {"$each": body.scope_node_ids}
+        await db.users.update_one({"id": existing_user["id"]}, update_ops)
+        return {
+            "status": "auto_linked",
+            "message": "Usuario existente vinculado exitosamente al proyecto",
+            "user_id": existing_user["id"],
+            "email": email,
+            "project_id": pid,
+        }
     tok = secrets.token_urlsafe(24)
     doc = {
         "id": str(uuid.uuid4()),

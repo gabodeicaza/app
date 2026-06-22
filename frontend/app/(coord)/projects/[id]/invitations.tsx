@@ -114,10 +114,16 @@ export default function InvitationsScreen() {
         scope_node_id: role === ROLE_SUB ? scopeNodeId : null,
         scope_node_ids: role === ROLE_ESP ? scopeNodeIds : [],
       };
-      const inv = await api.createInvitation(pid, body);
+      const inv: any = await api.createInvitation(pid, body);
       setWizardOpen(false);
-      setCreatedInvite(inv);
-      await load();
+      if (inv && inv.status === 'auto_linked') {
+        // Usuario ya existía: fue vinculado automáticamente al proyecto sin generar token
+        await load();
+        Alert.alert('Usuario vinculado', inv.message || 'Usuario existente vinculado exitosamente al proyecto.');
+      } else {
+        setCreatedInvite(inv);
+        await load();
+      }
     } catch (e: any) {
       setWizardErr(e?.message || 'No se pudo crear la invitación');
     } finally {
