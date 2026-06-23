@@ -11,11 +11,11 @@ import * as Clipboard from 'expo-clipboard';
 import { Button } from '@/src/components/Button';
 import { api, Invitation, LocationNodeTree, Area } from '@/src/api';
 import { colors, radius, spacing, shadow } from '@/src/theme';
-import { roleLabel, ROLE_SUB, ROLE_ESP } from '@/src/utils/roles';
+import { roleLabel, ROLE_SUB, ROLE_ESP, ROLE_JEFE } from '@/src/utils/roles';
 import { confirm, notify } from '@/src/utils/confirm';
 
 type WizardStep = 0 | 1 | 2 | 3;
-type WizardRole = 'sub_coordinador' | 'especialista';
+type WizardRole = 'sub_coordinador' | 'especialista' | 'jefe_proyecto';
 
 export default function InvitationsScreen() {
   const insets = useSafeAreaInsets();
@@ -83,11 +83,16 @@ export default function InvitationsScreen() {
     } else if (step === 1) {
       if (!name.trim()) return setWizardErr('Ingresa el nombre');
       if (!email.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) return setWizardErr('Correo no válido');
-      setStep(2);
+      // Jefe de Proyecto tiene acceso global → saltar el step de scope
+      if (role === ROLE_JEFE) {
+        setStep(3);
+      } else {
+        setStep(2);
+      }
     } else if (step === 2) {
       if (role === ROLE_SUB) {
         if (!scopeNodeId) return setWizardErr('Selecciona el nodo donde tendrá alcance');
-      } else {
+      } else if (role === ROLE_ESP) {
         if (!areaId) return setWizardErr('Selecciona el área a la que pertenece el Especialista');
         if (scopeNodeIds.length === 0) return setWizardErr('Selecciona al menos un nodo hoja donde podrá registrar');
       }
@@ -97,6 +102,11 @@ export default function InvitationsScreen() {
 
   function back() {
     setWizardErr(null);
+    if (step === 3 && role === ROLE_JEFE) {
+      // Saltar el step de scope al regresar
+      setStep(1);
+      return;
+    }
     setStep((s) => (s > 0 ? ((s - 1) as WizardStep) : s));
   }
 
@@ -162,6 +172,7 @@ export default function InvitationsScreen() {
     if (step === 0) return true;
     if (step === 1) return name.trim().length > 0 && email.trim().length > 0;
     if (step === 2) {
+      if (role === ROLE_JEFE) return true; // El jefe no requiere scope
       if (role === ROLE_SUB) return !!scopeNodeId;
       return !!areaId && scopeNodeIds.length > 0;
     }
@@ -475,6 +486,17 @@ function StepRole({ role, onChange }: { role: WizardRole; onChange: (r: WizardRo
         </View>
         {role === ROLE_SUB ? <Ionicons name="checkmark-circle" size={22} color={colors.primary} /> : null}
       </Pressable>
+
+      <Pressable onPress={() => onChange(ROLE_JEFE)} style={[styles.roleCard, role === ROLE_JEFE && styles.roleCardOn]}>
+        <View style={[styles.roleIconBig, { backgroundColor: '#FEF9C3' }]}>
+          <Ionicons name="ribbon" size={22} color="#B45309" />
+        </View>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.roleTitle}>Jefe de Proyecto</Text>
+          <Text style={styles.roleDesc}>Supervisión global del proyecto. Tiene acceso total a todos los tramos, nodos y reportes de la obra (solo lectura).</Text>
+        </View>
+        {role === ROLE_JEFE ? <Ionicons name="checkmark-circle" size={22} color={colors.primary} /> : null}
+      </Pressable>
     </View>
   );
 }
@@ -627,6 +649,9 @@ function StepReview({
         {role === ROLE_SUB && scopeNodeName ? <ReviewRow icon="git-network-outline" label="Alcance" value={scopeNodeName} /> : null}
         {role === ROLE_ESP && scopeNames.length > 0 ? (
           <ReviewRow icon="flag-outline" label={`Hojas (${scopeNames.length})`} value={scopeNames.join(', ')} />
+        ) : null}
+        {role === ROLE_JEFE ? (
+          <ReviewRow icon="globe-outline" label="Alcance" value="Acceso global al proyecto (solo lectura)" />
         ) : null}
       </View>
     </View>

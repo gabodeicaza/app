@@ -1,21 +1,23 @@
-// SynCo v2.0 — Roles simplificados.
-// Solo existen 3 roles operativos:
+// SynCo v2.0 — Roles del sistema.
 //   - coordinador_general (God Mode multi-proyecto)
+//   - jefe_proyecto       (Supervisión global de un proyecto, read-only)
 //   - sub_coordinador     (scope: sub-árbol)
 //   - especialista        (scope: hojas asignadas)
 
 export const APP_BRAND = 'SynCo';
 export const APP_TAGLINE = 'Reporte de obra inteligente, sin huella local.';
 
-export type AppRole = 'coordinador_general' | 'sub_coordinador' | 'especialista';
+export type AppRole = 'coordinador_general' | 'jefe_proyecto' | 'sub_coordinador' | 'especialista';
 
 export const ROLE_COORD: AppRole = 'coordinador_general';
+export const ROLE_JEFE: AppRole = 'jefe_proyecto';
 export const ROLE_SUB: AppRole = 'sub_coordinador';
 export const ROLE_ESP: AppRole = 'especialista';
 
 export function roleLabel(role?: string | null, areaName?: string | null): string {
   if (!role) return '—';
   if (role === ROLE_COORD) return 'Coordinador General';
+  if (role === ROLE_JEFE) return 'Jefe de Proyecto';
   if (role === ROLE_SUB) return 'Sub-Coordinador';
   if (role === ROLE_ESP) {
     return areaName && areaName.trim() ? `Especialista · ${areaName.trim()}` : 'Especialista';
@@ -25,6 +27,7 @@ export function roleLabel(role?: string | null, areaName?: string | null): strin
 
 export function roleShortLabel(role?: string | null): string {
   if (role === ROLE_COORD) return 'Coord. General';
+  if (role === ROLE_JEFE) return 'Jefe de Proyecto';
   if (role === ROLE_SUB) return 'Sub-Coord.';
   if (role === ROLE_ESP) return 'Especialista';
   return '—';
@@ -32,6 +35,9 @@ export function roleShortLabel(role?: string | null): string {
 
 export function isCoord(role?: string | null): boolean {
   return role === ROLE_COORD;
+}
+export function isJefe(role?: string | null): boolean {
+  return role === ROLE_JEFE;
 }
 export function isSubCoord(role?: string | null): boolean {
   return role === ROLE_SUB;
@@ -60,6 +66,7 @@ export const MEASUREMENT_ICONS: Record<MeasurementType, string> = {
 /** Devuelve la ruta de redirect inicial según rol. */
 export function homeRouteForRole(role?: string | null): string {
   if (role === ROLE_COORD) return '/(coord)';
+  if (role === ROLE_JEFE) return '/(coord)'; // Jefe usa el dashboard de coordinador (read-only enforced en backend)
   if (role === ROLE_SUB) return '/(subcoord)';
   if (role === ROLE_ESP) return '/(spec)';
   return '/(auth)/login';
