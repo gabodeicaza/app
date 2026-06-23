@@ -1299,7 +1299,7 @@ function validateMeasurement(type: string | null | undefined, v: MeasurementValu
   if (!type) return false;
   if (type === 'coord_latlon') {
     return typeof v.lat === 'number' && typeof v.lon === 'number'
-      && v.lat >= -90 && v.lat <= 90 && v.lon >= -180 && v.lon <= 180;
+      && Number.isFinite(v.lat) && Number.isFinite(v.lon);
   }
   if (type === 'cadenamiento') {
     return typeof v.cadenamiento === 'string' && /^\d+\+\d{1,4}(\.\d+)?$/.test(v.cadenamiento);

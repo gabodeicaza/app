@@ -215,7 +215,7 @@ class InvitationIn(BaseModel):
     project_id: str
     email: EmailStr
     name: str
-    role: Literal["sub_coordinador", "especialista"]
+    role: Literal["sub_coordinador", "especialista", "jefe_proyecto"]
     # Sub-coordinador: scope_node_id (un nodo padre)
     scope_node_id: Optional[str] = None
     # Especialista: area_id, puesto, scope_node_ids (lista de hojas)
