@@ -913,6 +913,88 @@ def _coerce_cell(v):
     return v
 
 
+@api.get("/projects/{pid}/nodes/bulk-upload/template")
+async def bulk_upload_template(
+    pid: str,
+    user: dict = Depends(require_role(ROLE_COORD)),
+):
+    """Devuelve una plantilla .xlsx de ejemplo para carga masiva de nodos.
+
+    Columnas:
+      - Nombre: nombre del nodo (obligatorio)
+      - Padre: nombre del nodo padre (opcional; deja vacío para nodos raíz)
+      - Coordenada X, Coordenada Y, Elevación (TN), Dirección: ejemplos de metadatos.
+    """
+    await ensure_project_access(user, pid)
+    try:
+        import pandas as pd  # noqa: WPS433
+    except Exception as e:  # pragma: no cover
+        raise HTTPException(500, f"pandas no disponible: {e}")
+
+    sample = [
+        {
+            "Nombre": "Tramo 1",
+            "Padre": "",
+            "Coordenada X": "",
+            "Coordenada Y": "",
+            "Elevación (TN)": "",
+            "Dirección": "Tronco principal",
+        },
+        {
+            "Nombre": "P-101",
+            "Padre": "Tramo 1",
+            "Coordenada X": 19.432608,
+            "Coordenada Y": -99.133209,
+            "Elevación (TN)": 2240.5,
+            "Dirección": "Av. Reforma 100",
+        },
+        {
+            "Nombre": "P-102",
+            "Padre": "Tramo 1",
+            "Coordenada X": 19.433100,
+            "Coordenada Y": -99.134000,
+            "Elevación (TN)": 2241.0,
+            "Dirección": "Av. Reforma 120",
+        },
+        {
+            "Nombre": "Tramo 2",
+            "Padre": "",
+            "Coordenada X": "",
+            "Coordenada Y": "",
+            "Elevación (TN)": "",
+            "Dirección": "Ramal secundario",
+        },
+        {
+            "Nombre": "P-201",
+            "Padre": "Tramo 2",
+            "Coordenada X": 19.440100,
+            "Coordenada Y": -99.145000,
+            "Elevación (TN)": 2245.2,
+            "Dirección": "Calz. Tlalpan 500",
+        },
+    ]
+    df = pd.DataFrame(sample)
+
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        df.to_excel(writer, sheet_name="Nodos", index=False)
+        # Ajustar ancho de columnas para que sea legible
+        ws = writer.sheets["Nodos"]
+        widths = {"A": 22, "B": 22, "C": 16, "D": 16, "E": 18, "F": 32}
+        for col, w in widths.items():
+            ws.column_dimensions[col].width = w
+    buf.seek(0)
+
+    headers = {
+        "Content-Disposition": 'attachment; filename="plantilla_nodos_synco.xlsx"',
+    }
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers=headers,
+    )
+
+
 @api.post("/projects/{pid}/nodes/bulk-upload")
 async def bulk_upload_nodes(
     pid: str,

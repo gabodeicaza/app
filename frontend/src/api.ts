@@ -318,7 +318,7 @@ export const api = {
   }) => request<LocationNode>('PATCH', `/nodes/${nid}`, body),
   deleteNode: (nid: string) => request<{ ok: boolean; deleted_count: number }>('DELETE', `/nodes/${nid}`),
 
-  // Bulk upload de nodos desde Excel/CSV (FormData)
+  // Bulk upload de nodos desde Excel/CSV (FormData). Compatible web + native.
   bulkUploadNodes: async (
     pid: string,
     file: { uri: string; name: string; mimeType?: string | null },
@@ -333,20 +333,37 @@ export const api = {
     metadata_columns: string[];
   }> => {
     const form = new FormData();
-    // En React Native, FormData espera { uri, name, type }
-    form.append('file', {
-      uri: file.uri,
-      name: file.name || 'nodes.xlsx',
-      type:
-        file.mimeType ||
-        (file.name?.toLowerCase().endsWith('.csv')
-          ? 'text/csv'
-          : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'),
-    } as any);
+    const isWeb = typeof window !== 'undefined' && typeof (globalThis as any).Blob !== 'undefined';
+    const fileName = file.name || 'nodos.xlsx';
+    const mime =
+      file.mimeType ||
+      (fileName.toLowerCase().endsWith('.csv')
+        ? 'text/csv'
+        : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    if (isWeb) {
+      // En web, DocumentPicker devuelve un blob: URL o data URL. Hay que materializar el Blob.
+      const resBlob = await fetch(file.uri);
+      const blob = await resBlob.blob();
+      // Re-envolver con el filename correcto.
+      try {
+        const f = new File([blob], fileName, { type: mime });
+        form.append('file', f);
+      } catch {
+        // Algunos navegadores antiguos no soportan File constructor.
+        form.append('file', blob, fileName);
+      }
+    } else {
+      // En React Native nativo, el objeto { uri, name, type } sí es soportado.
+      form.append('file', {
+        uri: file.uri,
+        name: fileName,
+        type: mime,
+      } as any);
+    }
     const headers = await authHeader();
     const res = await fetch(`${BASE}/projects/${pid}/nodes/bulk-upload`, {
       method: 'POST',
-      headers, // No establecer Content-Type, RN/Fetch añade boundary automático.
+      headers, // No establecer Content-Type, fetch añade boundary automático.
       body: form as any,
     });
     const text = await res.text();
@@ -356,6 +373,22 @@ export const api = {
       throw new ApiError(res.status, typeof msg === 'string' ? msg : JSON.stringify(msg));
     }
     return data as any;
+  },
+
+  // URL absoluta para descargar la plantilla Excel de nodos (incluye token en header en native).
+  bulkUploadNodesTemplateUrl: (pid: string) => `${BASE}/projects/${pid}/nodes/bulk-upload/template`,
+
+  // Descarga la plantilla y devuelve un Blob (web) o la guarda en cacheDirectory (native).
+  downloadNodesTemplate: async (pid: string): Promise<{ blob?: Blob; uri?: string; filename: string }> => {
+    const headers = await authHeader();
+    const url = `${BASE}/projects/${pid}/nodes/bulk-upload/template`;
+    const filename = 'plantilla_nodos_synco.xlsx';
+    const res = await fetch(url, { method: 'GET', headers });
+    if (!res.ok) {
+      throw new ApiError(res.status, `HTTP ${res.status} al descargar la plantilla`);
+    }
+    const blob = await res.blob();
+    return { blob, filename };
   },
 
   // Areas

@@ -7,6 +7,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as DocumentPicker from 'expo-document-picker';
+import * as Sharing from 'expo-sharing';
+import * as FileSystem from 'expo-file-system/legacy';
 import { Button } from '@/src/components/Button';
 import { api, LocationNode, LocationNodeTree } from '@/src/api';
 import { colors, radius, spacing, shadow } from '@/src/theme';
@@ -89,6 +91,54 @@ export default function TreeBuilderScreen() {
       await load();
     } catch (e: any) {
       Alert.alert('Error', e?.message || 'No se pudo eliminar');
+    }
+  }
+
+  async function onDownloadTemplate() {
+    try {
+      const { blob, filename } = await api.downloadNodesTemplate(pid);
+      if (Platform.OS === 'web') {
+        // Disparar descarga vía anchor en el DOM.
+        if (!blob) throw new Error('No se obtuvo el archivo');
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        return;
+      }
+      // Native: convertir el blob a base64 y guardarlo en cache, luego compartir.
+      if (!blob) throw new Error('Archivo vacío');
+      const reader = new FileReader();
+      const base64: string = await new Promise((resolve, reject) => {
+        reader.onerror = () => reject(reader.error);
+        reader.onloadend = () => {
+          const s = (reader.result as string) || '';
+          // result viene como "data:<mime>;base64,XXXX"
+          const idx = s.indexOf('base64,');
+          resolve(idx >= 0 ? s.substring(idx + 7) : s);
+        };
+        reader.readAsDataURL(blob);
+      });
+      const fileUri = `${FileSystem.cacheDirectory}${filename}`;
+      await FileSystem.writeAsStringAsync(fileUri, base64, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+      const avail = await Sharing.isAvailableAsync();
+      if (avail) {
+        await Sharing.shareAsync(fileUri, {
+          mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          dialogTitle: 'Plantilla de Nodos',
+          UTI: 'org.openxmlformats.spreadsheetml.sheet',
+        });
+      } else {
+        Alert.alert('Plantilla descargada', `Guardada en: ${fileUri}`);
+      }
+    } catch (e: any) {
+      Alert.alert('No se pudo descargar', e?.message || 'Error desconocido');
     }
   }
 
@@ -193,6 +243,15 @@ export default function TreeBuilderScreen() {
           <Ionicons name="contract" size={20} color={tree.length === 0 ? colors.textMuted : colors.text} />
         </Pressable>
         <Pressable
+          onPress={onDownloadTemplate}
+          hitSlop={8}
+          style={styles.iconBtn}
+          accessibilityRole="button"
+          accessibilityLabel="Descargar plantilla Excel"
+        >
+          <Ionicons name="document-text-outline" size={20} color={colors.primary} />
+        </Pressable>
+        <Pressable
           onPress={uploading ? undefined : onImportExcel}
           hitSlop={8}
           style={styles.iconBtn}
@@ -237,6 +296,14 @@ export default function TreeBuilderScreen() {
               <Text style={styles.emptyImportText}>
                 {uploading ? 'Procesando…' : 'Importar Nodos (Excel/CSV)'}
               </Text>
+            </Pressable>
+            <Pressable
+              onPress={onDownloadTemplate}
+              style={styles.emptyTemplateBtn}
+              accessibilityRole="button"
+            >
+              <Ionicons name="document-text-outline" size={14} color={colors.textMuted} />
+              <Text style={styles.emptyTemplateText}>Descargar plantilla de ejemplo</Text>
             </Pressable>
           </View>
         ) : (
@@ -748,6 +815,11 @@ const styles = StyleSheet.create({
     backgroundColor: colors.primaryLight,
   },
   emptyImportText: { color: colors.primary, fontWeight: '800', fontSize: 13, letterSpacing: 0.3 },
+  emptyTemplateBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 5,
+    marginTop: 10, paddingVertical: 6, paddingHorizontal: 4,
+  },
+  emptyTemplateText: { color: colors.textMuted, fontSize: 12, fontWeight: '600', textDecorationLine: 'underline' },
   metaBadge: {
     flexDirection: 'row', alignItems: 'center', gap: 3,
     backgroundColor: colors.bg, paddingHorizontal: 6, paddingVertical: 2,
