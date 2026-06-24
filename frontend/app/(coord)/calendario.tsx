@@ -43,7 +43,7 @@ export default function CalendarioCoordScreen() {
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <StatusBar barStyle="light-content" />
-      <View style={[styles.blueTop, { height: 200 + insets.top }]} />
+      <View style={[styles.blueTop, { height: 150 + insets.top }]} />
 
       <View style={[styles.header, { paddingTop: insets.top + spacing.xs }]}>
         <View style={styles.headerIcon}>
@@ -56,31 +56,33 @@ export default function CalendarioCoordScreen() {
       </View>
 
       {projects.length > 1 ? (
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.selector}
-        >
-          {projects.map((p) => {
-            const active = p.id === selected;
-            return (
-              <Pressable
-                key={p.id}
-                onPress={() => setSelected(p.id)}
-                style={[styles.projChip, active && styles.projChipActive]}
-              >
-                <Ionicons
-                  name="folder"
-                  size={12}
-                  color={active ? '#fff' : colors.primary}
-                />
-                <Text style={[styles.projTxt, active && styles.projTxtActive]} numberOfLines={1}>
-                  {p.name}
-                </Text>
-              </Pressable>
-            );
-          })}
-        </ScrollView>
+        <View style={styles.selectorWrap}>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.selector}
+          >
+            {projects.map((p) => {
+              const active = p.id === selected;
+              return (
+                <Pressable
+                  key={p.id}
+                  onPress={() => setSelected(p.id)}
+                  style={[styles.projChip, active && styles.projChipActive]}
+                >
+                  <Ionicons
+                    name={active ? 'folder' : 'folder-outline'}
+                    size={12}
+                    color={active ? '#fff' : 'rgba(255,255,255,0.85)'}
+                  />
+                  <Text style={[styles.projTxt, active && styles.projTxtActive]} numberOfLines={1}>
+                    {p.name}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </ScrollView>
+        </View>
       ) : null}
 
       {loading ? (
@@ -117,16 +119,28 @@ const styles = StyleSheet.create({
   headerTitle: { color: '#fff', fontSize: 18, fontWeight: '800' },
   headerSubtitle: { color: 'rgba(255,255,255,0.85)', fontSize: 11, marginTop: 1 },
 
-  selector: { paddingHorizontal: spacing.md, paddingBottom: spacing.xs, gap: 6 },
-  projChip: {
-    flexDirection: 'row', alignItems: 'center', gap: 6,
-    paddingHorizontal: 12, paddingVertical: 7, borderRadius: radius.full,
-    backgroundColor: 'rgba(255,255,255,0.95)',
-    borderWidth: 1, borderColor: 'rgba(255,255,255,0.6)',
-    marginRight: 6,
+  selectorWrap: {
+    height: 36, marginBottom: spacing.xs,
   },
-  projChipActive: { backgroundColor: '#fff', borderColor: '#fff' },
-  projTxt: { fontSize: 12, fontWeight: '700', color: colors.primary, maxWidth: 180 },
+  selector: { paddingHorizontal: spacing.md, alignItems: 'center', gap: 6 },
+  projChip: {
+    flexDirection: 'row', alignItems: 'center', gap: 5,
+    paddingHorizontal: 10, paddingVertical: 5,
+    borderRadius: 14,
+    backgroundColor: 'rgba(255,255,255,0.15)',
+    borderWidth: 1, borderColor: 'rgba(255,255,255,0.35)',
+    marginRight: 6,
+    height: 28,
+  },
+  projChipActive: {
+    backgroundColor: '#fff',
+    borderColor: '#fff',
+  },
+  projTxt: {
+    fontSize: 11.5, fontWeight: '700',
+    color: 'rgba(255,255,255,0.9)',
+    maxWidth: 140,
+  },
   projTxtActive: { color: colors.primary },
 
   center: { padding: spacing.xl, alignItems: 'center' },
