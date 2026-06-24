@@ -18,7 +18,11 @@ export default function SubCoordLayout() {
     if (loading) return;
     if (!user) { router.replace('/(auth)/login'); return; }
     if (user.role !== ROLE_SUB) {
-      router.replace(user.role === 'coordinador_general' ? '/(coord)' : '/(spec)');
+      if (user.role === 'coordinador_general' || user.role === 'jefe_proyecto') {
+        router.replace('/(coord)');
+      } else {
+        router.replace('/(spec)');
+      }
     }
   }, [user, loading]);
 

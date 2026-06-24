@@ -3,7 +3,7 @@ import { Tabs, router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '@/src/auth-context';
-import { ROLE_COORD } from '@/src/utils/roles';
+import { ROLE_COORD, ROLE_JEFE } from '@/src/utils/roles';
 import { colors } from '@/src/theme';
 
 export default function CoordLayout() {
@@ -13,7 +13,8 @@ export default function CoordLayout() {
   useEffect(() => {
     if (loading) return;
     if (!user) { router.replace('/(auth)/login'); return; }
-    if (user.role !== ROLE_COORD) {
+    // Coord layout es usado por coordinador_general y jefe_proyecto (read-only).
+    if (user.role !== ROLE_COORD && user.role !== ROLE_JEFE) {
       router.replace(user.role === 'sub_coordinador' ? '/(subcoord)' : '/(spec)');
     }
   }, [user, loading]);

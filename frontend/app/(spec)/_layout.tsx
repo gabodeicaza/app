@@ -18,7 +18,11 @@ export default function SpecLayout() {
     if (loading) return;
     if (!user) { router.replace('/(auth)/login'); return; }
     if (user.role !== ROLE_ESP) {
-      router.replace(user.role === 'coordinador_general' ? '/(coord)' : '/(subcoord)');
+      if (user.role === 'coordinador_general' || user.role === 'jefe_proyecto') {
+        router.replace('/(coord)');
+      } else {
+        router.replace('/(subcoord)');
+      }
     }
   }, [user, loading]);
 
