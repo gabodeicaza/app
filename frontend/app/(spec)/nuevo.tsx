@@ -603,7 +603,7 @@ export default function SpecCaptureScreen() {
       </View>
 
       <ScrollView
-        contentContainerStyle={{ padding: spacing.md, paddingBottom: spacing.xl * 2 }}
+        contentContainerStyle={{ padding: spacing.md, paddingBottom: insets.bottom + spacing.xl + 20 }}
         keyboardShouldPersistTaps="handled"
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} />}
       >

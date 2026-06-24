@@ -250,7 +250,7 @@ export default function InvitationsScreen() {
               <ScrollView
                 style={{ flex: 1 }}
                 keyboardShouldPersistTaps="handled"
-                contentContainerStyle={{ gap: spacing.md, paddingBottom: spacing.md }}
+                contentContainerStyle={{ gap: spacing.md, paddingBottom: insets.bottom + spacing.lg }}
               >
                 {step === 0 ? (
                   <StepRole role={role} onChange={setRole} />
@@ -331,8 +331,8 @@ export default function InvitationsScreen() {
 
       {/* Token success modal */}
       <Modal visible={!!createdInvite} animationType="fade" transparent onRequestClose={() => setCreatedInvite(null)}>
-        <View style={styles.modalBackdrop}>
-          <View style={[styles.successCard, { marginBottom: insets.bottom }]}>
+        <View style={styles.successBackdrop}>
+          <View style={[styles.successCard, { paddingBottom: insets.bottom + spacing.lg }]}>
             <View style={styles.successIconBox}>
               <Ionicons name="checkmark-circle" size={48} color={colors.success} />
             </View>
@@ -840,6 +840,7 @@ const styles = StyleSheet.create({
   backText: { color: colors.textBody, fontWeight: '700' },
 
   // Success modal
+  successBackdrop: { flex: 1, backgroundColor: '#0009', justifyContent: 'flex-end' },
   successCard: { backgroundColor: colors.surface, borderTopLeftRadius: radius.lg, borderTopRightRadius: radius.lg, padding: spacing.lg, alignItems: 'center', gap: spacing.sm },
   successIconBox: { padding: spacing.sm },
   successTitle: { fontSize: 20, fontWeight: '900', color: colors.text },

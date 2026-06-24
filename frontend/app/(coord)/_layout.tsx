@@ -1,12 +1,14 @@
 import React, { useEffect } from 'react';
 import { Tabs, router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '@/src/auth-context';
 import { ROLE_COORD } from '@/src/utils/roles';
 import { colors } from '@/src/theme';
 
 export default function CoordLayout() {
   const { user, loading } = useAuth();
+  const insets = useSafeAreaInsets();
 
   useEffect(() => {
     if (loading) return;
@@ -25,8 +27,8 @@ export default function CoordLayout() {
         tabBarStyle: {
           backgroundColor: colors.surface,
           borderTopColor: colors.border,
-          height: 60,
-          paddingBottom: 6,
+          height: 60 + (insets.bottom > 0 ? insets.bottom : 8),
+          paddingBottom: insets.bottom > 0 ? insets.bottom : 8,
           paddingTop: 6,
         },
         tabBarLabelStyle: { fontSize: 11, fontWeight: '700' },
