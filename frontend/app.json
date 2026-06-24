@@ -23,6 +23,7 @@
         "backgroundColor": "#1E40AF"
       },
       "edgeToEdgeEnabled": true,
+      "usesCleartextTraffic": true,
       "permissions": [
         "CAMERA",
         "READ_EXTERNAL_STORAGE",
