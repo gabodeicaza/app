@@ -92,6 +92,8 @@ export interface LocationNode {
   meta?: number | null;
   // Avance acumulado persistido (MAX ultima_lectura). Inyectado por backend.
   avance_actual?: number | null;
+  // Metadatos dinámicos (importación masiva Excel/CSV). Llaves arbitrarias.
+  metadata?: Record<string, any> | null;
 }
 
 export interface LocationNodeTree extends LocationNode {
@@ -315,6 +317,46 @@ export const api = {
     meta?: number | null;
   }) => request<LocationNode>('PATCH', `/nodes/${nid}`, body),
   deleteNode: (nid: string) => request<{ ok: boolean; deleted_count: number }>('DELETE', `/nodes/${nid}`),
+
+  // Bulk upload de nodos desde Excel/CSV (FormData)
+  bulkUploadNodes: async (
+    pid: string,
+    file: { uri: string; name: string; mimeType?: string | null },
+  ): Promise<{
+    total_rows: number;
+    created: number;
+    updated: number;
+    skipped: number;
+    errors: { row: number; error: string }[];
+    name_column: string;
+    parent_column: string | null;
+    metadata_columns: string[];
+  }> => {
+    const form = new FormData();
+    // En React Native, FormData espera { uri, name, type }
+    form.append('file', {
+      uri: file.uri,
+      name: file.name || 'nodes.xlsx',
+      type:
+        file.mimeType ||
+        (file.name?.toLowerCase().endsWith('.csv')
+          ? 'text/csv'
+          : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'),
+    } as any);
+    const headers = await authHeader();
+    const res = await fetch(`${BASE}/projects/${pid}/nodes/bulk-upload`, {
+      method: 'POST',
+      headers, // No establecer Content-Type, RN/Fetch añade boundary automático.
+      body: form as any,
+    });
+    const text = await res.text();
+    const data = text ? safeJson(text) : null;
+    if (!res.ok) {
+      const msg = (data && (data as any).detail) || `HTTP ${res.status}`;
+      throw new ApiError(res.status, typeof msg === 'string' ? msg : JSON.stringify(msg));
+    }
+    return data as any;
+  },
 
   // Areas
   listAreas: (pid: string) => request<Area[]>('GET', `/projects/${pid}/areas`),

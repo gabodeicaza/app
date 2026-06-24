@@ -26,7 +26,7 @@ except Exception:  # pragma: no cover
 import jwt
 import bcrypt
 from dotenv import load_dotenv
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, Query
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, Query, UploadFile, File
 from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from starlette.middleware.cors import CORSMiddleware
@@ -194,6 +194,7 @@ class LocationNodeOut(BaseModel):
     target_elev: Optional[float] = None
     meta: Optional[float] = None
     avance_actual: float = 0.0
+    metadata: Optional[dict] = None
     path: List[str] = Field(default_factory=list)  # cadena de ids desde raíz hasta self
 
 
@@ -859,6 +860,262 @@ async def delete_node(nid: str, user: dict = Depends(require_role(ROLE_COORD))):
         {"node_id": {"$in": ids_to_delete}}, {"$set": {"node_orphan": True}}
     )
     return {"ok": True, "deleted_count": len(ids_to_delete)}
+
+
+# === BULK UPLOAD GENÉRICO DE NODOS DESDE EXCEL/CSV =========================
+# Columnas reconocidas dinámicamente:
+#   - Nombre del nodo: "nombre", "nodo", "nombre del nodo", "nombre del poste"
+#     (case-insensitive, sin acentos). Si no se encuentra, se usa la 1ra columna.
+#   - Padre (opcional, jerarquía): "padre", "nodo padre", "parent"
+#   - Resto de columnas: se guardan tal cual dentro de `metadata` (dict).
+#
+# Reglas:
+#   - Filas con nombre vacío se ignoran.
+#   - Upsert por (project_id, name) case-insensitive. Si existe -> actualiza
+#     metadata y parent_id; si no -> crea como nodo no-hoja.
+#   - Las filas se procesan en orden: primero los nodos sin padre, después
+#     los hijos (dos pasadas) para resolver referencias forward.
+
+_NODE_NAME_CANDIDATES = {
+    "nombre", "nodo", "nombre del nodo", "nombre del poste",
+    "name", "node", "node name",
+}
+_NODE_PARENT_CANDIDATES = {
+    "padre", "nodo padre", "parent", "padre id", "parent id",
+}
+
+
+def _normalize_col(s: str) -> str:
+    """Normaliza un encabezado para comparación (lower, sin acentos, sin espacios extra)."""
+    if not isinstance(s, str):
+        return ""
+    s = s.strip().lower()
+    repl = {"á": "a", "é": "e", "í": "i", "ó": "o", "ú": "u", "ñ": "n"}
+    for k, v in repl.items():
+        s = s.replace(k, v)
+    return s
+
+
+def _coerce_cell(v):
+    """Convierte celdas de pandas en algo serializable y limpio.
+    Ignora NaN/None, recorta strings."""
+    try:
+        import math
+        if v is None:
+            return None
+        if isinstance(v, float) and math.isnan(v):
+            return None
+    except Exception:
+        pass
+    if isinstance(v, str):
+        s = v.strip()
+        return s if s else None
+    return v
+
+
+@api.post("/projects/{pid}/nodes/bulk-upload")
+async def bulk_upload_nodes(
+    pid: str,
+    file: UploadFile = File(...),
+    user: dict = Depends(require_role(ROLE_COORD)),
+):
+    """Carga masiva genérica de nodos desde un archivo .xlsx o .csv.
+
+    Devuelve resumen: {created, updated, skipped, errors, total}.
+    """
+    await ensure_project_access(user, pid)
+    # Verificar proyecto exista
+    proj = await db.projects.find_one({"id": pid})
+    if not proj:
+        raise HTTPException(404, "Proyecto no existe")
+
+    # Leer archivo en memoria
+    try:
+        raw = await file.read()
+    except Exception as e:
+        raise HTTPException(400, f"No se pudo leer el archivo: {e}")
+    if not raw:
+        raise HTTPException(400, "Archivo vacío")
+
+    fname = (file.filename or "").lower()
+    try:
+        import pandas as pd  # noqa: WPS433
+    except Exception as e:  # pragma: no cover
+        raise HTTPException(500, f"pandas no disponible: {e}")
+
+    try:
+        if fname.endswith(".csv"):
+            df = pd.read_csv(io.BytesIO(raw), dtype=object, keep_default_na=True)
+        elif fname.endswith(".xlsx") or fname.endswith(".xls"):
+            df = pd.read_excel(io.BytesIO(raw), dtype=object, engine="openpyxl")
+        else:
+            # Intento auto: primero xlsx, después csv
+            try:
+                df = pd.read_excel(io.BytesIO(raw), dtype=object, engine="openpyxl")
+            except Exception:
+                df = pd.read_csv(io.BytesIO(raw), dtype=object, keep_default_na=True)
+    except Exception as e:
+        raise HTTPException(400, f"No se pudo parsear el archivo: {e}")
+
+    if df is None or df.empty:
+        raise HTTPException(400, "El archivo no contiene filas")
+
+    # Identificar columna de nombre
+    cols = list(df.columns)
+    norm_to_orig = {_normalize_col(str(c)): c for c in cols}
+
+    name_col = None
+    for cand in _NODE_NAME_CANDIDATES:
+        if cand in norm_to_orig:
+            name_col = norm_to_orig[cand]
+            break
+    if name_col is None and cols:
+        name_col = cols[0]  # fallback: primera columna
+
+    parent_col = None
+    for cand in _NODE_PARENT_CANDIDATES:
+        if cand in norm_to_orig:
+            parent_col = norm_to_orig[cand]
+            break
+
+    if name_col is None:
+        raise HTTPException(400, "No se pudo identificar la columna de nombre")
+
+    # Cargar nodos existentes del proyecto en memoria (map por nombre-lower)
+    existing_docs = await db.location_nodes.find({"project_id": pid}).to_list(length=10000)
+    by_name_lower: dict = {}
+    for n in existing_docs:
+        key = (n.get("name") or "").strip().lower()
+        if key:
+            by_name_lower[key] = n
+
+    # Calcular siguiente "order" para raíces nuevas
+    existing_roots = [n for n in existing_docs if not n.get("parent_id")]
+    next_order = max([n.get("order", 0) for n in existing_roots], default=-1) + 1
+
+    summary = {
+        "total_rows": int(len(df)),
+        "created": 0,
+        "updated": 0,
+        "skipped": 0,
+        "errors": [],
+        "name_column": str(name_col),
+        "parent_column": str(parent_col) if parent_col else None,
+        "metadata_columns": [str(c) for c in cols if c != name_col and c != parent_col],
+    }
+
+    # Procesamos en 2 pasadas para resolver referencias de padre forward.
+    rows = df.to_dict(orient="records")
+
+    async def upsert_row(row: dict, second_pass: bool = False):
+        nonlocal next_order
+        raw_name = _coerce_cell(row.get(name_col))
+        if raw_name is None or str(raw_name).strip() == "":
+            summary["skipped"] += 1
+            return
+        name = str(raw_name).strip()
+        # Resolver padre por nombre (si la columna existe)
+        parent_doc = None
+        if parent_col:
+            raw_parent = _coerce_cell(row.get(parent_col))
+            if raw_parent:
+                pname = str(raw_parent).strip().lower()
+                parent_doc = by_name_lower.get(pname)
+                if not parent_doc and not second_pass:
+                    # Diferimos: el padre puede aparecer más adelante.
+                    return "defer"
+        # Construir metadata con resto de columnas
+        metadata: dict = {}
+        for c in cols:
+            if c == name_col or c == parent_col:
+                continue
+            val = _coerce_cell(row.get(c))
+            if val is None:
+                continue
+            # Convertir tipos no-JSON-serializables
+            try:
+                import numpy as np  # noqa: WPS433
+                if isinstance(val, (np.integer,)):
+                    val = int(val)
+                elif isinstance(val, (np.floating,)):
+                    val = float(val)
+            except Exception:
+                pass
+            if isinstance(val, (datetime,)):
+                val = val.isoformat()
+            metadata[str(c)] = val
+
+        key = name.lower()
+        existing = by_name_lower.get(key)
+        if existing:
+            # Update: refrescamos metadata y parent_id (si vino padre)
+            upd: dict = {"metadata": metadata}
+            if parent_doc:
+                upd["parent_id"] = parent_doc["id"]
+                upd["depth"] = int(parent_doc.get("depth", 0)) + 1
+            await db.location_nodes.update_one({"id": existing["id"]}, {"$set": upd})
+            existing["metadata"] = metadata
+            if parent_doc:
+                existing["parent_id"] = parent_doc["id"]
+                existing["depth"] = upd["depth"]
+            summary["updated"] += 1
+        else:
+            nid = str(uuid.uuid4())
+            parent_id = parent_doc["id"] if parent_doc else None
+            depth = (int(parent_doc.get("depth", 0)) + 1) if parent_doc else 0
+            order_val = 0 if parent_doc else next_order
+            if not parent_doc:
+                next_order += 1
+            doc = {
+                "id": nid,
+                "project_id": pid,
+                "parent_id": parent_id,
+                "name": name,
+                "depth": depth,
+                "order": order_val,
+                "is_leaf": False,
+                "measurement_type": None,
+                "target_lat": None,
+                "target_lon": None,
+                "target_elev": None,
+                "meta": None,
+                "metadata": metadata,
+                "created_at": datetime.now(timezone.utc),
+            }
+            # Si tiene padre que era hoja, ya no lo es
+            if parent_doc and parent_doc.get("is_leaf"):
+                await db.location_nodes.update_one(
+                    {"id": parent_doc["id"]},
+                    {"$set": {
+                        "is_leaf": False, "measurement_type": None,
+                        "target_lat": None, "target_lon": None, "target_elev": None,
+                    }},
+                )
+                parent_doc["is_leaf"] = False
+            await db.location_nodes.insert_one(doc)
+            doc_clean = {k: v for k, v in doc.items() if k != "_id"}
+            by_name_lower[key] = doc_clean
+            summary["created"] += 1
+        return None
+
+    # Pasada 1
+    deferred: list = []
+    for idx, row in enumerate(rows):
+        try:
+            r = await upsert_row(row, second_pass=False)
+            if r == "defer":
+                deferred.append((idx, row))
+        except Exception as e:
+            summary["errors"].append({"row": idx + 2, "error": str(e)})
+
+    # Pasada 2 (resuelve padres que se crearon después)
+    for idx, row in deferred:
+        try:
+            await upsert_row(row, second_pass=True)
+        except Exception as e:
+            summary["errors"].append({"row": idx + 2, "error": str(e)})
+
+    return summary
 
 
 # === AREAS (por proyecto) ===================================================

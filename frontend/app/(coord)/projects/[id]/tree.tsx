@@ -6,6 +6,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import * as DocumentPicker from 'expo-document-picker';
 import { Button } from '@/src/components/Button';
 import { api, LocationNode, LocationNodeTree } from '@/src/api';
 import { colors, radius, spacing, shadow } from '@/src/theme';
@@ -32,6 +33,7 @@ export default function TreeBuilderScreen() {
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [editor, setEditor] = useState<EditorMode | null>(null);
+  const [uploading, setUploading] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -90,6 +92,53 @@ export default function TreeBuilderScreen() {
     }
   }
 
+  async function onImportExcel() {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: [
+          'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          'application/vnd.ms-excel',
+          'text/csv',
+          '.xlsx',
+          '.xls',
+          '.csv',
+        ],
+        copyToCacheDirectory: true,
+        multiple: false,
+      });
+      if (result.canceled || !result.assets?.[0]) return;
+      const asset = result.assets[0];
+      setUploading(true);
+      const res = await api.bulkUploadNodes(pid, {
+        uri: asset.uri,
+        name: asset.name || 'nodos.xlsx',
+        mimeType: asset.mimeType,
+      });
+      const lines = [
+        `Nuevos: ${res.created}`,
+        `Actualizados: ${res.updated}`,
+        `Omitidos (filas vacías): ${res.skipped}`,
+      ];
+      if (res.metadata_columns?.length) {
+        lines.push('');
+        lines.push(`Metadatos guardados: ${res.metadata_columns.join(', ')}`);
+      }
+      if (res.errors?.length) {
+        lines.push('');
+        lines.push(`Errores: ${res.errors.length}`);
+        for (const e of res.errors.slice(0, 5)) {
+          lines.push(`· Fila ${e.row}: ${e.error}`);
+        }
+      }
+      Alert.alert('Importación completada', lines.join('\n'));
+      await load();
+    } catch (e: any) {
+      Alert.alert('Error al importar', e?.message || 'No se pudo procesar el archivo');
+    } finally {
+      setUploading(false);
+    }
+  }
+
   async function onSave(payload: { name: string; is_leaf: boolean; measurement_type: MeasurementType | null; target_lat: number | null; target_lon: number | null; target_elev: number | null; meta: number | null }) {
     if (!editor) return;
     try {
@@ -143,6 +192,19 @@ export default function TreeBuilderScreen() {
         <Pressable onPress={tree.length === 0 ? undefined : collapseAll} hitSlop={8} style={styles.iconBtn}>
           <Ionicons name="contract" size={20} color={tree.length === 0 ? colors.textMuted : colors.text} />
         </Pressable>
+        <Pressable
+          onPress={uploading ? undefined : onImportExcel}
+          hitSlop={8}
+          style={styles.iconBtn}
+          disabled={uploading}
+          accessibilityRole="button"
+          accessibilityLabel="Importar nodos desde Excel"
+        >
+          {uploading
+            ? <ActivityIndicator size="small" color={colors.primary} />
+            : <Ionicons name="cloud-upload-outline" size={20} color={colors.primary} />
+          }
+        </Pressable>
       </View>
 
       <ScrollView
@@ -163,6 +225,19 @@ export default function TreeBuilderScreen() {
             <Text style={styles.emptyMsg}>
               Define la estructura espacial de tu proyecto. Puedes anidar tantos niveles como necesites. Los nodos hoja son los puntos donde el Especialista captura mediciones.
             </Text>
+            <Pressable
+              onPress={uploading ? undefined : onImportExcel}
+              style={styles.emptyImportBtn}
+              disabled={uploading}
+              accessibilityRole="button"
+            >
+              {uploading
+                ? <ActivityIndicator size="small" color={colors.primary} />
+                : <Ionicons name="cloud-upload-outline" size={18} color={colors.primary} />}
+              <Text style={styles.emptyImportText}>
+                {uploading ? 'Procesando…' : 'Importar Nodos (Excel/CSV)'}
+              </Text>
+            </Pressable>
           </View>
         ) : (
           <View style={{ gap: 4 }}>
@@ -259,6 +334,14 @@ function NodeBranch({
                 <Text style={styles.leafBadgeText}>{MEASUREMENT_LABELS[mtype]}</Text>
               </View>
             ) : null}
+            {node.metadata && Object.keys(node.metadata).length > 0 ? (
+              <View style={styles.metaBadge}>
+                <Ionicons name="document-attach" size={9} color={colors.textBody} />
+                <Text style={styles.metaBadgeText}>
+                  {Object.keys(node.metadata).length} dato{Object.keys(node.metadata).length === 1 ? '' : 's'}
+                </Text>
+              </View>
+            ) : null}
             {hasChildren ? (
               <Text style={styles.childCount}>{node.children.length} hijo{node.children.length === 1 ? '' : 's'}</Text>
             ) : !isLeaf ? (
@@ -287,6 +370,20 @@ function NodeBranch({
             <Ionicons name="git-branch-outline" size={16} color={colors.textBody} />
             <Text style={styles.menuText}>Agregar nodo hijo</Text>
           </Pressable>
+          {node.metadata && Object.keys(node.metadata).length > 0 ? (
+            <Pressable
+              style={styles.menuItem}
+              onPress={() => {
+                setMenuOpen(false);
+                const entries = Object.entries(node.metadata || {});
+                const body = entries.map(([k, v]) => `· ${k}: ${formatMetaValue(v)}`).join('\n');
+                Alert.alert(node.name, body || 'Sin metadatos');
+              }}
+            >
+              <Ionicons name="document-attach-outline" size={16} color={colors.textBody} />
+              <Text style={styles.menuText}>Ver metadatos ({Object.keys(node.metadata).length})</Text>
+            </Pressable>
+          ) : null}
           <Pressable style={[styles.menuItem, styles.menuDanger]} onPress={() => { setMenuOpen(false); onDelete(node); }}>
             <Ionicons name="trash-outline" size={16} color={colors.error} />
             <Text style={[styles.menuText, { color: colors.error }]}>Eliminar</Text>
@@ -613,6 +710,15 @@ function countLeaves(tree: LocationNodeTree[]): number {
   }
   return n;
 }
+function formatMetaValue(v: any): string {
+  if (v === null || v === undefined) return '—';
+  if (typeof v === 'number') {
+    // Mostrar coordenadas con 6 decimales como máximo
+    return Number.isInteger(v) ? String(v) : v.toFixed(Math.min(6, (v.toString().split('.')[1] || '').length));
+  }
+  if (typeof v === 'string') return v;
+  try { return JSON.stringify(v); } catch { return String(v); }
+}
 
 // =============================================================================
 // Styles
@@ -635,6 +741,19 @@ const styles = StyleSheet.create({
   emptyBlock: { alignItems: 'center', paddingVertical: spacing.xl + 12, gap: 8, paddingHorizontal: spacing.md },
   emptyTitle: { fontSize: 17, fontWeight: '800', color: colors.text, marginTop: 8 },
   emptyMsg: { fontSize: 13, color: colors.textMuted, textAlign: 'center', maxWidth: 320, lineHeight: 19 },
+  emptyImportBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    marginTop: 16, paddingHorizontal: 16, paddingVertical: 12,
+    borderRadius: radius.md, borderWidth: 1.5, borderColor: colors.primary,
+    backgroundColor: colors.primaryLight,
+  },
+  emptyImportText: { color: colors.primary, fontWeight: '800', fontSize: 13, letterSpacing: 0.3 },
+  metaBadge: {
+    flexDirection: 'row', alignItems: 'center', gap: 3,
+    backgroundColor: colors.bg, paddingHorizontal: 6, paddingVertical: 2,
+    borderRadius: 4, borderWidth: 1, borderColor: colors.border,
+  },
+  metaBadgeText: { fontSize: 10, fontWeight: '700', color: colors.textBody },
 
   // Branch row
   row: {
