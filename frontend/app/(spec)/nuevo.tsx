@@ -213,18 +213,45 @@ export default function SpecCaptureScreen() {
   }, [path]);
 
   // -------------------------------------------------------------------------
-  // Pre-cargar Lat/Lon desde target_lat/target_lon del nodo cuando aplique.
-  // Estos campos son SOLO LECTURA para el Especialista: los precarga el Coordinador.
+  // Pre-cargar Lat/Lon cuando se selecciona una hoja con measurement_type=coord_latlon.
+  // Orden de precedencia (de mayor a menor): valores ya escritos por el usuario en el form,
+  // luego target_lat/target_lon del nodo, luego metadata X/Y (cargado vía Excel masivo).
+  // En cualquier caso los campos siguen 100% editables por el usuario.
   useEffect(() => {
     if (!leafNode) return;
     if (leafNode.measurement_type !== 'coord_latlon') return;
     const tLat = (leafNode as any).target_lat;
     const tLon = (leafNode as any).target_lon;
-    setMeasurement((prev) => ({
-      ...prev,
-      lat: typeof tLat === 'number' ? tLat : prev.lat,
-      lon: typeof tLon === 'number' ? tLon : prev.lon,
-    }));
+    // Buscar en metadata X/Y (importación masiva Excel). Case-insensitive, normaliza acentos.
+    let mdX: number | null = null;
+    let mdY: number | null = null;
+    const md = (leafNode as any).metadata;
+    if (md && typeof md === 'object') {
+      for (const rawKey of Object.keys(md)) {
+        if (typeof rawKey !== 'string') continue;
+        const k = rawKey
+          .trim()
+          .toLowerCase()
+          .replace(/á/g, 'a').replace(/é/g, 'e').replace(/í/g, 'i')
+          .replace(/ó/g, 'o').replace(/ú/g, 'u');
+        const val = md[rawKey];
+        const num = typeof val === 'number' ? val : (val != null ? parseFloat(String(val)) : NaN);
+        if (!Number.isFinite(num)) continue;
+        if (mdX === null && (k === 'x' || k === 'coordenada x' || k === 'coord x')) mdX = num;
+        else if (mdY === null && (k === 'y' || k === 'coordenada y' || k === 'coord y')) mdY = num;
+      }
+    }
+    setMeasurement((prev) => {
+      // En obra civil X=lon-axis (este), Y=lat-axis (norte). Sólo aplicamos
+      // fallback si prev.lat/lon están vacíos (no escritos manualmente).
+      const nextLat = typeof tLat === 'number'
+        ? tLat
+        : (mdY !== null && (prev.lat == null || prev.lat === 0) ? mdY : prev.lat);
+      const nextLon = typeof tLon === 'number'
+        ? tLon
+        : (mdX !== null && (prev.lon == null || prev.lon === 0) ? mdX : prev.lon);
+      return { ...prev, lat: nextLat, lon: nextLon };
+    });
   }, [leafNode]);
 
   // -------------------------------------------------------------------------
@@ -1164,10 +1191,11 @@ function SectionCard({ icon, title, subtitle, children }: {
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
   return (
     <View style={{ marginBottom: spacing.sm }}>
       <Text style={styles.fieldLabel}>{label}</Text>
+      {hint ? <Text style={styles.fieldHint}>{hint}</Text> : null}
       {children}
     </View>
   );
@@ -1205,28 +1233,44 @@ function MeasurementInput({ type, value, onChange }: {
     return (
       <View style={{ flexDirection: 'row', gap: spacing.sm }}>
         <View style={{ flex: 1 }}>
-          <Field label="Latitud (X) · precargada">
+          <Field label="Latitud (Y)" hint="Pre-llenada desde el nodo. Puedes editarla.">
             <TextInput
-              editable={false}
-              selectTextOnFocus={false}
+              editable
               keyboardType="numeric"
-              placeholder="Asignada por Coordinador"
+              placeholder="Ej. 19.432608"
               placeholderTextColor={colors.textMuted}
-              style={[styles.input, styles.inputDisabled]}
+              style={styles.input}
               value={value.lat != null ? String(value.lat) : ''}
+              onChangeText={(t) => {
+                const trimmed = t.trim();
+                if (trimmed === '' || trimmed === '-' || trimmed === '.') {
+                  onChange({ ...value, lat: null as any });
+                  return;
+                }
+                const num = parseFloat(trimmed.replace(',', '.'));
+                onChange({ ...value, lat: Number.isFinite(num) ? num : (null as any) });
+              }}
             />
           </Field>
         </View>
         <View style={{ flex: 1 }}>
-          <Field label="Longitud (Y) · precargada">
+          <Field label="Longitud (X)" hint="Pre-llenada desde el nodo. Puedes editarla.">
             <TextInput
-              editable={false}
-              selectTextOnFocus={false}
+              editable
               keyboardType="numeric"
-              placeholder="Asignada por Coordinador"
+              placeholder="Ej. -99.133209"
               placeholderTextColor={colors.textMuted}
-              style={[styles.input, styles.inputDisabled]}
+              style={styles.input}
               value={value.lon != null ? String(value.lon) : ''}
+              onChangeText={(t) => {
+                const trimmed = t.trim();
+                if (trimmed === '' || trimmed === '-' || trimmed === '.') {
+                  onChange({ ...value, lon: null as any });
+                  return;
+                }
+                const num = parseFloat(trimmed.replace(',', '.'));
+                onChange({ ...value, lon: Number.isFinite(num) ? num : (null as any) });
+              }}
             />
           </Field>
         </View>
@@ -1409,6 +1453,7 @@ const styles = StyleSheet.create({
   linkBtn: { color: colors.primary, fontWeight: '700', fontSize: 13 },
 
   fieldLabel: { fontSize: 12, color: colors.textBody, fontWeight: '700', marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.3 },
+  fieldHint: { fontSize: 11, color: colors.textMuted, marginBottom: 6, fontStyle: 'italic' },
   input: {
     backgroundColor: colors.bg,
     borderRadius: radius.md,

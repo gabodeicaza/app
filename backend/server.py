@@ -1440,6 +1440,46 @@ async def create_report(body: ReportIn, user: dict = Depends(current_user)):
         if body.node_id not in (user.get("scope_node_ids") or []):
             raise HTTPException(403, "Nodo no está en tu scope autorizado")
     # Sub-coordinador: scope GLOBAL (puede capturar en cualquier hoja del proyecto).
+    # ====================================================================
+    # FALLBACK DE COORDENADAS DESDE metadata DEL NODO (pre-validación)
+    # --------------------------------------------------------------------
+    # Si el nodo es coord_latlon y el cliente NO mandó lat/lon válidos,
+    # intentamos inyectar X/Y desde node.metadata ANTES de validar para que
+    # la captura no falle cuando el Coordinador ya cargó coords vía Excel.
+    # El cliente conserva el control: si manda valores, esos se respetan.
+    # ====================================================================
+    pre_mv = dict(body.measurement_value or {})
+    if node.get("measurement_type") == "coord_latlon":
+        pre_lat = pre_mv.get("lat")
+        pre_lon = pre_mv.get("lon")
+        client_valid = (
+            isinstance(pre_lat, (int, float)) and isinstance(pre_lon, (int, float))
+            and not (pre_lat == 0 and pre_lon == 0)
+        )
+        if not client_valid:
+            node_meta = node.get("metadata") or {}
+            inh_x = None
+            inh_y = None
+            if isinstance(node_meta, dict):
+                for k, v in node_meta.items():
+                    if v is None or not isinstance(k, str):
+                        continue
+                    kn = k.strip().lower()
+                    for src, dst in (("á","a"),("é","e"),("í","i"),("ó","o"),("ú","u")):
+                        kn = kn.replace(src, dst)
+                    if kn in {"x", "coordenada x", "coord x"} and inh_x is None:
+                        try: inh_x = float(v)
+                        except Exception: pass
+                    elif kn in {"y", "coordenada y", "coord y"} and inh_y is None:
+                        try: inh_y = float(v)
+                        except Exception: pass
+            if inh_x is not None and inh_y is not None:
+                pre_mv["lat"] = inh_y
+                pre_mv["lon"] = inh_x
+                # marcamos source para que el cierre sepa que fue fallback
+                pre_mv["coord_source"] = "node_metadata"
+                body.measurement_value = pre_mv
+
     validate_measurement_value(node["measurement_type"], body.measurement_value)
     path_names = await node_path_names(body.node_id)
     area_name = None
@@ -1458,45 +1498,15 @@ async def create_report(body: ReportIn, user: dict = Depends(current_user)):
         mv["ultima_lectura"] = body.ultima_lectura
 
     # ====================================================================
-    # HERENCIA DE COORDENADAS DESDE metadata DEL NODO (bulk-upload Excel)
-    # --------------------------------------------------------------------
-    # Si el nodo trae llaves X / Y (o x / y, o "Coordenada X" / "Coordenada Y")
-    # en su campo `metadata` (cargado vía importación masiva), esas se
-    # consideran las coordenadas geográficas OFICIALES del reporte: pisan
-    # cualquier lat/lon que haya enviado el cliente y se almacenan tanto
-    # dentro de `measurement_value` como en `node_target` del reporte.
+    # Trace de fuente de coordenadas (para auditoría).
+    # Si pre-validación ya marcó coord_source=node_metadata, se mantiene.
+    # En caso contrario, asumimos user_input.
     # ====================================================================
-    inherited_x = None
-    inherited_y = None
-    node_metadata = node.get("metadata") or {}
-    if isinstance(node_metadata, dict):
-        for k, v in node_metadata.items():
-            if v is None or not isinstance(k, str):
-                continue
-            kn = k.strip().lower()
-            # Normalizar acentos para "coordenada x/y"
-            for src, dst in (("á", "a"), ("é", "e"), ("í", "i"), ("ó", "o"), ("ú", "u")):
-                kn = kn.replace(src, dst)
-            if kn in {"x", "coordenada x", "coord x"} and inherited_x is None:
-                try:
-                    inherited_x = float(v) if not isinstance(v, (int, float)) else float(v)
-                except Exception:
-                    pass
-            elif kn in {"y", "coordenada y", "coord y"} and inherited_y is None:
-                try:
-                    inherited_y = float(v) if not isinstance(v, (int, float)) else float(v)
-                except Exception:
-                    pass
-
+    if node.get("measurement_type") == "coord_latlon" and "coord_source" not in mv:
+        mv["coord_source"] = "user_input"
     inherited_target = None
-    if inherited_x is not None and inherited_y is not None:
-        # En obra civil usamos UTM: X = este (lon-axis), Y = norte (lat-axis).
-        # Guardamos como lat=Y, lon=X dentro del reporte para que sea consistente
-        # con el resto del esquema (lat/lon) sin importar si son grados o metros.
-        mv["lat"] = inherited_y
-        mv["lon"] = inherited_x
-        mv["coord_source"] = "node_metadata"
-        inherited_target = {"lat": inherited_y, "lon": inherited_x, "elev": None}
+    if mv.get("coord_source") == "node_metadata":
+        inherited_target = {"lat": mv.get("lat"), "lon": mv.get("lon"), "elev": None}
 
     doc = {
         "id": str(uuid.uuid4()),
