@@ -614,7 +614,7 @@ export default function SpecFeedScreen() {
               </Pressable>
             </View>
 
-            <ScrollView contentContainerStyle={{ paddingHorizontal: spacing.md, paddingBottom: spacing.lg }}>
+            <ScrollView style={{ backgroundColor: '#FFFFFF' }} contentContainerStyle={{ paddingHorizontal: spacing.md, paddingBottom: spacing.lg, backgroundColor: '#FFFFFF' }}>
               {previewItem?.thumbnail_base64 ? (
                 <Image
                   source={{ uri: `data:image/jpeg;base64,${previewItem.thumbnail_base64}` }}
@@ -1172,8 +1172,8 @@ const styles = StyleSheet.create({
   },
   exportSheetInner: {
     backgroundColor: colors.surface,
-    borderTopLeftRadius: radius.xl ?? 20,
-    borderTopRightRadius: radius.xl ?? 20,
+    borderTopLeftRadius: radius.lg,
+    borderTopRightRadius: radius.lg,
     paddingTop: 10,
     paddingBottom: 24,
     ...shadow.card,
@@ -1256,9 +1256,9 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
   },
   previewInner: {
-    backgroundColor: colors.surface,
-    borderTopLeftRadius: radius.xl ?? 20,
-    borderTopRightRadius: radius.xl ?? 20,
+    backgroundColor: '#FFFFFF',
+    borderTopLeftRadius: radius.lg,
+    borderTopRightRadius: radius.lg,
     paddingTop: 10,
     paddingBottom: 24,
     maxHeight: '90%',
@@ -1270,46 +1270,49 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md,
     paddingBottom: spacing.sm,
     gap: 8,
+    backgroundColor: '#FFFFFF',
   },
   previewTitle: {
     fontSize: 18,
     fontWeight: '800',
-    color: colors.text,
+    color: '#0F172A',
   },
   previewSubtitle: {
     fontSize: 12,
-    color: colors.textMuted,
+    color: '#475569',
     marginTop: 2,
     fontWeight: '600',
   },
   previewImage: {
     width: '100%',
-    aspectRatio: 4 / 3,
+    height: 250,
     borderRadius: radius.md,
     backgroundColor: colors.primaryLight,
     marginBottom: spacing.md,
+    resizeMode: 'cover',
   },
   previewMetaBlock: {
     paddingVertical: 10,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: colors.border,
+    backgroundColor: '#FFFFFF',
   },
   previewMetaLabel: {
     fontSize: 10,
     fontWeight: '800',
-    color: colors.textMuted,
+    color: '#64748B',
     letterSpacing: 1,
     textTransform: 'uppercase',
     marginBottom: 4,
   },
   previewMetaValue: {
     fontSize: 14,
-    color: colors.text,
+    color: '#0F172A',
     fontWeight: '600',
   },
   previewAvance: {
     fontSize: 14,
-    color: colors.text,
+    color: '#0F172A',
     lineHeight: 20,
   },
   previewShareBtn: {
@@ -1323,7 +1326,7 @@ const styles = StyleSheet.create({
     marginTop: spacing.md,
   },
   previewShareTxt: {
-    color: '#fff',
+    color: '#FFFFFF',
     fontSize: 15,
     fontWeight: '800',
   },
