@@ -15,6 +15,7 @@ import { downloadBlob } from '@/src/utils/downloadBlob';
 import { DailyGoalsPanel } from '@/src/components/DailyGoalsPanel';
 import { NodeProgressPanel } from '@/src/components/NodeProgressPanel';
 import { HistoryCalendarModal } from '@/src/components/HistoryCalendarModal';
+import { ReportPreviewSheet } from '@/src/components/ReportPreviewSheet';
 
 // === Flujo de Exportación en 2 pasos ====================================
 type ExportFormat = 'pdf' | 'docx' | 'pptx' | 'xlsx';
@@ -855,108 +856,12 @@ export default function ProjectDetailScreen() {
         </View>
       </Modal>
 
-      {/* ===== Modal: Preview de Reporte ===== */}
-      <Modal
+      {/* ===== Modal: Preview de Reporte (componente compartido) ===== */}
+      <ReportPreviewSheet
         visible={!!previewItem}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setPreviewItem(null)}
-      >
-        <Pressable style={styles.previewBackdrop} onPress={() => setPreviewItem(null)}>
-          <Pressable style={styles.previewCard} onPress={(e) => e.stopPropagation()}>
-            <View style={styles.previewHeader}>
-              <Text style={styles.previewTitle} numberOfLines={1}>
-                {(previewItem?.node_path_names || []).slice(-1)[0] || 'Reporte'}
-              </Text>
-              <Pressable hitSlop={10} onPress={() => setPreviewItem(null)}>
-                <Ionicons name="close" size={22} color={colors.text} />
-              </Pressable>
-            </View>
-            <ScrollView style={{ maxHeight: 460 }} contentContainerStyle={{ padding: 16, gap: 12 }}>
-              {previewItem?.thumbnail_base64 ? (
-                <Image
-                  source={{ uri: `data:image/jpeg;base64,${previewItem.thumbnail_base64}` }}
-                  style={{ width: '100%', height: 200, borderRadius: 8 }}
-                  resizeMode="cover"
-                />
-              ) : ((previewItem as any)?.foto || (previewItem as any)?.photo_url) ? (
-                <Image
-                  source={{ uri: (previewItem as any).foto || (previewItem as any).photo_url }}
-                  style={{ width: '100%', height: 200, borderRadius: 8 }}
-                  resizeMode="cover"
-                />
-              ) : null}
-              <View style={styles.previewRow}>
-                <Ionicons name="person-outline" size={16} color={colors.textMuted} />
-                <Text style={styles.previewMeta} numberOfLines={2}>
-                  {(previewItem as any)?.captured_by_name
-                    || (previewItem as any)?.user_name
-                    || (previewItem as any)?.author_name
-                    || 'Especialista'}
-                </Text>
-              </View>
-              <View style={styles.previewRow}>
-                <Ionicons name="grid-outline" size={16} color={colors.textMuted} />
-                <Text style={styles.previewMeta} numberOfLines={2}>
-                  {(previewItem as any)?.area_name || 'Sin área asignada'}
-                </Text>
-              </View>
-              <View style={styles.previewRow}>
-                <Ionicons name="location-outline" size={16} color={colors.textMuted} />
-                <Text style={styles.previewMeta} numberOfLines={3}>
-                  {(previewItem?.node_path_names || []).join(' › ') || (previewItem as any)?.area_name || '—'}
-                </Text>
-              </View>
-              <View style={styles.previewRow}>
-                <Ionicons name="time-outline" size={16} color={colors.textMuted} />
-                <Text style={styles.previewMeta}>
-                  {previewItem?.created_at
-                    ? new Date(previewItem.created_at).toLocaleString('es-MX', { dateStyle: 'medium', timeStyle: 'short' })
-                    : '—'}
-                </Text>
-              </View>
-              {((previewItem as any)?.avance || (previewItem as any)?.medicion) ? (
-                <View style={styles.previewBlock}>
-                  <Text style={styles.previewBlockTitle}>Avance / Medición</Text>
-                  <Text style={styles.previewBlockTxt}>
-                    {String((previewItem as any)?.avance ?? (previewItem as any)?.medicion ?? '')}
-                  </Text>
-                </View>
-              ) : null}
-              <View style={styles.previewBlock}>
-                <Text style={styles.previewBlockTitle}>Observaciones</Text>
-                <Text
-                  style={[
-                    styles.previewBlockTxt,
-                    !(
-                      (previewItem as any)?.notes
-                      || (previewItem as any)?.observaciones
-                    ) && { fontStyle: 'italic', color: colors.textMuted },
-                  ]}
-                >
-                  {(previewItem as any)?.notes
-                    || (previewItem as any)?.observaciones
-                    || 'Sin observaciones'}
-                </Text>
-              </View>
-              {previewItem?.comment ? (
-                <View style={styles.previewBlock}>
-                  <Text style={styles.previewBlockTitle}>Comentario</Text>
-                  <Text style={styles.previewBlockTxt}>{previewItem.comment}</Text>
-                </View>
-              ) : null}
-            </ScrollView>
-            <View style={styles.previewFooter}>
-              <Pressable
-                onPress={() => setPreviewItem(null)}
-                style={({ pressed }) => [styles.previewCloseBtn, pressed && { opacity: 0.85 }]}
-              >
-                <Text style={styles.previewCloseTxt}>Cerrar</Text>
-              </Pressable>
-            </View>
-          </Pressable>
-        </Pressable>
-      </Modal>
+        item={previewItem}
+        onClose={() => setPreviewItem(null)}
+      />
     </View>
   );
 }

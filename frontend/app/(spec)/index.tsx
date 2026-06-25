@@ -27,6 +27,7 @@ import { ReportPeriod } from '@/src/components/PeriodSheet';
 import { downloadBlob } from '@/src/utils/downloadBlob';
 import { DailyGoalsPanel } from '@/src/components/DailyGoalsPanel';
 import { NodeProgressPanel } from '@/src/components/NodeProgressPanel';
+import { ReportPreviewSheet } from '@/src/components/ReportPreviewSheet';
 import { HistoryCalendarModal } from '@/src/components/HistoryCalendarModal';
 
 // === Configuración del flujo de exportación en 2 pasos ============================
@@ -585,122 +586,13 @@ export default function SpecFeedScreen() {
         </View>
       </Modal>
 
-      {/* Preview del reporte (P3) */}
-      <Modal
+      {/* Preview del reporte (componente compartido) */}
+      <ReportPreviewSheet
         visible={!!previewItem}
-        animationType="slide"
-        transparent
-        onRequestClose={() => setPreviewItem(null)}
-      >
-        <Pressable style={styles.exportBackdrop} onPress={() => setPreviewItem(null)} />
-        <View style={styles.previewSheet} pointerEvents="box-none">
-          <View style={styles.previewInner}>
-            <View style={styles.exportHandle} />
-            <View style={styles.previewHeader}>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.previewTitle} numberOfLines={1}>
-                  {(previewItem?.node_path_names || []).slice(-1)[0] || 'Reporte'}
-                </Text>
-                <Text style={styles.previewSubtitle} numberOfLines={2}>
-                  {(previewItem?.node_path_names || []).join(' › ') || '—'}
-                </Text>
-              </View>
-              <Pressable
-                hitSlop={10}
-                style={styles.exportBack}
-                onPress={() => setPreviewItem(null)}
-              >
-                <Ionicons name="close" size={22} color={colors.text} />
-              </Pressable>
-            </View>
-
-            <ScrollView style={{ backgroundColor: '#FFFFFF' }} contentContainerStyle={{ paddingHorizontal: spacing.md, paddingBottom: spacing.lg, backgroundColor: '#FFFFFF' }}>
-              {previewItem?.thumbnail_base64 ? (
-                <Image
-                  source={{ uri: `data:image/jpeg;base64,${previewItem.thumbnail_base64}` }}
-                  style={styles.previewImage}
-                />
-              ) : (
-                <View style={[styles.previewImage, styles.thumbPlaceholder]}>
-                  <Ionicons name="image-outline" size={42} color={colors.textMuted} />
-                </View>
-              )}
-
-              {previewItem?.area_name ? (
-                <View style={styles.previewMetaBlock}>
-                  <Text style={styles.previewMetaLabel}>Área</Text>
-                  <View
-                    style={[
-                      styles.areaBadge,
-                      {
-                        backgroundColor: areaTone(previewItem.area_color || undefined).bg,
-                        borderColor: areaTone(previewItem.area_color || undefined).border,
-                        alignSelf: 'flex-start',
-                      },
-                    ]}
-                  >
-                    <View style={[styles.areaDot, { backgroundColor: areaTone(previewItem.area_color || undefined).text }]} />
-                    <Text style={[styles.areaBadgeTxt, { color: areaTone(previewItem.area_color || undefined).text }]}>
-                      {previewItem.area_name}
-                    </Text>
-                  </View>
-                </View>
-              ) : null}
-
-              <View style={styles.previewMetaBlock}>
-                <Text style={styles.previewMetaLabel}>Capturado por</Text>
-                <Text style={styles.previewMetaValue}>{previewItem?.captured_by_name || '—'}</Text>
-              </View>
-
-              <View style={styles.previewMetaBlock}>
-                <Text style={styles.previewMetaLabel}>Fecha</Text>
-                <Text style={styles.previewMetaValue}>
-                  {previewItem?.created_at
-                    ? new Date(previewItem.created_at).toLocaleString('es-MX')
-                    : '—'}
-                </Text>
-              </View>
-
-              {formatMeasurement(previewItem?.measurement_type, previewItem?.measurement_value) ? (
-                <View style={styles.previewMetaBlock}>
-                  <Text style={styles.previewMetaLabel}>Medición</Text>
-                  <Text style={styles.previewMetaValue}>
-                    {formatMeasurement(previewItem?.measurement_type, previewItem?.measurement_value)}
-                  </Text>
-                </View>
-              ) : null}
-
-              {previewItem?.avance ? (
-                <View style={styles.previewMetaBlock}>
-                  <Text style={styles.previewMetaLabel}>Avance</Text>
-                  <Text style={styles.previewAvance}>{previewItem.avance}</Text>
-                </View>
-              ) : null}
-
-              {previewItem?.images_count && previewItem.images_count > 1 ? (
-                <View style={styles.previewMetaBlock}>
-                  <Text style={styles.previewMetaLabel}>Fotos</Text>
-                  <Text style={styles.previewMetaValue}>{previewItem.images_count} imágenes adjuntas</Text>
-                </View>
-              ) : null}
-
-              <TouchableOpacity
-                style={styles.previewShareBtn}
-                onPress={() => {
-                  if (previewItem) {
-                    const it = previewItem;
-                    setPreviewItem(null);
-                    setTimeout(() => shareReportWhatsApp(it), 250);
-                  }
-                }}
-              >
-                <Ionicons name="logo-whatsapp" size={18} color="#fff" />
-                <Text style={styles.previewShareTxt}>Compartir por WhatsApp</Text>
-              </TouchableOpacity>
-            </ScrollView>
-          </View>
-        </View>
-      </Modal>
+        item={previewItem}
+        onClose={() => setPreviewItem(null)}
+        onShare={shareReportWhatsApp}
+      />
     </View>
   );
 }

@@ -28,6 +28,7 @@ import { roleLabel } from '@/src/utils/roles';
 import { confirm } from '@/src/utils/confirm';
 import { DailyGoalsPanel } from '@/src/components/DailyGoalsPanel';
 import { NodeProgressPanel } from '@/src/components/NodeProgressPanel';
+import { ReportPreviewSheet } from '@/src/components/ReportPreviewSheet';
 
 type ProgressRow = {
   node: LocationNode;
@@ -982,84 +983,13 @@ export default function SubCoordDashboard() {
         </View>
       </Modal>
 
-      {/* ===== Modal: Preview de Reporte (centrado) ===== */}
-      <Modal
+      {/* ===== Modal: Preview de Reporte (componente compartido) ===== */}
+      <ReportPreviewSheet
         visible={!!previewItem}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setPreviewItem(null)}
-      >
-        <Pressable style={styles.previewBackdrop} onPress={() => setPreviewItem(null)}>
-          <Pressable style={styles.previewCard} onPress={(e) => e.stopPropagation()}>
-            <View style={styles.previewHeader}>
-              <Text style={styles.previewTitle} numberOfLines={1}>
-                {(previewItem?.node_path_names || []).slice(-1)[0] || 'Reporte'}
-              </Text>
-              <Pressable hitSlop={10} onPress={() => setPreviewItem(null)}>
-                <Ionicons name="close" size={22} color="#0f172a" />
-              </Pressable>
-            </View>
-            <ScrollView style={{ maxHeight: 460 }} contentContainerStyle={{ padding: 16, gap: 12 }}>
-              {previewItem?.thumbnail_base64 ? (
-                <Image
-                  source={{ uri: `data:image/jpeg;base64,${previewItem.thumbnail_base64}` }}
-                  style={styles.previewImage}
-                  resizeMode="cover"
-                />
-              ) : null}
-              <View style={styles.previewRow}>
-                <Ionicons name="location-outline" size={16} color="#475569" />
-                <Text style={styles.previewMeta} numberOfLines={2}>
-                  {(previewItem?.node_path_names || []).join(' › ') || '—'}
-                </Text>
-              </View>
-              {previewItem?.area_name ? (
-                <View style={styles.previewRow}>
-                  <Ionicons name="pricetag-outline" size={16} color="#475569" />
-                  <Text style={styles.previewMeta}>{previewItem.area_name}</Text>
-                </View>
-              ) : null}
-              <View style={styles.previewRow}>
-                <Ionicons name="person-outline" size={16} color="#475569" />
-                <Text style={styles.previewMeta}>{previewItem?.captured_by_name || '—'}</Text>
-              </View>
-              <View style={styles.previewRow}>
-                <Ionicons name="time-outline" size={16} color="#475569" />
-                <Text style={styles.previewMeta}>
-                  {previewItem ? formatTime(previewItem.created_at) : ''}
-                </Text>
-              </View>
-              {previewItem?.avance ? (
-                <View style={styles.previewBlock}>
-                  <Text style={styles.previewBlockTitle}>Avance</Text>
-                  <Text style={styles.previewBlockTxt}>{previewItem.avance}</Text>
-                </View>
-              ) : null}
-              {(previewItem as any)?.medicion ? (
-                <View style={styles.previewBlock}>
-                  <Text style={styles.previewBlockTitle}>Medición</Text>
-                  <Text style={styles.previewBlockTxt}>{String((previewItem as any).medicion)}</Text>
-                </View>
-              ) : null}
-            </ScrollView>
-            <View style={styles.previewFooter}>
-              <Pressable
-                onPress={() => previewItem && shareReportWhatsApp(previewItem)}
-                style={({ pressed }) => [styles.previewWaBtn, pressed && { opacity: 0.85 }]}
-              >
-                <Ionicons name="logo-whatsapp" size={18} color="#fff" />
-                <Text style={styles.previewWaTxt}>Compartir</Text>
-              </Pressable>
-              <Pressable
-                onPress={() => setPreviewItem(null)}
-                style={({ pressed }) => [styles.previewCloseBtn, pressed && { opacity: 0.85 }]}
-              >
-                <Text style={styles.previewCloseTxt}>Cerrar</Text>
-              </Pressable>
-            </View>
-          </Pressable>
-        </Pressable>
-      </Modal>
+        item={previewItem}
+        onClose={() => setPreviewItem(null)}
+        onShare={shareReportWhatsApp}
+      />
 
       {/* ===== Modal: Exportación Avanzada ===== */}
       <Modal

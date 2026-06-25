@@ -169,6 +169,11 @@ export interface FeedItem {
   images_count: number;
   thumbnail_base64?: string | null;
   created_at: string;
+  // Optional report-detail fields surfaced by the feed/list endpoints.
+  notes?: string | null;
+  observaciones?: string | null;
+  actividades?: string | null;
+  comment?: string | null;
 }
 
 export interface FeedResponse {
