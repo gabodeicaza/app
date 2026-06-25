@@ -1230,46 +1230,48 @@ function MeasurementInput({ type, value, onChange }: {
   onChange: (v: MeasurementValue) => void;
 }) {
   if (type === 'coord_latlon') {
+    const latStr = value.lat != null && Number.isFinite(value.lat) ? String(value.lat) : '';
+    const lonStr = value.lon != null && Number.isFinite(value.lon) ? String(value.lon) : '';
     return (
       <View style={{ flexDirection: 'row', gap: spacing.sm }}>
         <View style={{ flex: 1 }}>
-          <Field label="Latitud (Y)" hint="Pre-llenada desde el nodo. Puedes editarla.">
+          <Field label="Latitud (Y)" hint="Pre-llenada desde el nodo. Editable.">
             <TextInput
-              editable
+              editable={true}
               keyboardType="numeric"
               placeholder="Ej. 19.432608"
               placeholderTextColor={colors.textMuted}
               style={styles.input}
-              value={value.lat != null ? String(value.lat) : ''}
+              value={latStr}
               onChangeText={(t) => {
-                const trimmed = t.trim();
-                if (trimmed === '' || trimmed === '-' || trimmed === '.') {
-                  onChange({ ...value, lat: null as any });
+                const trimmed = (t || '').trim();
+                if (!trimmed || trimmed === '-' || trimmed === '.') {
+                  onChange({ ...value, lat: null });
                   return;
                 }
                 const num = parseFloat(trimmed.replace(',', '.'));
-                onChange({ ...value, lat: Number.isFinite(num) ? num : (null as any) });
+                onChange({ ...value, lat: Number.isFinite(num) ? num : null });
               }}
             />
           </Field>
         </View>
         <View style={{ flex: 1 }}>
-          <Field label="Longitud (X)" hint="Pre-llenada desde el nodo. Puedes editarla.">
+          <Field label="Longitud (X)" hint="Pre-llenada desde el nodo. Editable.">
             <TextInput
-              editable
+              editable={true}
               keyboardType="numeric"
               placeholder="Ej. -99.133209"
               placeholderTextColor={colors.textMuted}
               style={styles.input}
-              value={value.lon != null ? String(value.lon) : ''}
+              value={lonStr}
               onChangeText={(t) => {
-                const trimmed = t.trim();
-                if (trimmed === '' || trimmed === '-' || trimmed === '.') {
-                  onChange({ ...value, lon: null as any });
+                const trimmed = (t || '').trim();
+                if (!trimmed || trimmed === '-' || trimmed === '.') {
+                  onChange({ ...value, lon: null });
                   return;
                 }
                 const num = parseFloat(trimmed.replace(',', '.'));
-                onChange({ ...value, lon: Number.isFinite(num) ? num : (null as any) });
+                onChange({ ...value, lon: Number.isFinite(num) ? num : null });
               }}
             />
           </Field>
