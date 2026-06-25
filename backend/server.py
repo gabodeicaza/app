@@ -1735,7 +1735,108 @@ async def create_report(body: ReportIn, user: dict = Depends(current_user)):
     }
     await db.reports.insert_one(doc)
     doc.pop("_id", None)
+
+    # ====================================================================
+    # PUSH NOTIFICATION DISPATCH (background, fire-and-forget)
+    # --------------------------------------------------------------------
+    # Notifica a los supervisores del proyecto (Coordinador General y Jefe
+    # de Proyecto) cuando se captura un nuevo reporte. Se ejecuta como
+    # tarea en segundo plano con asyncio.create_task() para no bloquear
+    # la respuesta al especialista.
+    # ====================================================================
+    try:
+        project = await db.projects.find_one(
+            {"id": body.project_id},
+            {"_id": 0, "name": 1},
+        )
+        project_name = (project or {}).get("name") or "el proyecto"
+        node_name = (path_names[-1] if path_names else None) or node.get("name") or "nodo"
+        asyncio.create_task(
+            _notify_supervisors_new_report(
+                project_id=body.project_id,
+                project_name=project_name,
+                node_name=node_name,
+                report_id=doc["id"],
+                author_id=user["id"],
+                author_name=user.get("name") or "Especialista",
+            )
+        )
+    except Exception as exc:  # defensive: nunca rompemos el return del reporte.
+        log.exception("[push] no se pudo agendar la notificación: %s", exc)
+
     return doc
+
+
+async def _notify_supervisors_new_report(
+    project_id: str,
+    project_name: str,
+    node_name: str,
+    report_id: str,
+    author_id: str,
+    author_name: str,
+) -> None:
+    """
+    Carga a los supervisores del proyecto (coordinador_general + jefe_proyecto)
+    y dispara `send_push_notification` para cada uno. Se excluye al autor del
+    reporte para que no se auto-notifique cuando él mismo lo captura.
+
+    Esta función es defensiva: si un envío falla, se loguea y se continúa con
+    el siguiente destinatario.
+    """
+    try:
+        cursor = db.users.find(
+            {
+                "project_ids": project_id,
+                "role": {"$in": [ROLE_COORD, ROLE_JEFE]},
+            },
+            {"_id": 0, "id": 1, "name": 1, "role": 1, "expo_push_tokens": 1},
+        )
+        recipients = [u async for u in cursor]
+    except Exception as exc:
+        log.exception("[push] no se pudo cargar destinatarios: %s", exc)
+        return
+
+    if not recipients:
+        log.info(
+            "[push] sin destinatarios (proyecto=%s, autor=%s)",
+            project_id,
+            author_name,
+        )
+        return
+
+    title = f"Nuevo reporte en {project_name}"
+    body_text = f"{author_name} registró un avance en {node_name}."
+    payload = {
+        "type": "new_report",
+        "project_id": project_id,
+        "report_id": report_id,
+        "node_name": node_name,
+    }
+
+    for recipient in recipients:
+        if recipient.get("id") == author_id:
+            continue  # Skip self-notification.
+        if not (recipient.get("expo_push_tokens") or []):
+            continue  # Skip users without registered devices.
+        try:
+            result = await send_push_notification(
+                user_id=recipient["id"],
+                title=title,
+                body=body_text,
+                data=payload,
+            )
+            log.info(
+                "[push] new_report → user=%s sent=%d ok=%s",
+                recipient.get("name"),
+                result.get("sent", 0),
+                result.get("ok"),
+            )
+        except Exception as exc:
+            log.exception(
+                "[push] envío falló user=%s: %s",
+                recipient.get("name"),
+                exc,
+            )
 
 
 @api.get("/projects/{pid}/nodes/{nid}/history")
