@@ -1282,20 +1282,23 @@ async def create_invite(pid: str, body: InvitationIn, user: dict = Depends(requi
         for n in nodes:
             if not n.get("is_leaf"):
                 raise HTTPException(400, f"Nodo '{n['name']}' no es hoja")
-    # Auto-link multiproyecto: si el usuario ya existe, simplemente vincúlalo a este proyecto
+    # ====================================================================
+    # REGLA GLOBAL: 1 USUARIO = 1 PROYECTO
+    # --------------------------------------------------------------------
+    # Un mismo correo NO puede ser invitado ni dado de alta en más de un
+    # proyecto. Si ya existe como usuario en ANY proyecto, o si tiene una
+    # invitación pendiente en OTRO proyecto, rechazamos con 400.
+    # ====================================================================
     existing_user = await db.users.find_one({"email": email})
     if existing_user:
-        update_ops: dict = {"$addToSet": {"project_ids": pid}}
-        if body.scope_node_ids:
-            update_ops["$addToSet"]["scope_node_ids"] = {"$each": body.scope_node_ids}
-        await db.users.update_one({"id": existing_user["id"]}, update_ops)
-        return {
-            "status": "auto_linked",
-            "message": "Usuario existente vinculado exitosamente al proyecto",
-            "user_id": existing_user["id"],
-            "email": email,
-            "project_id": pid,
-        }
+        raise HTTPException(400, "Este usuario ya está asignado a otro proyecto")
+    pending_in_other = await db.invitations.find_one({
+        "email": email,
+        "status": "pending",
+        "project_id": {"$ne": pid},
+    })
+    if pending_in_other:
+        raise HTTPException(400, "Este usuario ya está asignado a otro proyecto")
     tok = secrets.token_urlsafe(24)
     doc = {
         "id": str(uuid.uuid4()),
@@ -1370,7 +1373,7 @@ async def accept_invite(body: AcceptInviteIn):
         raise HTTPException(400, "Password mínimo 6 caracteres")
     existing = await db.users.find_one({"email": inv["email"]})
     if existing:
-        raise HTTPException(409, "Email ya tiene cuenta")
+        raise HTTPException(400, "Este usuario ya está asignado a otro proyecto")
     uid = str(uuid.uuid4())
     # Obtener nombre del área si aplica
     area_name = None
@@ -1453,6 +1456,48 @@ async def create_report(body: ReportIn, user: dict = Depends(current_user)):
         mv["primera_lectura"] = body.primera_lectura
     if body.ultima_lectura is not None:
         mv["ultima_lectura"] = body.ultima_lectura
+
+    # ====================================================================
+    # HERENCIA DE COORDENADAS DESDE metadata DEL NODO (bulk-upload Excel)
+    # --------------------------------------------------------------------
+    # Si el nodo trae llaves X / Y (o x / y, o "Coordenada X" / "Coordenada Y")
+    # en su campo `metadata` (cargado vía importación masiva), esas se
+    # consideran las coordenadas geográficas OFICIALES del reporte: pisan
+    # cualquier lat/lon que haya enviado el cliente y se almacenan tanto
+    # dentro de `measurement_value` como en `node_target` del reporte.
+    # ====================================================================
+    inherited_x = None
+    inherited_y = None
+    node_metadata = node.get("metadata") or {}
+    if isinstance(node_metadata, dict):
+        for k, v in node_metadata.items():
+            if v is None or not isinstance(k, str):
+                continue
+            kn = k.strip().lower()
+            # Normalizar acentos para "coordenada x/y"
+            for src, dst in (("á", "a"), ("é", "e"), ("í", "i"), ("ó", "o"), ("ú", "u")):
+                kn = kn.replace(src, dst)
+            if kn in {"x", "coordenada x", "coord x"} and inherited_x is None:
+                try:
+                    inherited_x = float(v) if not isinstance(v, (int, float)) else float(v)
+                except Exception:
+                    pass
+            elif kn in {"y", "coordenada y", "coord y"} and inherited_y is None:
+                try:
+                    inherited_y = float(v) if not isinstance(v, (int, float)) else float(v)
+                except Exception:
+                    pass
+
+    inherited_target = None
+    if inherited_x is not None and inherited_y is not None:
+        # En obra civil usamos UTM: X = este (lon-axis), Y = norte (lat-axis).
+        # Guardamos como lat=Y, lon=X dentro del reporte para que sea consistente
+        # con el resto del esquema (lat/lon) sin importar si son grados o metros.
+        mv["lat"] = inherited_y
+        mv["lon"] = inherited_x
+        mv["coord_source"] = "node_metadata"
+        inherited_target = {"lat": inherited_y, "lon": inherited_x, "elev": None}
+
     doc = {
         "id": str(uuid.uuid4()),
         "project_id": body.project_id,
@@ -1460,11 +1505,13 @@ async def create_report(body: ReportIn, user: dict = Depends(current_user)):
         "node_path_names": path_names,
         "measurement_type": node["measurement_type"],
         "measurement_value": mv,
-        "node_target": {
-            "lat": node.get("target_lat"),
-            "lon": node.get("target_lon"),
-            "elev": node.get("target_elev"),
-        } if node.get("measurement_type") == "coord_latlon" else None,
+        "node_target": inherited_target if inherited_target is not None else (
+            {
+                "lat": node.get("target_lat"),
+                "lon": node.get("target_lon"),
+                "elev": node.get("target_elev"),
+            } if node.get("measurement_type") == "coord_latlon" else None
+        ),
         "area_id": body.area_id or user.get("area_id"),
         "area_name": area_name,
         "notes": (body.notes or "").strip() or None,
