@@ -29,7 +29,10 @@
         "READ_EXTERNAL_STORAGE",
         "WRITE_EXTERNAL_STORAGE",
         "ACCESS_FINE_LOCATION",
-        "ACCESS_COARSE_LOCATION"
+        "ACCESS_COARSE_LOCATION",
+        "RECEIVE_BOOT_COMPLETED",
+        "VIBRATE",
+        "POST_NOTIFICATIONS"
       ]
     },
     "web": {
@@ -59,6 +62,13 @@
         "expo-location",
         {
           "locationWhenInUsePermission": "Adjuntar ubicación a la evidencia fotográfica."
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "color": "#1E40AF",
+          "defaultChannel": "default"
         }
       ],
       "@react-native-community/datetimepicker"

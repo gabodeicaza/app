@@ -131,7 +131,14 @@ class UserOut(BaseModel):
     scope_node_id: Optional[str] = None
     scope_node_ids: List[str] = Field(default_factory=list)
     project_ids: List[str] = Field(default_factory=list)
+    expo_push_tokens: List[str] = Field(default_factory=list)
     created_at: datetime
+
+
+class PushTokenIn(BaseModel):
+    """Payload del cliente Expo para registrar / des-registrar un push token."""
+    token: str
+    platform: Optional[str] = None  # 'ios' | 'android' | 'web' (informativo)
 
 
 class ProjectIn(BaseModel):
@@ -345,6 +352,7 @@ def user_to_out(u: dict) -> dict:
         "scope_node_id": u.get("scope_node_id"),
         "scope_node_ids": u.get("scope_node_ids") or [],
         "project_ids": u.get("project_ids") or [],
+        "expo_push_tokens": u.get("expo_push_tokens") or [],
         "created_at": u.get("created_at", datetime.now(timezone.utc)),
     }
 
@@ -494,6 +502,192 @@ async def login(body: LoginIn):
 @api.get("/auth/me")
 async def me(user: dict = Depends(current_user)):
     return user_to_out(user)
+
+
+# === PUSH NOTIFICATIONS (Expo) ==============================================
+import httpx  # local import is safe — module-level top imports remain authoritative
+
+EXPO_PUSH_API_URL = "https://exp.host/--/api/v2/push/send"
+
+
+def _is_valid_expo_token(token: str) -> bool:
+    """
+    Valida el formato de un Expo push token.
+    Formato oficial: 'ExponentPushToken[xxxxxxxxxxxxxxxxxxxxxx]' o 'ExpoPushToken[...]'.
+    """
+    if not token or not isinstance(token, str):
+        return False
+    t = token.strip()
+    if not (t.startswith("ExponentPushToken[") or t.startswith("ExpoPushToken[")):
+        return False
+    if not t.endswith("]"):
+        return False
+    if len(t) > 200:  # defensive cap
+        return False
+    return True
+
+
+@api.post("/users/push-token")
+async def register_push_token(
+    body: PushTokenIn,
+    user: dict = Depends(current_user),
+):
+    """
+    Registra un Expo Push Token en el perfil del usuario autenticado.
+    - Usa $addToSet para evitar duplicados.
+    - Limita el array a 10 tokens (FIFO) para no acumular dispositivos viejos.
+    """
+    token = (body.token or "").strip()
+    if not _is_valid_expo_token(token):
+        raise HTTPException(400, "Token de Expo inválido")
+
+    # Add to set (no duplicates).
+    await db.users.update_one(
+        {"id": user["id"]},
+        {"$addToSet": {"expo_push_tokens": token}},
+    )
+
+    # FIFO cap @ 10 tokens — keep only the most recent ones.
+    fresh = await db.users.find_one(
+        {"id": user["id"]}, {"_id": 0, "expo_push_tokens": 1}
+    )
+    tokens_list = (fresh or {}).get("expo_push_tokens") or []
+    if len(tokens_list) > 10:
+        trimmed = tokens_list[-10:]
+        await db.users.update_one(
+            {"id": user["id"]},
+            {"$set": {"expo_push_tokens": trimmed}},
+        )
+        tokens_list = trimmed
+
+    logger_count = len(tokens_list)
+    log.info(
+        "[push] token registered user=%s platform=%s total_tokens=%d",
+        user.get("email"),
+        body.platform or "unknown",
+        logger_count,
+    )
+    return {"ok": True, "count": logger_count}
+
+
+@api.delete("/users/push-token")
+async def unregister_push_token(
+    body: PushTokenIn,
+    user: dict = Depends(current_user),
+):
+    """Elimina un Expo push token del perfil del usuario (logout / device removal)."""
+    token = (body.token or "").strip()
+    if not token:
+        raise HTTPException(400, "Token vacío")
+    await db.users.update_one(
+        {"id": user["id"]},
+        {"$pull": {"expo_push_tokens": token}},
+    )
+    return {"ok": True}
+
+
+async def send_push_notification(
+    user_id: str,
+    title: str,
+    body: str,
+    data: Optional[dict] = None,
+    sound: Optional[str] = "default",
+    priority: str = "high",
+) -> dict:
+    """
+    Envía una notificación push a TODOS los Expo push tokens registrados del usuario.
+
+    Esta función está **definida y lista para usarse**, pero NO se vincula a ningún
+    evento todavía. Es responsabilidad del feature que la consuma (e.g. nuevo reporte,
+    mensaje en chat, asignación de tarea) llamarla.
+
+    Args:
+        user_id: ID del usuario destinatario.
+        title:   Título de la notificación.
+        body:    Cuerpo / mensaje principal.
+        data:    Payload opcional para deep-linking (e.g. {"report_id": "..."}).
+        sound:   'default' o None.
+        priority: 'default' | 'normal' | 'high'.
+
+    Returns:
+        dict con shape:
+        {
+          "ok": bool,
+          "sent": int,            # cuántos mensajes se intentaron enviar
+          "failed_tokens": [str], # tokens que Expo reportó como inválidos
+          "response": <expo raw json or error string>,
+        }
+    """
+    u = await db.users.find_one({"id": user_id}, {"_id": 0, "expo_push_tokens": 1})
+    tokens: list = (u or {}).get("expo_push_tokens") or []
+    if not tokens:
+        return {"ok": False, "sent": 0, "failed_tokens": [], "response": "no tokens"}
+
+    # Build the Expo push message batch (Expo accepts a JSON array).
+    messages = []
+    for t in tokens:
+        if not _is_valid_expo_token(t):
+            continue
+        msg = {
+            "to": t,
+            "title": title,
+            "body": body,
+            "priority": priority,
+        }
+        if sound:
+            msg["sound"] = sound
+        if data:
+            msg["data"] = data
+        messages.append(msg)
+
+    if not messages:
+        return {"ok": False, "sent": 0, "failed_tokens": tokens, "response": "no valid tokens"}
+
+    headers = {
+        "Accept": "application/json",
+        "Accept-Encoding": "gzip, deflate",
+        "Content-Type": "application/json",
+    }
+
+    failed_tokens: list = []
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.post(EXPO_PUSH_API_URL, json=messages, headers=headers)
+            try:
+                payload = r.json()
+            except Exception:
+                payload = {"raw": r.text}
+
+            # Expo returns {"data": [{"status":"ok"|"error","id":"...","message":"...","details":{"error":"DeviceNotRegistered"}}, ...]}
+            results = (payload or {}).get("data") or []
+            for idx, item in enumerate(results):
+                if isinstance(item, dict) and item.get("status") == "error":
+                    err = (item.get("details") or {}).get("error", "")
+                    if err in ("DeviceNotRegistered", "InvalidCredentials"):
+                        if idx < len(messages):
+                            failed_tokens.append(messages[idx]["to"])
+
+            # Auto-clean: remove invalid tokens from user's profile.
+            if failed_tokens:
+                await db.users.update_one(
+                    {"id": user_id},
+                    {"$pull": {"expo_push_tokens": {"$in": failed_tokens}}},
+                )
+
+            return {
+                "ok": r.status_code < 400,
+                "sent": len(messages),
+                "failed_tokens": failed_tokens,
+                "response": payload,
+            }
+    except Exception as exc:  # pragma: no cover - defensive
+        log.exception("[push] send_push_notification failed: %s", exc)
+        return {
+            "ok": False,
+            "sent": 0,
+            "failed_tokens": [],
+            "response": f"exception: {exc}",
+        }
 
 
 # === PROJECTS ===============================================================

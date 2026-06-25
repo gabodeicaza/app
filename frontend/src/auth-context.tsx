@@ -1,6 +1,10 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { storage } from '@/src/utils/storage';
 import { api, User } from '@/src/api';
+import {
+  registerForPushNotificationsAsync,
+  clearCachedPushToken,
+} from '@/src/utils/pushNotifications';
 
 export type Role = 'coordinador_general' | 'sub_coordinador' | 'especialista';
 export type { User };
@@ -46,6 +50,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => { mounted = false; };
   }, [refresh]);
 
+  // Cuando el usuario queda autenticado, registramos el Expo Push Token.
+  // Se ejecuta una sola vez por cambio de usuario y nunca bloquea la UI.
+  useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const token = await registerForPushNotificationsAsync();
+        if (!cancelled && token && __DEV__) {
+          console.log('[push] Token activo:', token);
+        }
+      } catch (err) {
+        if (__DEV__) console.warn('[push] register error:', err);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [user?.id]);
+
   const login = useCallback(async (email: string, password: string) => {
     const { token, user: u } = await api.login(email, password);
     await storage.secureSet('syncsite_token', token);
@@ -65,6 +87,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const logout = useCallback(async () => {
     await storage.secureRemove('syncsite_token');
     await storage.removeItem('synco_user');
+    await clearCachedPushToken();
     setUser(null);
   }, []);
 

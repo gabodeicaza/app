@@ -51,6 +51,7 @@ export interface User {
   scope_node_id?: string | null;
   scope_node_ids: string[];
   project_ids: string[];
+  expo_push_tokens?: string[];
   created_at: string;
 }
 
@@ -269,6 +270,12 @@ export const api = {
   login: (email: string, password: string) =>
     request<{ token: string; user: User }>('POST', '/auth/login', { email, password }),
   me: () => request<User>('GET', '/auth/me'),
+
+  // Push notifications
+  registerPushToken: (token: string, platform?: string) =>
+    request<{ ok: boolean; count: number }>('POST', '/users/push-token', { token, platform }),
+  unregisterPushToken: (token: string) =>
+    request<{ ok: boolean }>('DELETE', '/users/push-token', { token }),
 
   // Invitations
   invitePreview: (token: string) =>
