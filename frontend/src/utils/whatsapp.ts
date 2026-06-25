@@ -27,8 +27,10 @@ export function formatMeasurementValue(
     case 'coord_latlon': {
       const lat = Number(value.lat);
       const lon = Number(value.lon);
+      const elev = Number(value.elev);
       if (Number.isFinite(lat) && Number.isFinite(lon)) {
-        return `${lat.toFixed(6)}, ${lon.toFixed(6)}`;
+        const base = `${lat.toFixed(6)}, ${lon.toFixed(6)}`;
+        return Number.isFinite(elev) ? `${base} · Z ${elev}` : base;
       }
       return '—';
     }

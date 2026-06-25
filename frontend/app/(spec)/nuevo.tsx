@@ -213,18 +213,20 @@ export default function SpecCaptureScreen() {
   }, [path]);
 
   // -------------------------------------------------------------------------
-  // Pre-cargar Lat/Lon cuando se selecciona una hoja con measurement_type=coord_latlon.
+  // Pre-cargar Lat/Lon/Elev cuando se selecciona una hoja con measurement_type=coord_latlon.
   // Orden de precedencia (de mayor a menor): valores ya escritos por el usuario en el form,
-  // luego target_lat/target_lon del nodo, luego metadata X/Y (cargado vía Excel masivo).
+  // luego target_lat/target_lon/target_elev del nodo, luego metadata X/Y/Z (cargado vía Excel masivo).
   // En cualquier caso los campos siguen 100% editables por el usuario.
   useEffect(() => {
     if (!leafNode) return;
     if (leafNode.measurement_type !== 'coord_latlon') return;
     const tLat = (leafNode as any).target_lat;
     const tLon = (leafNode as any).target_lon;
-    // Buscar en metadata X/Y (importación masiva Excel). Case-insensitive, normaliza acentos.
+    const tElev = (leafNode as any).target_elev;
+    // Buscar en metadata X/Y/Z (importación masiva Excel). Case-insensitive, normaliza acentos.
     let mdX: number | null = null;
     let mdY: number | null = null;
+    let mdZ: number | null = null;
     const md = (leafNode as any).metadata;
     if (md && typeof md === 'object') {
       for (const rawKey of Object.keys(md)) {
@@ -239,18 +241,26 @@ export default function SpecCaptureScreen() {
         if (!Number.isFinite(num)) continue;
         if (mdX === null && (k === 'x' || k === 'coordenada x' || k === 'coord x')) mdX = num;
         else if (mdY === null && (k === 'y' || k === 'coordenada y' || k === 'coord y')) mdY = num;
+        else if (mdZ === null && (
+          k === 'z' || k === 'coordenada z' || k === 'coord z' ||
+          k === 'elev' || k === 'elevacion' || k === 'elevacion (tn)' ||
+          k === 'elevacion tn' || k === 'altitud' || k === 'altura'
+        )) mdZ = num;
       }
     }
     setMeasurement((prev) => {
-      // En obra civil X=lon-axis (este), Y=lat-axis (norte). Sólo aplicamos
-      // fallback si prev.lat/lon están vacíos (no escritos manualmente).
+      // En obra civil X=lon-axis (este), Y=lat-axis (norte), Z=elev (altitud).
+      // Sólo aplicamos fallback si prev está vacío (no escritos manualmente).
       const nextLat = typeof tLat === 'number'
         ? tLat
         : (mdY !== null && (prev.lat == null || prev.lat === 0) ? mdY : prev.lat);
       const nextLon = typeof tLon === 'number'
         ? tLon
         : (mdX !== null && (prev.lon == null || prev.lon === 0) ? mdX : prev.lon);
-      return { ...prev, lat: nextLat, lon: nextLon };
+      const nextElev = typeof tElev === 'number'
+        ? tElev
+        : (mdZ !== null && (prev.elev == null || prev.elev === 0) ? mdZ : prev.elev);
+      return { ...prev, lat: nextLat, lon: nextLon, elev: nextElev };
     });
   }, [leafNode]);
 
@@ -1232,50 +1242,73 @@ function MeasurementInput({ type, value, onChange }: {
   if (type === 'coord_latlon') {
     const latStr = value.lat != null && Number.isFinite(value.lat) ? String(value.lat) : '';
     const lonStr = value.lon != null && Number.isFinite(value.lon) ? String(value.lon) : '';
+    const elevStr = value.elev != null && Number.isFinite(value.elev) ? String(value.elev) : '';
     return (
-      <View style={{ flexDirection: 'row', gap: spacing.sm }}>
-        <View style={{ flex: 1 }}>
-          <Field label="Latitud (Y)" hint="Pre-llenada desde el nodo. Editable.">
-            <TextInput
-              editable={true}
-              keyboardType="numeric"
-              placeholder="Ej. 19.432608"
-              placeholderTextColor={colors.textMuted}
-              style={styles.input}
-              value={latStr}
-              onChangeText={(t) => {
-                const trimmed = (t || '').trim();
-                if (!trimmed || trimmed === '-' || trimmed === '.') {
-                  onChange({ ...value, lat: null });
-                  return;
-                }
-                const num = parseFloat(trimmed.replace(',', '.'));
-                onChange({ ...value, lat: Number.isFinite(num) ? num : null });
-              }}
-            />
-          </Field>
+      <View>
+        <View style={{ flexDirection: 'row', gap: spacing.sm }}>
+          <View style={{ flex: 1 }}>
+            <Field label="Latitud (Y)" hint="Pre-llenada desde el nodo. Editable.">
+              <TextInput
+                editable={true}
+                keyboardType="numeric"
+                placeholder="Ej. 19.432608"
+                placeholderTextColor={colors.textMuted}
+                style={styles.input}
+                value={latStr}
+                onChangeText={(t) => {
+                  const trimmed = (t || '').trim();
+                  if (!trimmed || trimmed === '-' || trimmed === '.') {
+                    onChange({ ...value, lat: null });
+                    return;
+                  }
+                  const num = parseFloat(trimmed.replace(',', '.'));
+                  onChange({ ...value, lat: Number.isFinite(num) ? num : null });
+                }}
+              />
+            </Field>
+          </View>
+          <View style={{ flex: 1 }}>
+            <Field label="Longitud (X)" hint="Pre-llenada desde el nodo. Editable.">
+              <TextInput
+                editable={true}
+                keyboardType="numeric"
+                placeholder="Ej. -99.133209"
+                placeholderTextColor={colors.textMuted}
+                style={styles.input}
+                value={lonStr}
+                onChangeText={(t) => {
+                  const trimmed = (t || '').trim();
+                  if (!trimmed || trimmed === '-' || trimmed === '.') {
+                    onChange({ ...value, lon: null });
+                    return;
+                  }
+                  const num = parseFloat(trimmed.replace(',', '.'));
+                  onChange({ ...value, lon: Number.isFinite(num) ? num : null });
+                }}
+              />
+            </Field>
+          </View>
         </View>
-        <View style={{ flex: 1 }}>
-          <Field label="Longitud (X)" hint="Pre-llenada desde el nodo. Editable.">
-            <TextInput
-              editable={true}
-              keyboardType="numeric"
-              placeholder="Ej. -99.133209"
-              placeholderTextColor={colors.textMuted}
-              style={styles.input}
-              value={lonStr}
-              onChangeText={(t) => {
-                const trimmed = (t || '').trim();
-                if (!trimmed || trimmed === '-' || trimmed === '.') {
-                  onChange({ ...value, lon: null });
-                  return;
-                }
-                const num = parseFloat(trimmed.replace(',', '.'));
-                onChange({ ...value, lon: Number.isFinite(num) ? num : null });
-              }}
-            />
-          </Field>
-        </View>
+        {/* Tercer eje: Elevación (Z). Pre-llenada desde metadata.elev / "Elevación (TN)" del nodo. */}
+        <Field label="Elevación (Z)" hint="Pre-llenada desde el nodo. Editable. Acepta decimales y negativos.">
+          <TextInput
+            editable={true}
+            keyboardType="numeric"
+            placeholder="Ej. 2240.5"
+            placeholderTextColor={colors.textMuted}
+            style={styles.input}
+            value={elevStr}
+            onChangeText={(t) => {
+              const trimmed = (t || '').trim();
+              if (!trimmed || trimmed === '-' || trimmed === '.') {
+                onChange({ ...value, elev: null });
+                return;
+              }
+              const num = parseFloat(trimmed.replace(',', '.'));
+              onChange({ ...value, elev: Number.isFinite(num) ? num : null });
+            }}
+          />
+        </Field>
       </View>
     );
   }

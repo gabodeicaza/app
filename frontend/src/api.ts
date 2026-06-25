@@ -427,6 +427,7 @@ export const api = {
     files?: Array<{ filename: string; mime: string; data_base64: string }>;
     primera_lectura?: number | null;
     ultima_lectura?: number | null;
+    unidad?: string | null;
   }) => request<Report>('POST', '/reports', body),
   nodeHistory: (pid: string, nid: string) =>
     request<{
