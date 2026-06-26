@@ -58,6 +58,14 @@ export interface User {
 export interface ReferenceFile {
   name: string;
   url: string;
+  /** Identificador único para descargar/borrar (sólo presente en archivos subidos). */
+  file_id?: string;
+  original_name?: string;
+  mime_type?: string;
+  size?: number;
+  uploaded_by?: string;
+  uploaded_by_name?: string;
+  uploaded_at?: string;
 }
 
 export interface Project {
@@ -390,6 +398,66 @@ export const api = {
   // URL absoluta para descargar la plantilla Excel de nodos (incluye token en header en native).
   bulkUploadNodesTemplateUrl: (pid: string) => `${BASE}/projects/${pid}/nodes/bulk-upload/template`,
 
+  /**
+   * Sube un archivo genérico al proyecto (multipart/form-data).
+   * - Si es Excel/CSV → ejecuta carga masiva de nodos y devuelve `summary`.
+   * - Si es PDF/Word → lo guarda y devuelve la metadata del archivo (con file_id + url descargable).
+   */
+  uploadProjectFile: async (
+    pid: string,
+    file: { uri: string; name: string; mimeType?: string | null },
+  ): Promise<{
+    type: 'nodes_bulk' | 'stored';
+    filename: string;
+    mime_type?: string;
+    size?: number;
+    summary?: {
+      total_rows: number;
+      created: number;
+      updated: number;
+      skipped: number;
+      errors: { row: number; error: string }[];
+    };
+    file?: ReferenceFile;
+  }> => {
+    const form = new FormData();
+    const isWeb = typeof window !== 'undefined' && typeof (globalThis as any).Blob !== 'undefined';
+    const fileName = file.name || 'archivo';
+    const mime = file.mimeType || 'application/octet-stream';
+    if (isWeb) {
+      const resBlob = await fetch(file.uri);
+      const blob = await resBlob.blob();
+      try {
+        const f = new File([blob], fileName, { type: mime });
+        form.append('file', f);
+      } catch {
+        form.append('file', blob, fileName);
+      }
+    } else {
+      form.append('file', { uri: file.uri, name: fileName, type: mime } as any);
+    }
+    const headers = await authHeader();
+    const res = await fetch(`${BASE}/projects/${pid}/upload-file`, {
+      method: 'POST',
+      headers, // sin Content-Type: fetch añade boundary multipart.
+      body: form as any,
+    });
+    const text = await res.text();
+    const data = text ? safeJson(text) : null;
+    if (!res.ok) {
+      const msg = (data && (data as any).detail) || `HTTP ${res.status}`;
+      throw new ApiError(res.status, typeof msg === 'string' ? msg : JSON.stringify(msg));
+    }
+    return data as any;
+  },
+
+  /** Elimina un archivo del proyecto por su file_id (sólo Coord/Jefe). */
+  deleteProjectFile: (pid: string, fileId: string) =>
+    request<{ ok: boolean; file_id: string }>('DELETE', `/projects/${pid}/files/${fileId}`),
+
+  /** URL absoluta para descargar un archivo del proyecto (requiere Bearer token en header). */
+  projectFileUrl: (pid: string, fileId: string) => `${BASE}/projects/${pid}/files/${fileId}`,
+
   // Descarga la plantilla y devuelve un Blob (web) o la guarda en cacheDirectory (native).
   downloadNodesTemplate: async (pid: string): Promise<{ blob?: Blob; uri?: string; filename: string }> => {
     const headers = await authHeader();
@@ -401,6 +469,30 @@ export const api = {
     }
     const blob = await res.blob();
     return { blob, filename };
+  },
+
+  // Descarga un archivo del proyecto (con Bearer token). Devuelve Blob + filename.
+  downloadProjectFile: async (
+    pid: string,
+    fileId: string,
+    fallbackFilename?: string,
+  ): Promise<{ blob: Blob; filename: string; mime?: string }> => {
+    const headers = await authHeader();
+    const url = `${BASE}/projects/${pid}/files/${fileId}`;
+    const res = await fetch(url, { method: 'GET', headers });
+    if (!res.ok) {
+      throw new ApiError(res.status, `HTTP ${res.status} al descargar el archivo`);
+    }
+    // Intentar extraer filename del Content-Disposition.
+    let filename = fallbackFilename || 'archivo';
+    const cd = res.headers.get('content-disposition') || res.headers.get('Content-Disposition') || '';
+    const m = /filename\*?=(?:UTF-8'')?"?([^";\n]+)"?/i.exec(cd);
+    if (m && m[1]) {
+      try { filename = decodeURIComponent(m[1]); } catch { filename = m[1]; }
+    }
+    const mime = res.headers.get('content-type') || undefined;
+    const blob = await res.blob();
+    return { blob, filename, mime: mime || undefined };
   },
 
   // Areas

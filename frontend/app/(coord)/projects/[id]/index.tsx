@@ -1,9 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, ActivityIndicator, Pressable, Alert, Platform,
-  TextInput, Linking, Modal, Image,
+  Linking, Modal, Image,
 } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
+import * as DocumentPicker from 'expo-document-picker';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -16,6 +17,28 @@ import { DailyGoalsPanel } from '@/src/components/DailyGoalsPanel';
 import { NodeProgressPanel } from '@/src/components/NodeProgressPanel';
 import { HistoryCalendarModal } from '@/src/components/HistoryCalendarModal';
 import { ReportPreviewSheet } from '@/src/components/ReportPreviewSheet';
+
+// Límite cliente coherente con backend (20 MB). Evita subidas que el servidor rechazaría.
+const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
+
+// Tipos MIME aceptados para el picker (Excel/CSV/PDF/Word).
+const UPLOAD_ACCEPTED_TYPES = [
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.ms-excel',
+  'text/csv',
+  'application/csv',
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.xlsx', '.xls', '.csv', '.pdf', '.doc', '.docx',
+];
+
+function formatBytes(bytes?: number | null): string {
+  if (!bytes || bytes <= 0) return '';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 // === Flujo de Exportación en 2 pasos ====================================
 type ExportFormat = 'pdf' | 'docx' | 'pptx' | 'xlsx';
@@ -71,10 +94,10 @@ export default function ProjectDetailScreen() {
   // Preview de reporte (tap en feed)
   const [previewItem, setPreviewItem] = useState<FeedItem | null>(null);
 
-  // Archivos de Consulta (Reference Files)
-  const [refName, setRefName] = useState('');
-  const [refUrl, setRefUrl] = useState('');
+  // Archivos de Consulta (Reference Files) — ahora vía expo-document-picker.
   const [refBusy, setRefBusy] = useState(false);
+  const [refUploadName, setRefUploadName] = useState<string | null>(null); // nombre archivo en curso
+  const [refOpeningId, setRefOpeningId] = useState<string | null>(null);   // file_id en descarga
 
   const load = useCallback(async () => {
     try {
@@ -180,34 +203,121 @@ export default function ProjectDetailScreen() {
     }
   }
 
-  async function onAddRefFile() {
-    const name = refName.trim();
-    const url = refUrl.trim();
-    if (!name || !url) {
-      Alert.alert('Datos incompletos', 'Indica un nombre y una URL para el archivo.');
-      return;
+  // === Subida real con expo-document-picker → multipart al backend ===========
+  async function onPickAndUploadFile() {
+    if (refBusy) return;
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: UPLOAD_ACCEPTED_TYPES,
+        copyToCacheDirectory: true,
+        multiple: false,
+      });
+      if (result.canceled || !result.assets?.[0]) return;
+      const asset = result.assets[0];
+
+      // Validación cliente del tamaño (20 MB).
+      if (asset.size && asset.size > MAX_UPLOAD_BYTES) {
+        Alert.alert(
+          'Archivo demasiado grande',
+          `El archivo pesa ${formatBytes(asset.size)}. El máximo permitido es 20 MB para asegurar la subida en zonas con red baja.`,
+        );
+        return;
+      }
+
+      setRefBusy(true);
+      setRefUploadName(asset.name || 'archivo');
+      const res = await api.uploadProjectFile(pid, {
+        uri: asset.uri,
+        name: asset.name || 'archivo',
+        mimeType: asset.mimeType,
+      });
+
+      if (res.type === 'nodes_bulk' && res.summary) {
+        const s = res.summary;
+        const lines = [
+          `Nuevos: ${s.created}`,
+          `Actualizados: ${s.updated}`,
+          `Omitidos (filas vacías): ${s.skipped}`,
+        ];
+        if (s.errors?.length) {
+          lines.push('');
+          lines.push(`Errores: ${s.errors.length}`);
+          for (const e of s.errors.slice(0, 5)) {
+            lines.push(`· Fila ${e.row}: ${e.error}`);
+          }
+        }
+        Alert.alert('Nodos importados', lines.join('\n'));
+      } else {
+        Alert.alert('Archivo subido', `“${res.filename}” se adjuntó al proyecto.`);
+      }
+
+      // Refrescar proyecto para reflejar reference_files actualizados.
+      await load();
+    } catch (e: any) {
+      Alert.alert('No se pudo subir', e?.message || 'Error desconocido al subir el archivo.');
+    } finally {
+      setRefBusy(false);
+      setRefUploadName(null);
     }
-    if (!/^https?:\/\//i.test(url)) {
-      Alert.alert('URL inválida', 'La URL debe comenzar con http:// o https://');
-      return;
-    }
-    const current = project?.reference_files || [];
-    const next: ReferenceFile[] = [...current, { name, url }];
-    await persistRefs(next);
-    setRefName('');
-    setRefUrl('');
   }
 
   async function onRemoveRefFile(idx: number) {
+    const current = project?.reference_files || [];
+    const target = current[idx];
+    if (!target) return;
     const ok = await confirm(
       'Eliminar archivo',
-      '¿Quitar este archivo de consulta del proyecto?',
+      `¿Quitar “${target.name || 'archivo'}” del proyecto?`,
       { confirmText: 'Eliminar', destructive: true },
     );
     if (!ok) return;
-    const current = project?.reference_files || [];
-    const next = current.filter((_, i) => i !== idx);
-    await persistRefs(next);
+    try {
+      setRefBusy(true);
+      if (target.file_id) {
+        // Archivo subido al servidor → borrar registro + binario.
+        const res = await api.deleteProjectFile(pid, target.file_id);
+        if (res?.ok) {
+          setProject((p) =>
+            p ? { ...p, reference_files: (p.reference_files || []).filter((f) => f.file_id !== target.file_id) } : p,
+          );
+        } else {
+          throw new Error('Respuesta inesperada del servidor.');
+        }
+      } else {
+        // Enlace externo (legacy) → reescribir lista completa.
+        const next = current.filter((_, i) => i !== idx);
+        await persistRefs(next);
+      }
+    } catch (e: any) {
+      Alert.alert('No se pudo eliminar', e?.message || 'Inténtalo nuevamente.');
+    } finally {
+      setRefBusy(false);
+    }
+  }
+
+  // Abrir/descargar archivo. Si tiene file_id (subido al backend) descarga con
+  // Bearer token vía fetch y comparte/abre con downloadBlob. Si es URL externa,
+  // simplemente abre el enlace.
+  async function onOpenRefFile(f: ReferenceFile) {
+    try {
+      if (f.file_id) {
+        setRefOpeningId(f.file_id);
+        const { blob, filename, mime } = await api.downloadProjectFile(
+          pid,
+          f.file_id,
+          f.original_name || f.name || 'archivo',
+        );
+        await downloadBlob(blob, filename, mime || f.mime_type);
+      } else if (f.url) {
+        await Linking.openURL(f.url);
+      } else {
+        Alert.alert('Sin destino', 'El archivo no tiene URL asociada.');
+      }
+    } catch (e: any) {
+      Alert.alert('No se pudo abrir', e?.message || 'Revisa tu conexión e inténtalo de nuevo.');
+    } finally {
+      setRefOpeningId(null);
+    }
   }
 
   async function onArchive() {
@@ -644,7 +754,7 @@ export default function ProjectDetailScreen() {
             <Text style={styles.sectionTitle}>Archivos de consulta</Text>
             <View style={styles.refCard}>
               <Text style={styles.refHelp}>
-                Comparte enlaces a documentos (planos, especificaciones, manuales, etc.) visibles para todos los Especialistas.
+                Sube documentos (Excel/CSV de nodos, PDF, Word) o planos visibles para todo el equipo. Si el archivo es Excel o CSV con coordenadas, se cargarán los nodos automáticamente. Máximo 20 MB por archivo.
               </Text>
 
               {(project.reference_files || []).length === 0 ? (
@@ -654,68 +764,85 @@ export default function ProjectDetailScreen() {
                 </View>
               ) : (
                 <View style={{ gap: 8 }}>
-                  {(project.reference_files || []).map((f, idx) => (
-                    <View key={`${f.url}-${idx}`} style={styles.refItem}>
-                      <Ionicons name="document-text-outline" size={18} color={colors.primary} />
-                      <View style={{ flex: 1, minWidth: 0 }}>
-                        <Text style={styles.refItemName} numberOfLines={1}>{f.name}</Text>
-                        <Text style={styles.refItemUrl} numberOfLines={1}>{f.url}</Text>
+                  {(project.reference_files || []).map((f, idx) => {
+                    const key = f.file_id || `${f.url}-${idx}`;
+                    const opening = !!(f.file_id && refOpeningId === f.file_id);
+                    const subtitle = f.file_id
+                      ? [f.original_name || '', formatBytes(f.size)].filter(Boolean).join(' · ')
+                      : f.url;
+                    return (
+                      <View key={key} style={styles.refItem}>
+                        <Ionicons
+                          name={f.file_id ? 'document-attach-outline' : 'link-outline'}
+                          size={18}
+                          color={colors.primary}
+                        />
+                        <View style={{ flex: 1, minWidth: 0 }}>
+                          <Text style={styles.refItemName} numberOfLines={1}>{f.name}</Text>
+                          {!!subtitle && (
+                            <Text style={styles.refItemUrl} numberOfLines={1}>{subtitle}</Text>
+                          )}
+                        </View>
+                        <Pressable
+                          onPress={() => onOpenRefFile(f)}
+                          hitSlop={6}
+                          style={styles.refIconBtn}
+                          disabled={opening || refBusy}
+                          accessibilityLabel={`Abrir ${f.name}`}
+                        >
+                          {opening ? (
+                            <ActivityIndicator size="small" color={colors.primary} />
+                          ) : (
+                            <Ionicons
+                              name={f.file_id ? 'cloud-download-outline' : 'open-outline'}
+                              size={18}
+                              color={colors.primary}
+                            />
+                          )}
+                        </Pressable>
+                        <Pressable
+                          onPress={() => onRemoveRefFile(idx)}
+                          hitSlop={6}
+                          style={styles.refIconBtn}
+                          disabled={refBusy}
+                          accessibilityLabel={`Eliminar ${f.name}`}
+                        >
+                          <Ionicons name="trash-outline" size={18} color={colors.error} />
+                        </Pressable>
                       </View>
-                      <Pressable
-                        onPress={() => Linking.openURL(f.url).catch(() => Alert.alert('No se pudo abrir', 'Revisa la URL.'))}
-                        hitSlop={6}
-                        style={styles.refIconBtn}
-                      >
-                        <Ionicons name="open-outline" size={18} color={colors.primary} />
-                      </Pressable>
-                      <Pressable
-                        onPress={() => onRemoveRefFile(idx)}
-                        hitSlop={6}
-                        style={styles.refIconBtn}
-                        disabled={refBusy}
-                      >
-                        <Ionicons name="trash-outline" size={18} color={colors.error} />
-                      </Pressable>
-                    </View>
-                  ))}
+                    );
+                  })}
                 </View>
               )}
 
-              <View style={styles.refForm}>
-                <TextInput
-                  value={refName}
-                  onChangeText={setRefName}
-                  placeholder="Nombre del documento"
-                  placeholderTextColor={colors.textMuted}
-                  style={styles.refInput}
-                  editable={!refBusy}
-                />
-                <TextInput
-                  value={refUrl}
-                  onChangeText={setRefUrl}
-                  placeholder="https://…"
-                  placeholderTextColor={colors.textMuted}
-                  style={styles.refInput}
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  keyboardType="url"
-                  editable={!refBusy}
-                />
-                <Pressable
-                  onPress={onAddRefFile}
-                  disabled={refBusy}
-                  style={({ pressed }) => [styles.refAddBtn, refBusy && { opacity: 0.6 }, pressed && !refBusy && { opacity: 0.85 }]}
-                >
-                  {refBusy ? (
+              <Pressable
+                onPress={onPickAndUploadFile}
+                disabled={refBusy}
+                style={({ pressed }) => [
+                  styles.refAddBtn,
+                  refBusy && { opacity: 0.85 },
+                  pressed && !refBusy && { opacity: 0.85 },
+                ]}
+                accessibilityRole="button"
+                accessibilityLabel="Seleccionar archivo para subir"
+              >
+                {refBusy ? (
+                  <>
                     <ActivityIndicator color="#fff" size="small" />
-                  ) : (
-                    <>
-                      <Ionicons name="add-circle-outline" size={18} color="#fff" />
-                      <Text style={styles.refAddBtnTxt}>Agregar archivo</Text>
-                    </>
-                  )}
-                </Pressable>
-              </View>
+                    <Text style={styles.refAddBtnTxt} numberOfLines={1}>
+                      {refUploadName ? `Subiendo ${refUploadName}…` : 'Subiendo archivo…'}
+                    </Text>
+                  </>
+                ) : (
+                  <>
+                    <Ionicons name="cloud-upload-outline" size={18} color="#fff" />
+                    <Text style={styles.refAddBtnTxt}>Seleccionar archivo</Text>
+                  </>
+                )}
+              </Pressable>
+              <Text style={styles.refHint}>
+                Formatos: Excel (.xlsx, .xls), CSV, PDF, Word (.doc, .docx). Tamaño máximo 20 MB.
+              </Text>
             </View>
 
             <Pressable onPress={onArchive} style={styles.archiveBtn}>
@@ -994,18 +1121,13 @@ const styles = StyleSheet.create({
   refItemName: { fontSize: 13, fontWeight: '700', color: colors.text },
   refItemUrl: { fontSize: 11, color: colors.textMuted, marginTop: 1 },
   refIconBtn: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center', borderRadius: radius.md },
-  refForm: { gap: 8, marginTop: 4 },
-  refInput: {
-    minHeight: 44,
-    paddingHorizontal: 12, paddingVertical: 10,
-    borderWidth: 1, borderColor: colors.border, borderRadius: radius.md,
-    backgroundColor: colors.bg, color: colors.text, fontSize: 14,
-  },
   refAddBtn: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
-    backgroundColor: colors.primary, paddingVertical: 12, borderRadius: radius.md, minHeight: 44,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+    backgroundColor: colors.primary, paddingHorizontal: 12, paddingVertical: 12,
+    borderRadius: radius.md, minHeight: 48, marginTop: 4,
   },
-  refAddBtnTxt: { color: '#fff', fontSize: 14, fontWeight: '800' },
+  refAddBtnTxt: { color: '#fff', fontSize: 14, fontWeight: '800', flexShrink: 1 },
+  refHint: { fontSize: 11, color: colors.textMuted, textAlign: 'center', marginTop: 2 },
 
   // === Exportación (Botón + Modal en 2 pasos) ================================
   exportMainBtn: {

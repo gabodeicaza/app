@@ -27,7 +27,7 @@ import jwt
 import bcrypt
 from dotenv import load_dotenv
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Query, UploadFile, File
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -1200,20 +1200,28 @@ async def bulk_upload_nodes(
     Devuelve resumen: {created, updated, skipped, errors, total}.
     """
     await ensure_project_access(user, pid)
-    # Verificar proyecto exista
     proj = await db.projects.find_one({"id": pid})
     if not proj:
         raise HTTPException(404, "Proyecto no existe")
-
-    # Leer archivo en memoria
     try:
         raw = await file.read()
     except Exception as e:
         raise HTTPException(400, f"No se pudo leer el archivo: {e}")
     if not raw:
         raise HTTPException(400, "Archivo vacío")
+    return await _process_nodes_bulk_upload(pid, raw, file.filename or "")
 
-    fname = (file.filename or "").lower()
+
+async def _process_nodes_bulk_upload(pid: str, raw: bytes, filename: str) -> dict:
+    """Núcleo reutilizable de la carga masiva de nodos.
+
+    Recibe el contenido binario y el nombre original del archivo y devuelve el
+    resumen `{total_rows, created, updated, skipped, errors, ...}`. Es invocado
+    por:
+      - POST /projects/{pid}/nodes/bulk-upload  (endpoint dedicado)
+      - POST /projects/{pid}/upload-file        (router genérico)
+    """
+    fname = (filename or "").lower()
     try:
         import pandas as pd  # noqa: WPS433
     except Exception as e:  # pragma: no cover
@@ -1392,6 +1400,193 @@ async def bulk_upload_nodes(
             summary["errors"].append({"row": idx + 2, "error": str(e)})
 
     return summary
+
+
+# === UPLOAD GENÉRICO DE ARCHIVOS DEL PROYECTO ===============================
+UPLOADS_DIR = Path(os.environ.get("UPLOADS_DIR", "/app/backend/uploads"))
+try:
+    UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+except Exception as _exc:  # pragma: no cover
+    log.warning("[uploads] no se pudo crear %s: %s", UPLOADS_DIR, _exc)
+
+# Conjuntos de tipos para enrutar la lógica.
+_NODES_EXTS = {".xlsx", ".xls", ".csv"}
+_NODES_MIMES = {
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.ms-excel",
+    "text/csv",
+    "application/csv",
+}
+# PDF / Word / Excel (binarios que solo se guardan en disco).
+_ALLOWED_DOC_MIMES = {
+    "application/pdf",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.ms-excel",
+    "text/csv",
+}
+_MAX_FILE_BYTES = 20 * 1024 * 1024  # 20 MB (límite acordado para subidas en campo)
+
+
+def _safe_filename(name: str) -> str:
+    base = re.sub(r"[^A-Za-z0-9._-]+", "_", (name or "archivo")).strip("._")
+    return base[:120] or "archivo"
+
+
+@api.post("/projects/{pid}/upload-file")
+async def upload_project_file(
+    pid: str,
+    file: UploadFile = File(...),
+    user: dict = Depends(require_role(ROLE_COORD, ROLE_JEFE)),
+):
+    """
+    Router de archivos del proyecto. Acepta multipart/form-data.
+
+    - Si el archivo es Excel/CSV de coordenadas (xlsx, xls, csv) → ejecuta el
+      pipeline de carga masiva de nodos y devuelve el resumen.
+    - Si es PDF/Word u otro documento permitido → lo guarda en `uploads/{pid}/`
+      y lo añade a `project.reference_files`. Devuelve el registro creado.
+
+    Limite por archivo: 25 MB. Solo Coordinador / Jefe de Proyecto.
+    """
+    await ensure_project_access(user, pid)
+    proj = await db.projects.find_one({"id": pid})
+    if not proj:
+        raise HTTPException(404, "Proyecto no existe")
+
+    try:
+        raw = await file.read()
+    except Exception as e:
+        raise HTTPException(400, f"No se pudo leer el archivo: {e}")
+    if not raw:
+        raise HTTPException(400, "Archivo vacío")
+    if len(raw) > _MAX_FILE_BYTES:
+        raise HTTPException(
+            413,
+            f"Archivo demasiado grande ({len(raw)//1024//1024} MB). Máx {_MAX_FILE_BYTES//1024//1024} MB.",
+        )
+
+    orig = file.filename or "archivo"
+    ext = (Path(orig).suffix or "").lower()
+    ctype = (file.content_type or "").lower().split(";", 1)[0].strip()
+
+    is_nodes = ext in _NODES_EXTS or ctype in _NODES_MIMES
+    if is_nodes:
+        try:
+            summary = await _process_nodes_bulk_upload(pid, raw, orig)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            log.exception("[upload-file] bulk_upload falló: %s", exc)
+            raise HTTPException(400, f"No se pudo procesar el archivo de nodos: {exc}")
+        return {
+            "type": "nodes_bulk",
+            "filename": orig,
+            "mime_type": ctype or "application/octet-stream",
+            "size": len(raw),
+            "summary": summary,
+        }
+
+    # Documento (PDF/Word/etc.) → persistir en disco.
+    if ctype and ctype not in _ALLOWED_DOC_MIMES:
+        # No bloqueamos por extensión si el MIME es genérico, pero sí lo registramos.
+        log.info("[upload-file] MIME no-listado pero aceptado: %s (%s)", ctype, orig)
+
+    safe_name = _safe_filename(orig)
+    file_id = uuid.uuid4().hex
+    proj_dir = UPLOADS_DIR / pid
+    try:
+        proj_dir.mkdir(parents=True, exist_ok=True)
+        on_disk = proj_dir / f"{file_id}__{safe_name}"
+        on_disk.write_bytes(raw)
+    except Exception as exc:
+        log.exception("[upload-file] no se pudo escribir en disco: %s", exc)
+        raise HTTPException(500, f"No se pudo guardar el archivo: {exc}")
+
+    record = {
+        "file_id": file_id,
+        "name": Path(orig).stem or orig,
+        "original_name": orig,
+        "mime_type": ctype or "application/octet-stream",
+        "size": len(raw),
+        "url": f"/api/projects/{pid}/files/{file_id}",
+        "path": str(on_disk),
+        "uploaded_by": user.get("id"),
+        "uploaded_by_name": user.get("name"),
+        "uploaded_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    await db.projects.update_one(
+        {"id": pid},
+        {"$push": {"reference_files": record}},
+    )
+
+    return {
+        "type": "stored",
+        "filename": orig,
+        "mime_type": record["mime_type"],
+        "size": record["size"],
+        "file": record,
+    }
+
+
+@api.get("/projects/{pid}/files/{file_id}")
+async def download_project_file(
+    pid: str,
+    file_id: str,
+    user: dict = Depends(current_user),
+):
+    """Descarga un archivo previamente subido al proyecto.
+
+    Requiere acceso al proyecto (rol/scope).
+    """
+    await ensure_project_access(user, pid)
+    proj = await db.projects.find_one({"id": pid}, {"_id": 0, "reference_files": 1})
+    if not proj:
+        raise HTTPException(404, "Proyecto no existe")
+    refs = (proj or {}).get("reference_files") or []
+    rec = next((f for f in refs if (f or {}).get("file_id") == file_id), None)
+    if not rec:
+        raise HTTPException(404, "Archivo no encontrado")
+    on_disk = Path(rec.get("path") or "")
+    if not on_disk.exists():
+        raise HTTPException(404, "Archivo no disponible en disco")
+    return FileResponse(
+        path=str(on_disk),
+        media_type=rec.get("mime_type") or "application/octet-stream",
+        filename=rec.get("original_name") or on_disk.name,
+    )
+
+
+@api.delete("/projects/{pid}/files/{file_id}")
+async def delete_project_file(
+    pid: str,
+    file_id: str,
+    user: dict = Depends(require_role(ROLE_COORD, ROLE_JEFE)),
+):
+    """Elimina un archivo adjunto del proyecto (registro + binario en disco)."""
+    await ensure_project_access(user, pid)
+    proj = await db.projects.find_one({"id": pid}, {"_id": 0, "reference_files": 1})
+    if not proj:
+        raise HTTPException(404, "Proyecto no existe")
+    refs = (proj or {}).get("reference_files") or []
+    rec = next((f for f in refs if (f or {}).get("file_id") == file_id), None)
+    if not rec:
+        raise HTTPException(404, "Archivo no encontrado")
+    # Quitar de la BD primero (la verdad de origen).
+    await db.projects.update_one(
+        {"id": pid},
+        {"$pull": {"reference_files": {"file_id": file_id}}},
+    )
+    # Best-effort: borrar binario.
+    try:
+        on_disk = Path(rec.get("path") or "")
+        if on_disk.exists():
+            on_disk.unlink()
+    except Exception as exc:
+        log.warning("[upload-file] no se pudo borrar binario: %s", exc)
+    return {"ok": True, "file_id": file_id}
 
 
 # === AREAS (por proyecto) ===================================================
