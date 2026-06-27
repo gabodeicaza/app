@@ -17,6 +17,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Clipboard from 'expo-clipboard';
 import * as ImagePicker from 'expo-image-picker';
 import * as Linking from 'expo-linking';
+import * as Sharing from 'expo-sharing';
+import * as FileSystem from 'expo-file-system/legacy';
 
 import { useAuth } from '@/src/auth-context';
 import { Button } from '@/src/components/Button';
@@ -99,6 +101,8 @@ export default function SpecCaptureScreen() {
   // ----- Form --------------------------------------------------------------
   const [actividades, setActividades] = useState('');
   const [observaciones, setObservaciones] = useState('');
+  const [incidencias, setIncidencias] = useState('');
+  const [severidad, setSeveridad] = useState<'informativo' | 'importante' | 'urgente'>('informativo');
   const [primeraLectura, setPrimeraLectura] = useState('');
   const [ultimaLectura, setUltimaLectura] = useState('');
   const [unidad, setUnidad] = useState<Unidad>('m');
@@ -111,6 +115,35 @@ export default function SpecCaptureScreen() {
   // ----- Catálogos AsyncStorage --------------------------------------------
   const [catalogPersonal, setCatalogPersonal] = useState<string[]>([]);
   const [catalogEquipo, setCatalogEquipo] = useState<string[]>([]);
+
+  // Catálogos efectivos = proyecto (Coordinador) + locales (autocomplete personal).
+  // Dedup case-insensitive, conservando primer orden visto.
+  const effectiveCatalogPersonal = useMemo(() => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const s of [...(project?.categorias_personal || []), ...catalogPersonal]) {
+      const k = (s || '').trim();
+      if (!k) continue;
+      const lk = k.toLowerCase();
+      if (seen.has(lk)) continue;
+      seen.add(lk);
+      out.push(k);
+    }
+    return out;
+  }, [project?.categorias_personal, catalogPersonal]);
+  const effectiveCatalogEquipo = useMemo(() => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const s of [...(project?.categorias_equipo || []), ...catalogEquipo]) {
+      const k = (s || '').trim();
+      if (!k) continue;
+      const lk = k.toLowerCase();
+      if (seen.has(lk)) continue;
+      seen.add(lk);
+      out.push(k);
+    }
+    return out;
+  }, [project?.categorias_equipo, catalogEquipo]);
 
   // ----- Historial nodo ----------------------------------------------------
   const [nodeHistory, setNodeHistory] = useState<NodeHistorySnapshot | null>(null);
@@ -502,6 +535,8 @@ export default function SpecCaptureScreen() {
         // [P0 FIX] avance ahora envía el string calculado + unidad (no actividades).
         avance: avanceStr != null ? `${avanceStr} ${unidad}` : null,
         observaciones: observaciones.trim() || null,
+        incidencias: incidencias.trim() || null,
+        severidad: severidad,
         contratista: null, // Deprecado: ahora se usa project.constructora global.
         personnel: personnelArr,
         equipment: equipmentArr,
@@ -565,23 +600,75 @@ export default function SpecCaptureScreen() {
     }
   }
 
+  // Compartir reporte por WhatsApp (foto + texto).
+  // - Si hay imagen: la copiamos a caché y abrimos el menú nativo de Share con
+  //   `expo-sharing`. WhatsApp recoge la imagen y el caption desde el clipboard.
+  // - Si no hay imagen: caemos al esquema clásico de Linking (wa.me / whatsapp://).
   async function sendViaWhatsApp() {
-    const encoded = encodeURIComponent(waMessage);
-    const native = `whatsapp://send?text=${encoded}`;
-    const fallback = `https://wa.me/?text=${encoded}`;
     try {
-      const canOpen = await Linking.canOpenURL(native);
-      if (canOpen) {
-        await Linking.openURL(native);
-      } else {
+      // Siempre dejamos el texto listo para pegar como caption en WhatsApp.
+      try { await Clipboard.setStringAsync(waMessage); } catch {}
+
+      if (images.length > 0) {
+        if (Platform.OS === 'web') {
+          // En web, Share API directo si está disponible; si no, abrir wa.me con texto.
+          try {
+            const blob = await (await fetch(`data:image/jpeg;base64,${images[0]}`)).blob();
+            const file = new File([blob], `reporte_${Date.now()}.jpg`, { type: 'image/jpeg' });
+            // @ts-ignore navigator.share
+            if (typeof navigator !== 'undefined' && navigator.share && navigator.canShare?.({ files: [file] })) {
+              // @ts-ignore
+              await navigator.share({ files: [file], text: waMessage, title: 'Reporte' });
+              return;
+            }
+          } catch {/* fallthrough */}
+          // Fallback web: abrir wa.me con texto (sin imagen).
+          const encoded = encodeURIComponent(waMessage);
+          await Linking.openURL(`https://wa.me/?text=${encoded}`);
+          return;
+        }
+
+        const available = await Sharing.isAvailableAsync();
+        if (!available) {
+          // Si no hay share sheet, caemos al clásico
+          const encoded = encodeURIComponent(waMessage);
+          const native = `whatsapp://send?text=${encoded}`;
+          const canOpen = await Linking.canOpenURL(native);
+          await Linking.openURL(canOpen ? native : `https://wa.me/?text=${encoded}`);
+          return;
+        }
+
+        const safeName = `reporte_${Date.now()}.jpg`;
+        const fileUri = `${FileSystem.cacheDirectory}${safeName}`;
+        await FileSystem.writeAsStringAsync(fileUri, images[0], {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+
+        notify(
+          'Foto lista',
+          'El texto del reporte fue copiado. Selecciona WhatsApp y pega el texto como pie de la foto.',
+        );
+
+        await Sharing.shareAsync(fileUri, {
+          mimeType: 'image/jpeg',
+          dialogTitle: 'Compartir reporte',
+          UTI: 'public.jpeg',
+        });
+        return;
+      }
+
+      // Sin imágenes → flujo clásico de texto
+      const encoded = encodeURIComponent(waMessage);
+      const native = `whatsapp://send?text=${encoded}`;
+      const fallback = `https://wa.me/?text=${encoded}`;
+      try {
+        const canOpen = await Linking.canOpenURL(native);
+        await Linking.openURL(canOpen ? native : fallback);
+      } catch {
         await Linking.openURL(fallback);
       }
     } catch (e: any) {
-      try {
-        await Linking.openURL(fallback);
-      } catch (e2: any) {
-        notify('WhatsApp', e2?.message || e?.message || 'No se pudo abrir WhatsApp');
-      }
+      notify('WhatsApp', e?.message || 'No se pudo abrir WhatsApp');
     }
   }
 
@@ -879,7 +966,7 @@ export default function SpecCaptureScreen() {
 
             <Field label="Observaciones">
               <TextInput
-                placeholder="Comentarios, incidencias, retrasos…"
+                placeholder="Comentarios, retrasos, lo que ocurrió en el día…"
                 placeholderTextColor={colors.textMuted}
                 style={[styles.input, styles.inputMulti]}
                 multiline
@@ -887,6 +974,49 @@ export default function SpecCaptureScreen() {
                 value={observaciones}
                 onChangeText={setObservaciones}
               />
+            </Field>
+
+            <Field label="Incidencias (opcional)">
+              <TextInput
+                placeholder="Eventos relevantes: bloqueos, fallas, accidentes, desviaciones…"
+                placeholderTextColor={colors.textMuted}
+                style={[styles.input, styles.inputMulti]}
+                multiline
+                numberOfLines={3}
+                value={incidencias}
+                onChangeText={setIncidencias}
+              />
+            </Field>
+
+            <Field label="Severidad (semáforo)">
+              <View style={styles.sevRow}>
+                {([
+                  { key: 'informativo', label: 'Informativo', color: '#1d4ed8', icon: 'information-circle' },
+                  { key: 'importante', label: 'Importante', color: '#d97706', icon: 'alert-circle' },
+                  { key: 'urgente', label: 'Urgente', color: '#dc2626', icon: 'warning' },
+                ] as const).map((opt) => {
+                  const active = severidad === opt.key;
+                  return (
+                    <Pressable
+                      key={opt.key}
+                      onPress={() => setSeveridad(opt.key)}
+                      style={[
+                        styles.sevChip,
+                        active && { backgroundColor: opt.color, borderColor: opt.color },
+                      ]}
+                      accessibilityRole="button"
+                      accessibilityState={{ selected: active }}
+                    >
+                      <Ionicons
+                        name={opt.icon as any}
+                        size={16}
+                        color={active ? '#fff' : opt.color}
+                      />
+                      <Text style={[styles.sevChipTxt, active && { color: '#fff' }]}>{opt.label}</Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
             </Field>
 
           </SectionCard>
@@ -899,7 +1029,7 @@ export default function SpecCaptureScreen() {
             subtitle="Cantidad + descripción (ej. 3 Albañiles)."
             icon="people-outline"
             items={personal}
-            catalog={catalogPersonal}
+            catalog={effectiveCatalogPersonal}
             onAdd={() => addItem('personal')}
             onRemove={(id) => removeItem('personal', id)}
             onInc={(id, d) => incQty('personal', id, d)}
@@ -915,7 +1045,7 @@ export default function SpecCaptureScreen() {
             subtitle="Cantidad + descripción (ej. 1 Retro CAT 320)."
             icon="construct-outline"
             items={equipo}
-            catalog={catalogEquipo}
+            catalog={effectiveCatalogEquipo}
             onAdd={() => addItem('equipo')}
             onRemove={(id) => removeItem('equipo', id)}
             onInc={(id, d) => incQty('equipo', id, d)}
@@ -1501,6 +1631,21 @@ const styles = StyleSheet.create({
     minHeight: 44,
   },
   inputMulti: { minHeight: 90, textAlignVertical: 'top' },
+  // Selector de severidad (semáforo)
+  sevRow: { flexDirection: 'row', gap: 8, flexWrap: 'wrap' },
+  sevChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 999,
+    borderWidth: 1.5,
+    borderColor: colors.border,
+    backgroundColor: '#fff',
+    minHeight: 36,
+  },
+  sevChipTxt: { fontSize: 13, fontWeight: '700', color: colors.text },
 
   selectorBtn: {
     flexDirection: 'row',

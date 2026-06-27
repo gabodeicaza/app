@@ -9,7 +9,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { api, Announcement, Area } from '@/src/api';
+import { api, Announcement, Area, LocationNode } from '@/src/api';
 import { colors, radius, shadow, spacing } from '@/src/theme';
 import { confirm } from '@/src/utils/confirm';
 
@@ -21,6 +21,7 @@ type Editing = {
   pinned: boolean;
   jerarquia: Jerarquia;
   audiencia: string; // 'general' o area_id
+  node_id: string | null; // Vincula la noticia a un nodo específico
 } | null;
 
 const JERARQUIA_COLORS: Record<string, { bg: string; bd: string; fg: string; label: string; icon: any }> = {
@@ -36,6 +37,7 @@ export default function CoordAnnouncementsScreen() {
 
   const [items, setItems] = useState<Announcement[]>([]);
   const [areas, setAreas] = useState<Area[]>([]);
+  const [nodes, setNodes] = useState<LocationNode[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [editing, setEditing] = useState<Editing>(null);
@@ -46,12 +48,14 @@ export default function CoordAnnouncementsScreen() {
     try {
       if (!silent) setLoading(true);
       setError(null);
-      const [data, ars] = await Promise.all([
+      const [data, ars, nds] = await Promise.all([
         api.listAnnouncements(pid),
         api.listAreas(pid).catch(() => [] as Area[]),
+        api.listNodes(pid).catch(() => [] as LocationNode[]),
       ]);
       setItems(data);
       setAreas(ars || []);
+      setNodes(nds || []);
     } catch (e: any) {
       setError(e?.message || 'Error al cargar');
     } finally {
@@ -76,13 +80,17 @@ export default function CoordAnnouncementsScreen() {
         await api.updateAnnouncement(editing.id, {
           title: t, body: b, pinned: editing.pinned,
           jerarquia: editing.jerarquia,
+          severidad: editing.jerarquia,
           audiencia: aud,
+          node_id: editing.node_id,
         });
       } else {
         await api.createAnnouncement(pid, {
           title: t, body: b, pinned: editing.pinned,
           jerarquia: editing.jerarquia,
+          severidad: editing.jerarquia,
           audiencia: aud,
+          node_id: editing.node_id,
         });
       }
       setEditing(null);
@@ -129,7 +137,7 @@ export default function CoordAnnouncementsScreen() {
           <Text style={styles.subtitle}>Anuncios visibles para todo el proyecto</Text>
         </View>
         <Pressable
-          onPress={() => setEditing({ title: '', body: '', pinned: false, jerarquia: null, audiencia: 'general' })}
+          onPress={() => setEditing({ title: '', body: '', pinned: false, jerarquia: null, audiencia: 'general', node_id: null })}
           style={styles.newBtn}
         >
           <Ionicons name="add" size={18} color="#fff" />
@@ -161,7 +169,7 @@ export default function CoordAnnouncementsScreen() {
             <Text style={styles.emptyMsg}>
               Publica anuncios visibles para Sub-Coordinadores y Especialistas del proyecto.
             </Text>
-            <Pressable style={styles.emptyBtn} onPress={() => setEditing({ title: '', body: '', pinned: false, jerarquia: null, audiencia: 'general' })}>
+            <Pressable style={styles.emptyBtn} onPress={() => setEditing({ title: '', body: '', pinned: false, jerarquia: null, audiencia: 'general', node_id: null })}>
               <Ionicons name="add" size={16} color="#fff" />
               <Text style={styles.emptyBtnTxt}>Publicar primera</Text>
             </Pressable>
@@ -210,6 +218,7 @@ export default function CoordAnnouncementsScreen() {
                       pinned: a.pinned,
                       jerarquia: (j === 'urgente' || j === 'importante' || j === 'informativo') ? (j as Jerarquia) : null,
                       audiencia: a.audiencia || 'general',
+                      node_id: (a as any).node_id || null,
                     })}
                     style={styles.iconAction}
                   >
@@ -340,6 +349,38 @@ export default function CoordAnnouncementsScreen() {
                       >
                         <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: ar.color || colors.primary }} />
                         <Text style={[styles.audChipTxt, active && styles.audChipTxtActive]}>{ar.name}</Text>
+                      </Pressable>
+                    );
+                  })}
+                </ScrollView>
+              </View>
+
+              {/* P0 Mega-Feature: vinculación opcional a un nodo del árbol */}
+              <View>
+                <Text style={styles.label}>Vincular a Nodo (opcional)</Text>
+                <Text style={styles.helper}>
+                  Sí lo seleccionas, esta noticia aparecerá en la sección del nodo al exportar reportes (sólo si es Importante o Urgente).
+                </Text>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6, paddingVertical: 6 }}>
+                  <Pressable
+                    onPress={() => setEditing((e) => e ? { ...e, node_id: null } : e)}
+                    style={[styles.audChip, !editing?.node_id && styles.audChipActive]}
+                  >
+                    <Ionicons name="remove-circle-outline" size={12} color={!editing?.node_id ? '#fff' : colors.textMuted} />
+                    <Text style={[styles.audChipTxt, !editing?.node_id && styles.audChipTxtActive]}>Sin nodo</Text>
+                  </Pressable>
+                  {nodes.map((nd) => {
+                    const active = editing?.node_id === nd.id;
+                    return (
+                      <Pressable
+                        key={nd.id}
+                        onPress={() => setEditing((e) => e ? { ...e, node_id: nd.id } : e)}
+                        style={[styles.audChip, active && styles.audChipActive]}
+                      >
+                        <Ionicons name="git-branch-outline" size={12} color={active ? '#fff' : colors.textMuted} />
+                        <Text style={[styles.audChipTxt, active && styles.audChipTxtActive]} numberOfLines={1}>
+                          {nd.name}
+                        </Text>
                       </Pressable>
                     );
                   })}

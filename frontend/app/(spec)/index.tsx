@@ -30,9 +30,10 @@ import { NodeProgressPanel } from '@/src/components/NodeProgressPanel';
 import { ReportPreviewSheet } from '@/src/components/ReportPreviewSheet';
 import { HistoryCalendarModal } from '@/src/components/HistoryCalendarModal';
 
-// === Configuración del flujo de exportación en 2 pasos ============================
+// === Configuración del flujo de exportación en 3 pasos ============================
 type ExportFormat = 'pdf' | 'docx' | 'pptx';
-type ExportStep = 'period' | 'format';
+type ExportStep = 'period' | 'scope' | 'format';
+type ExportScope = 'mine' | 'area';
 
 const PERIOD_OPTIONS: { value: ReportPeriod; label: string; sub: string; icon: keyof typeof Ionicons.glyphMap }[] = [
   { value: 'today',     label: 'Hoy',         sub: 'Reportes capturados hoy',  icon: 'today-outline' },
@@ -44,7 +45,7 @@ const PERIOD_OPTIONS: { value: ReportPeriod; label: string; sub: string; icon: k
 const FORMAT_OPTIONS: { value: ExportFormat; label: string; sub: string; icon: keyof typeof Ionicons.glyphMap; tint: string }[] = [
   { value: 'pdf',  label: 'PDF',        sub: 'Documento horizontal listo para imprimir', icon: 'document-text', tint: '#DC2626' },
   { value: 'docx', label: 'Word',       sub: 'Editable en Microsoft Word',                icon: 'document',      tint: '#1D4ED8' },
-  { value: 'pptx', label: 'PowerPoint', sub: 'Presentación con portada DIRAC',            icon: 'easel',         tint: '#B45309' },
+  { value: 'pptx', label: 'PowerPoint', sub: 'Presentación institucional 16:9',            icon: 'easel',         tint: '#B45309' },
 ];
 
 type RangeKey = 'today' | 'week' | 'month' | 'all';
@@ -70,6 +71,7 @@ export default function SpecFeedScreen() {
   const [exportOpen, setExportOpen] = useState(false);
   const [exportStep, setExportStep] = useState<ExportStep>('period');
   const [exportPeriod, setExportPeriod] = useState<ReportPeriod>('today');
+  const [exportScope, setExportScope] = useState<ExportScope>('mine');
   const [exportBusy, setExportBusy] = useState(false);
   const [calendarOpen, setCalendarOpen] = useState(false);
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
@@ -165,10 +167,11 @@ export default function SpecFeedScreen() {
     router.replace('/(auth)/login');
   }
 
-  // === Flujo de exportación en 2 pasos =========================================
+  // === Flujo de exportación en 3 pasos =========================================
   function openExportFlow() {
     setExportStep('period');
     setExportPeriod('today');
+    setExportScope('mine');
     setExportOpen(true);
   }
 
@@ -181,6 +184,11 @@ export default function SpecFeedScreen() {
 
   function onPickPeriod(p: ReportPeriod) {
     setExportPeriod(p);
+    setExportStep('scope');
+  }
+
+  function onPickScope(s: ExportScope) {
+    setExportScope(s);
     setExportStep('format');
   }
 
@@ -188,17 +196,18 @@ export default function SpecFeedScreen() {
     if (!projectId) return;
     try {
       setExportBusy(true);
+      const opts = { scope: exportScope } as { scope: ExportScope };
       let blob: Blob; let filename: string; let mime: string;
       if (fmt === 'docx') {
-        const r = await api.downloadReportsDocx(projectId, exportPeriod);
+        const r = await api.downloadReportsDocx(projectId, exportPeriod, opts);
         blob = r.blob; filename = r.filename;
         mime = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
       } else if (fmt === 'pptx') {
-        const r = await api.downloadReportsPptx(projectId, exportPeriod);
+        const r = await api.downloadReportsPptx(projectId, exportPeriod, opts);
         blob = r.blob; filename = r.filename;
         mime = 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
       } else {
-        const r = await api.downloadReportsPdf(projectId, exportPeriod);
+        const r = await api.downloadReportsPdf(projectId, exportPeriod, opts);
         blob = r.blob; filename = r.filename;
         mime = 'application/pdf';
       }
@@ -479,25 +488,35 @@ export default function SpecFeedScreen() {
 
             {/* Header con título y paso actual */}
             <View style={styles.exportHeader}>
-              {exportStep === 'format' ? (
+              {exportStep === 'period' ? (
+                <View style={styles.exportBack} />
+              ) : (
                 <Pressable
-                  onPress={() => !exportBusy && setExportStep('period')}
+                  onPress={() => {
+                    if (exportBusy) return;
+                    if (exportStep === 'format') setExportStep('scope');
+                    else if (exportStep === 'scope') setExportStep('period');
+                  }}
                   hitSlop={10}
                   style={styles.exportBack}
                 >
                   <Ionicons name="chevron-back" size={22} color={colors.text} />
                 </Pressable>
-              ) : (
-                <View style={styles.exportBack} />
               )}
               <View style={{ flex: 1 }}>
                 <Text style={styles.exportTitle}>
-                  {exportStep === 'period' ? 'Exportar Reportes' : 'Elegir formato'}
+                  {exportStep === 'period'
+                    ? 'Exportar Reportes'
+                    : exportStep === 'scope'
+                    ? 'Alcance del reporte'
+                    : 'Elegir formato'}
                 </Text>
                 <Text style={styles.exportSubtitle}>
                   {exportStep === 'period'
-                    ? 'Paso 1 de 2 · Selecciona el período'
-                    : `Paso 2 de 2 · Período: ${PERIOD_OPTIONS.find((p) => p.value === exportPeriod)?.label ?? ''}`}
+                    ? 'Paso 1 de 3 · Selecciona el período'
+                    : exportStep === 'scope'
+                    ? `Paso 2 de 3 · ${PERIOD_OPTIONS.find((p) => p.value === exportPeriod)?.label ?? ''}`
+                    : `Paso 3 de 3 · ${exportScope === 'mine' ? 'Sólo mis reportes' : 'Mi área'}`}
                 </Text>
               </View>
               <Pressable
@@ -510,9 +529,16 @@ export default function SpecFeedScreen() {
               </Pressable>
             </View>
 
-            {/* Indicador de progreso */}
+            {/* Indicador de progreso (3 pasos) */}
             <View style={styles.exportSteps}>
               <View style={[styles.exportStepDot, styles.exportStepDotActive]} />
+              <View style={[styles.exportStepBar, (exportStep === 'scope' || exportStep === 'format') && styles.exportStepBarActive]} />
+              <View
+                style={[
+                  styles.exportStepDot,
+                  (exportStep === 'scope' || exportStep === 'format') && styles.exportStepDotActive,
+                ]}
+              />
               <View style={[styles.exportStepBar, exportStep === 'format' && styles.exportStepBarActive]} />
               <View
                 style={[
@@ -547,6 +573,47 @@ export default function SpecFeedScreen() {
                     </Pressable>
                   );
                 })}
+              </View>
+            ) : exportStep === 'scope' ? (
+              <View style={{ paddingHorizontal: spacing.md, paddingBottom: spacing.md }}>
+                <Pressable
+                  onPress={() => onPickScope('mine')}
+                  style={({ pressed }) => [
+                    styles.exportItem,
+                    exportScope === 'mine' && styles.exportItemActive,
+                    pressed && { opacity: 0.85 },
+                  ]}
+                >
+                  <View style={[styles.exportItemIcon, { backgroundColor: '#EEF2FF' }]}>
+                    <Ionicons name="person-outline" size={20} color="#1E3A8A" />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.exportItemTitle}>Mis reportes</Text>
+                    <Text style={styles.exportItemSub}>
+                      Sólo los reportes capturados por mí (excluye severidad Informativo).
+                    </Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={20} color={colors.textMuted} />
+                </Pressable>
+                <Pressable
+                  onPress={() => onPickScope('area')}
+                  style={({ pressed }) => [
+                    styles.exportItem,
+                    exportScope === 'area' && styles.exportItemActive,
+                    pressed && { opacity: 0.85 },
+                  ]}
+                >
+                  <View style={[styles.exportItemIcon, { backgroundColor: '#FEF3C7' }]}>
+                    <Ionicons name="grid-outline" size={20} color="#B45309" />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.exportItemTitle}>Mi área</Text>
+                    <Text style={styles.exportItemSub}>
+                      Reportes de todos los especialistas de mi misma área.
+                    </Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={20} color={colors.textMuted} />
+                </Pressable>
               </View>
             ) : (
               <View style={{ paddingHorizontal: spacing.md, paddingBottom: spacing.md }}>

@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, ActivityIndicator, Pressable, Alert, Platform,
-  Linking, Modal, Image,
+  Linking, Modal, Image, TextInput, KeyboardAvoidingView,
 } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import * as DocumentPicker from 'expo-document-picker';
@@ -42,7 +42,7 @@ function formatBytes(bytes?: number | null): string {
 
 // === Flujo de Exportación en 2 pasos ====================================
 type ExportFormat = 'pdf' | 'docx' | 'pptx' | 'xlsx';
-type ExportStep = 'period' | 'format';
+type ExportStep = 'period' | 'area' | 'format';
 
 const PERIOD_OPTIONS: { value: ReportPeriod; label: string; sub: string; icon: keyof typeof Ionicons.glyphMap }[] = [
   { value: 'today',     label: 'Hoy',         sub: 'Reportes capturados hoy',  icon: 'today-outline' },
@@ -85,11 +85,14 @@ export default function ProjectDetailScreen() {
   // Tabs: Operación / Configuración
   const [activeTab, setActiveTab] = useState<'operacion' | 'configuracion'>('operacion');
 
-  // Exportación unificada (2 pasos: período → formato)
+  // Exportación unificada (3 pasos: período → área → formato)
   const [exportOpen, setExportOpen] = useState(false);
   const [exportStep, setExportStep] = useState<ExportStep>('period');
   const [exportPeriod, setExportPeriod] = useState<ReportPeriod>('today');
   const [exportBusy, setExportBusy] = useState(false);
+  // P0 Mega-Feature: filtro por Área para exportación
+  const [exportAreas, setExportAreas] = useState<Array<{ id: string; name: string; color?: string }>>([]);
+  const [exportAreaId, setExportAreaId] = useState<string | null>(null); // null = "Todas"
 
   // Preview de reporte (tap en feed)
   const [previewItem, setPreviewItem] = useState<FeedItem | null>(null);
@@ -98,6 +101,15 @@ export default function ProjectDetailScreen() {
   const [refBusy, setRefBusy] = useState(false);
   const [refUploadName, setRefUploadName] = useState<string | null>(null); // nombre archivo en curso
   const [refOpeningId, setRefOpeningId] = useState<string | null>(null);   // file_id en descarga
+
+  // P0 Mega-Feature: configuración de Contrato y Catálogos dinámicos
+  const [catModalOpen, setCatModalOpen] = useState(false);
+  const [catSaving, setCatSaving] = useState(false);
+  const [catObjeto, setCatObjeto] = useState('');
+  const [catPersonalList, setCatPersonalList] = useState<string[]>([]);
+  const [catEquipoList, setCatEquipoList] = useState<string[]>([]);
+  const [catPersonalDraft, setCatPersonalDraft] = useState('');
+  const [catEquipoDraft, setCatEquipoDraft] = useState('');
 
   const load = useCallback(async () => {
     try {
@@ -331,11 +343,74 @@ export default function ProjectDetailScreen() {
     catch (e: any) { Alert.alert('Error', e?.message || 'No se pudo archivar'); }
   }
 
-  // === Exportación: flujo en 2 pasos =========================================
+  // === Catálogos del proyecto: objeto del contrato + categorías personal/equipo
+  function openCatModal() {
+    if (!project) return;
+    setCatObjeto(project.objeto_contrato || '');
+    setCatPersonalList(((project as any).categorias_personal as string[]) || []);
+    setCatEquipoList(((project as any).categorias_equipo as string[]) || []);
+    setCatPersonalDraft('');
+    setCatEquipoDraft('');
+    setCatModalOpen(true);
+  }
+
+  function addCatPersonal() {
+    const t = catPersonalDraft.trim();
+    if (!t) return;
+    setCatPersonalList((arr) => {
+      const next = Array.from(new Set([...arr, t]));
+      return next;
+    });
+    setCatPersonalDraft('');
+  }
+
+  function addCatEquipo() {
+    const t = catEquipoDraft.trim();
+    if (!t) return;
+    setCatEquipoList((arr) => {
+      const next = Array.from(new Set([...arr, t]));
+      return next;
+    });
+    setCatEquipoDraft('');
+  }
+
+  async function saveCatalogos() {
+    if (!pid || catSaving) return;
+    try {
+      setCatSaving(true);
+      // 1) Guardar objeto_contrato vía updateProject
+      const upd = await api.updateProject(pid, {
+        objeto_contrato: catObjeto.trim() || null,
+      } as any);
+      // 2) Guardar catálogos dinámicos
+      const upd2 = await api.setProjectCatalogos(pid, {
+        categorias_personal: catPersonalList,
+        categorias_equipo: catEquipoList,
+      });
+      setProject((p) => ({ ...(p || ({} as any)), ...upd, ...upd2 }));
+      setCatModalOpen(false);
+      Alert.alert('Guardado', 'La configuración del proyecto se actualizó correctamente.');
+    } catch (e: any) {
+      Alert.alert('No se pudo guardar', e?.message || 'Inténtalo nuevamente.');
+    } finally {
+      setCatSaving(false);
+    }
+  }
+
+  // === Exportación: flujo en 3 pasos =========================================
   function openExportFlow() {
     setExportStep('period');
     setExportPeriod('today');
+    setExportAreaId(null);
     setExportOpen(true);
+    // Cargar áreas en paralelo
+    if (pid) {
+      api.listAreas(pid)
+        .then((list) => setExportAreas(
+          (list || []).map((a) => ({ id: a.id, name: a.name, color: a.color })),
+        ))
+        .catch(() => setExportAreas([]));
+    }
   }
 
   function closeExportFlow() {
@@ -346,6 +421,11 @@ export default function ProjectDetailScreen() {
 
   function onPickPeriod(p: ReportPeriod) {
     setExportPeriod(p);
+    setExportStep('area');
+  }
+
+  function onPickArea(areaId: string | null) {
+    setExportAreaId(areaId);
     setExportStep('format');
   }
 
@@ -377,24 +457,25 @@ export default function ProjectDetailScreen() {
           if (await Sharing.isAvailableAsync()) {
             await Sharing.shareAsync(dest, {
               mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-              dialogTitle: 'Compartir reporte SynCo',
+              dialogTitle: 'Compartir reporte',
             });
           } else {
             Alert.alert('Listo', `Archivo guardado en caché:\n${dest}`);
           }
         }
       } else {
+        const opts = exportAreaId ? { area_id: exportAreaId } : undefined;
         let blob: Blob; let filename: string; let mime: string;
         if (fmt === 'docx') {
-          const r = await api.downloadReportsDocx(pid, exportPeriod);
+          const r = await api.downloadReportsDocx(pid, exportPeriod, opts);
           blob = r.blob; filename = r.filename;
           mime = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
         } else if (fmt === 'pptx') {
-          const r = await api.downloadReportsPptx(pid, exportPeriod);
+          const r = await api.downloadReportsPptx(pid, exportPeriod, opts);
           blob = r.blob; filename = r.filename;
           mime = 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
         } else {
-          const r = await api.downloadReportsPdf(pid, exportPeriod);
+          const r = await api.downloadReportsPdf(pid, exportPeriod, opts);
           blob = r.blob; filename = r.filename;
           mime = 'application/pdf';
         }
@@ -507,6 +588,12 @@ export default function ProjectDetailScreen() {
               title="Invitaciones"
               subtitle="Genera tokens para Sub-Coord. y Especialistas"
               onPress={() => router.push({ pathname: '/(coord)/projects/[id]/invitations', params: { id: pid } })}
+            />
+            <ActionTile
+              icon="document-text-outline"
+              title="Contrato y Catálogos"
+              subtitle="Objeto del contrato · Categorías de personal y equipo"
+              onPress={openCatModal}
             />
             <ActionTile
               icon="newspaper-outline"
@@ -877,25 +964,35 @@ export default function ProjectDetailScreen() {
             <View style={styles.exportHandle} />
 
             <View style={styles.exportHeader}>
-              {exportStep === 'format' ? (
+              {exportStep === 'period' ? (
+                <View style={styles.exportBack} />
+              ) : (
                 <Pressable
-                  onPress={() => !exportBusy && setExportStep('period')}
+                  onPress={() => {
+                    if (exportBusy) return;
+                    if (exportStep === 'format') setExportStep('area');
+                    else if (exportStep === 'area') setExportStep('period');
+                  }}
                   hitSlop={10}
                   style={styles.exportBack}
                 >
                   <Ionicons name="chevron-back" size={22} color={colors.text} />
                 </Pressable>
-              ) : (
-                <View style={styles.exportBack} />
               )}
               <View style={{ flex: 1 }}>
                 <Text style={styles.exportTitle}>
-                  {exportStep === 'period' ? 'Exportar Reportes' : 'Elegir formato'}
+                  {exportStep === 'period'
+                    ? 'Exportar Reportes'
+                    : exportStep === 'area'
+                    ? 'Filtrar por Área'
+                    : 'Elegir formato'}
                 </Text>
                 <Text style={styles.exportSubtitle}>
                   {exportStep === 'period'
-                    ? 'Paso 1 de 2 · Selecciona el período'
-                    : `Paso 2 de 2 · Período: ${PERIOD_OPTIONS.find((p) => p.value === exportPeriod)?.label ?? ''}`}
+                    ? 'Paso 1 de 3 · Selecciona el período'
+                    : exportStep === 'area'
+                    ? `Paso 2 de 3 · Período: ${PERIOD_OPTIONS.find((p) => p.value === exportPeriod)?.label ?? ''}`
+                    : `Paso 3 de 3 · ${exportAreaId ? exportAreas.find((a) => a.id === exportAreaId)?.name ?? 'Área' : 'Todas las áreas'}`}
                 </Text>
               </View>
               <Pressable
@@ -910,6 +1007,13 @@ export default function ProjectDetailScreen() {
 
             <View style={styles.exportSteps}>
               <View style={[styles.exportStepDot, styles.exportStepDotActive]} />
+              <View style={[styles.exportStepBar, (exportStep === 'area' || exportStep === 'format') && styles.exportStepBarActive]} />
+              <View
+                style={[
+                  styles.exportStepDot,
+                  (exportStep === 'area' || exportStep === 'format') && styles.exportStepDotActive,
+                ]}
+              />
               <View style={[styles.exportStepBar, exportStep === 'format' && styles.exportStepBarActive]} />
               <View
                 style={[
@@ -944,6 +1048,57 @@ export default function ProjectDetailScreen() {
                     </Pressable>
                   );
                 })}
+              </View>
+            ) : exportStep === 'area' ? (
+              <View style={{ paddingHorizontal: spacing.md, paddingBottom: spacing.md }}>
+                <Pressable
+                  onPress={() => onPickArea(null)}
+                  style={({ pressed }) => [
+                    styles.exportItem,
+                    exportAreaId === null && styles.exportItemActive,
+                    pressed && { opacity: 0.85 },
+                  ]}
+                >
+                  <View style={[styles.exportItemIcon, { backgroundColor: '#EEF2FF' }]}>
+                    <Ionicons name="apps-outline" size={20} color="#1E3A8A" />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.exportItemTitle}>Todas las áreas</Text>
+                    <Text style={styles.exportItemSub}>Incluye todos los reportes Importantes y Urgentes del proyecto</Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={20} color={colors.textMuted} />
+                </Pressable>
+                {exportAreas.length === 0 ? (
+                  <Text style={[styles.exportBusyHint, { marginTop: 12 }]}>
+                    Este proyecto aún no tiene áreas configuradas. Se exportarán todos los reportes.
+                  </Text>
+                ) : (
+                  exportAreas.map((a) => (
+                    <Pressable
+                      key={a.id}
+                      onPress={() => onPickArea(a.id)}
+                      style={({ pressed }) => [
+                        styles.exportItem,
+                        exportAreaId === a.id && styles.exportItemActive,
+                        pressed && { opacity: 0.85 },
+                      ]}
+                    >
+                      <View
+                        style={[
+                          styles.exportItemIcon,
+                          { backgroundColor: (a.color || '#1E3A8A') + '22' },
+                        ]}
+                      >
+                        <Ionicons name="grid-outline" size={20} color={a.color || '#1E3A8A'} />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.exportItemTitle}>{a.name}</Text>
+                        <Text style={styles.exportItemSub}>Sólo reportes del área seleccionada</Text>
+                      </View>
+                      <Ionicons name="chevron-forward" size={20} color={colors.textMuted} />
+                    </Pressable>
+                  ))
+                )}
               </View>
             ) : (
               <View style={{ paddingHorizontal: spacing.md, paddingBottom: spacing.md }}>
@@ -989,6 +1144,156 @@ export default function ProjectDetailScreen() {
         item={previewItem}
         onClose={() => setPreviewItem(null)}
       />
+
+      {/* ===== Modal: Contrato y Catálogos (P0 Mega-Feature) ===== */}
+      <Modal
+        visible={catModalOpen}
+        animationType="slide"
+        transparent
+        onRequestClose={() => !catSaving && setCatModalOpen(false)}
+      >
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          style={styles.exportBackdrop}
+        >
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => !catSaving && setCatModalOpen(false)} />
+          <View style={[styles.exportSheet, { maxHeight: '85%' }]}>
+            <View style={styles.exportHandle} />
+            <View style={styles.exportHeader}>
+              <View style={styles.exportBack} />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.exportTitle}>Contrato y Catálogos</Text>
+                <Text style={styles.exportSubtitle}>
+                  Configura el objeto del contrato y las categorías que verán los especialistas al crear reportes.
+                </Text>
+              </View>
+              <Pressable
+                onPress={() => !catSaving && setCatModalOpen(false)}
+                hitSlop={10}
+                style={styles.exportBack}
+              >
+                <Ionicons name="close" size={22} color={colors.text} />
+              </Pressable>
+            </View>
+            <ScrollView
+              keyboardShouldPersistTaps="handled"
+              contentContainerStyle={{ paddingHorizontal: spacing.md, paddingBottom: spacing.lg, gap: spacing.md }}
+            >
+              <View>
+                <Text style={styles.catLabel}>Objeto del contrato</Text>
+                <Text style={styles.catHelper}>
+                  Descripción institucional. Aparece en la portada de los PDF/DOCX/PPTX.
+                </Text>
+                <TextInput
+                  value={catObjeto}
+                  onChangeText={setCatObjeto}
+                  placeholder="Ej. Supervisión técnica de la construcción del Tramo III…"
+                  placeholderTextColor={colors.textMuted}
+                  multiline
+                  numberOfLines={3}
+                  textAlignVertical="top"
+                  style={styles.catTextArea}
+                  maxLength={600}
+                />
+                <Text style={styles.catCounter}>{catObjeto.length} / 600</Text>
+              </View>
+
+              <View>
+                <Text style={styles.catLabel}>Categorías de personal</Text>
+                <Text style={styles.catHelper}>
+                  Roles disponibles al capturar un reporte (Topógrafo, Cadenero, Brigadista…).
+                </Text>
+                <View style={styles.catChipsWrap}>
+                  {catPersonalList.map((it, idx) => (
+                    <View key={`${it}-${idx}`} style={styles.catChip}>
+                      <Text style={styles.catChipTxt}>{it}</Text>
+                      <Pressable
+                        onPress={() => setCatPersonalList((arr) => arr.filter((x) => x !== it))}
+                        hitSlop={6}
+                      >
+                        <Ionicons name="close" size={14} color="#1E3A8A" />
+                      </Pressable>
+                    </View>
+                  ))}
+                  {catPersonalList.length === 0 && (
+                    <Text style={styles.catEmpty}>Aún no hay categorías; agrega una abajo.</Text>
+                  )}
+                </View>
+                <View style={styles.catInputRow}>
+                  <TextInput
+                    value={catPersonalDraft}
+                    onChangeText={setCatPersonalDraft}
+                    onSubmitEditing={addCatPersonal}
+                    placeholder="Nueva categoría de personal"
+                    placeholderTextColor={colors.textMuted}
+                    style={styles.catInput}
+                    returnKeyType="done"
+                  />
+                  <Pressable onPress={addCatPersonal} style={styles.catAddBtn}>
+                    <Ionicons name="add" size={20} color="#fff" />
+                  </Pressable>
+                </View>
+              </View>
+
+              <View>
+                <Text style={styles.catLabel}>Categorías de equipo</Text>
+                <Text style={styles.catHelper}>
+                  Equipo disponible al capturar un reporte (Estación total, GPS RTK, Nivel…).
+                </Text>
+                <View style={styles.catChipsWrap}>
+                  {catEquipoList.map((it, idx) => (
+                    <View key={`${it}-${idx}`} style={styles.catChip}>
+                      <Text style={styles.catChipTxt}>{it}</Text>
+                      <Pressable
+                        onPress={() => setCatEquipoList((arr) => arr.filter((x) => x !== it))}
+                        hitSlop={6}
+                      >
+                        <Ionicons name="close" size={14} color="#1E3A8A" />
+                      </Pressable>
+                    </View>
+                  ))}
+                  {catEquipoList.length === 0 && (
+                    <Text style={styles.catEmpty}>Aún no hay categorías; agrega una abajo.</Text>
+                  )}
+                </View>
+                <View style={styles.catInputRow}>
+                  <TextInput
+                    value={catEquipoDraft}
+                    onChangeText={setCatEquipoDraft}
+                    onSubmitEditing={addCatEquipo}
+                    placeholder="Nueva categoría de equipo"
+                    placeholderTextColor={colors.textMuted}
+                    style={styles.catInput}
+                    returnKeyType="done"
+                  />
+                  <Pressable onPress={addCatEquipo} style={styles.catAddBtn}>
+                    <Ionicons name="add" size={20} color="#fff" />
+                  </Pressable>
+                </View>
+              </View>
+
+              <Pressable
+                onPress={saveCatalogos}
+                disabled={catSaving}
+                style={({ pressed }) => [
+                  styles.catSaveBtn,
+                  catSaving && { opacity: 0.6 },
+                  pressed && !catSaving && { opacity: 0.9 },
+                ]}
+              >
+                {catSaving ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <>
+                    <Ionicons name="save-outline" size={18} color="#fff" />
+                    <Text style={styles.catSaveTxt}>Guardar configuración</Text>
+                  </>
+                )}
+              </Pressable>
+            </ScrollView>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
     </View>
   );
 }
@@ -1391,4 +1696,103 @@ const styles = StyleSheet.create({
     borderRadius: radius.md,
   },
   previewCloseTxt: { color: '#fff', fontSize: 14, fontWeight: '800' },
+
+  // ===== Estilos del modal Contrato y Catálogos (P0 Mega-Feature) =====
+  catLabel: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: colors.text,
+    marginBottom: 4,
+    textTransform: 'uppercase',
+    letterSpacing: 0.3,
+  },
+  catHelper: {
+    fontSize: 12,
+    color: colors.textMuted,
+    marginBottom: 8,
+  },
+  catTextArea: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    minHeight: 80,
+    color: colors.text,
+    backgroundColor: colors.surface,
+    fontSize: 14,
+  },
+  catCounter: {
+    marginTop: 4,
+    fontSize: 11,
+    color: colors.textMuted,
+    textAlign: 'right',
+  },
+  catChipsWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    paddingVertical: 6,
+    minHeight: 30,
+  },
+  catChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: '#EEF2FF',
+    borderWidth: 1,
+    borderColor: '#C7D2FE',
+  },
+  catChipTxt: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#1E3A8A',
+  },
+  catEmpty: {
+    fontSize: 12,
+    color: colors.textMuted,
+    fontStyle: 'italic',
+  },
+  catInputRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 6,
+  },
+  catInput: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    color: colors.text,
+    backgroundColor: colors.surface,
+    fontSize: 14,
+  },
+  catAddBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: radius.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.primary,
+  },
+  catSaveBtn: {
+    marginTop: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: colors.primary,
+    paddingVertical: 14,
+    borderRadius: radius.md,
+  },
+  catSaveTxt: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '800',
+  },
 });

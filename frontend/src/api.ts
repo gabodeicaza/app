@@ -1,5 +1,7 @@
 // SynCo v2.0 REST client.
 // Reads JWT from secure storage on every call.
+import { Platform } from 'react-native';
+import * as FileSystem from 'expo-file-system/legacy';
 import { storage } from '@/src/utils/storage';
 
 const BASE = (process.env.EXPO_PUBLIC_BACKEND_URL || '').replace(/\/$/, '') + '/api';
@@ -73,12 +75,15 @@ export interface Project {
   name: string;
   constructora: string;
   contract_number: string;
+  objeto_contrato?: string | null;
   start_date?: string | null;
   end_date?: string | null;
   description?: string | null;
   reference_files?: ReferenceFile[];
   contratistas_list?: string[];
   contratos_list?: string[];
+  categorias_personal?: string[];
+  categorias_equipo?: string[];
   created_by: string;
   created_at: string;
   archived?: boolean;
@@ -138,6 +143,7 @@ export interface Report {
   project_id: string;
   node_id: string;
   node_path_names: string[];
+  node_path_ids?: string[];
   measurement_type: string;
   measurement_value: Record<string, any>;
   area_id?: string | null;
@@ -145,11 +151,13 @@ export interface Report {
   notes?: string | null;
   avance?: string | null;
   observaciones?: string | null;
+  incidencias?: string | null;
+  severidad?: 'informativo' | 'importante' | 'urgente';
   contratista?: string | null;
   personnel: string[];
   equipment: string[];
   images: string[];
-  files: Array<{ filename: string; mime: string; data_base64: string }>;
+  files: { filename: string; mime: string; data_base64: string }[];
   primera_lectura?: number | null;
   ultima_lectura?: number | null;
   unidad?: string | null;
@@ -199,6 +207,9 @@ export interface Announcement {
   pinned: boolean;
   jerarquia?: 'urgente' | 'importante' | 'informativo' | null;
   audiencia?: string | null;
+  node_id?: string | null;
+  node_name?: string | null;
+  node_path_ids?: string[];
   author_id: string;
   author_name: string;
   author_role?: string;
@@ -434,7 +445,30 @@ export const api = {
         form.append('file', blob, fileName);
       }
     } else {
-      form.append('file', { uri: file.uri, name: fileName, type: mime } as any);
+      // En Android los content://, ph://, optimized:// no son siempre legibles
+      // por fetch/FormData → se copian al cacheDirectory y se usa file:// estable.
+      // En iOS los URIs file:// e incluso ph:// suelen funcionar tras
+      // copyToCacheDirectory:true del picker, pero por seguridad normalizamos también.
+      let normalizedUri = file.uri;
+      const needsCopy =
+        Platform.OS === 'android'
+          ? !file.uri.startsWith('file://')
+          : file.uri.startsWith('ph://') || file.uri.startsWith('assets-library://');
+      if (needsCopy) {
+        try {
+          const safeName = fileName.replace(/[^A-Za-z0-9._-]/g, '_');
+          const dest = `${FileSystem.cacheDirectory}upload_${Date.now()}_${safeName}`;
+          await FileSystem.copyAsync({ from: file.uri, to: dest });
+          normalizedUri = dest;
+        } catch (copyErr) {
+          // Si la copia falla, mantenemos el URI original y dejamos que fetch lo intente.
+        }
+      }
+      // Android exige el prefijo "file://"; algunos pickers devuelven sin él.
+      if (Platform.OS === 'android' && normalizedUri.startsWith('/')) {
+        normalizedUri = 'file://' + normalizedUri;
+      }
+      form.append('file', { uri: normalizedUri, name: fileName, type: mime } as any);
     }
     const headers = await authHeader();
     const res = await fetch(`${BASE}/projects/${pid}/upload-file`, {
@@ -501,6 +535,14 @@ export const api = {
     request<Area>('POST', `/projects/${pid}/areas`, body),
   deleteArea: (aid: string) => request<{ ok: boolean }>('DELETE', `/areas/${aid}`),
 
+  // Catálogos dinámicos del Proyecto (sólo Coordinador General)
+  setProjectCatalogos: (pid: string, body: {
+    contratistas_list?: string[];
+    contratos_list?: string[];
+    categorias_personal?: string[];
+    categorias_equipo?: string[];
+  }) => request<Project>('PUT', `/projects/${pid}/catalogos`, body),
+
   // Invitations (admin)
   listInvitations: (pid: string) => request<Invitation[]>('GET', `/projects/${pid}/invitations`),
   createInvitation: (pid: string, body: {
@@ -524,11 +566,13 @@ export const api = {
     notes?: string | null;
     avance?: string | null;
     observaciones?: string | null;
+    incidencias?: string | null;
+    severidad?: 'informativo' | 'importante' | 'urgente';
     contratista?: string | null;
     personnel?: string[];
     equipment?: string[];
     images?: string[];
-    files?: Array<{ filename: string; mime: string; data_base64: string }>;
+    files?: { filename: string; mime: string; data_base64: string }[];
     primera_lectura?: number | null;
     ultima_lectura?: number | null;
     unidad?: string | null;
@@ -566,9 +610,9 @@ export const api = {
   // ---- Announcements (Noticias) -------------------------------------------
   listAnnouncements: (pid: string) =>
     request<Announcement[]>('GET', `/projects/${pid}/announcements`),
-  createAnnouncement: (pid: string, payload: { title: string; body: string; pinned?: boolean; jerarquia?: 'urgente' | 'importante' | 'informativo' | null; audiencia?: string | null }) =>
+  createAnnouncement: (pid: string, payload: { title: string; body: string; pinned?: boolean; jerarquia?: 'urgente' | 'importante' | 'informativo' | null; severidad?: 'urgente' | 'importante' | 'informativo' | null; audiencia?: string | null; node_id?: string | null }) =>
     request<Announcement>('POST', `/projects/${pid}/announcements`, payload),
-  updateAnnouncement: (aid: string, payload: { title?: string; body?: string; pinned?: boolean; jerarquia?: 'urgente' | 'importante' | 'informativo' | null; audiencia?: string | null }) =>
+  updateAnnouncement: (aid: string, payload: { title?: string; body?: string; pinned?: boolean; jerarquia?: 'urgente' | 'importante' | 'informativo' | null; severidad?: 'urgente' | 'importante' | 'informativo' | null; audiencia?: string | null; node_id?: string | null }) =>
     request<Announcement>('PATCH', `/announcements/${aid}`, payload),
   deleteAnnouncement: (aid: string) =>
     request<{ ok: boolean }>('DELETE', `/announcements/${aid}`),
@@ -632,9 +676,13 @@ export const api = {
   downloadReportsPdf: async (
     pid: string,
     period: 'today' | 'yesterday' | 'week' | 'month',
+    opts?: { area_id?: string | null; scope?: 'mine' | 'area' | null },
   ): Promise<{ blob: Blob; filename: string }> => {
     const tok = await storage.secureGet<string>('syncsite_token', '');
-    const res = await fetch(`${BASE}/projects/${pid}/export/reports.pdf?period=${period}`, {
+    const qs = new URLSearchParams({ period });
+    if (opts?.area_id) qs.set('area_id', opts.area_id);
+    if (opts?.scope) qs.set('scope', opts.scope);
+    const res = await fetch(`${BASE}/projects/${pid}/export/reports.pdf?${qs.toString()}`, {
       method: 'GET',
       headers: tok ? { Authorization: `Bearer ${tok}` } : {},
     });
@@ -646,7 +694,7 @@ export const api = {
     }
     const cd = res.headers.get('Content-Disposition') || '';
     const m = cd.match(/filename="?([^"]+)"?/);
-    const filename = (m && m[1]) || `synco_reportes_${period}.pdf`;
+    const filename = (m && m[1]) || `reporte_${period}.pdf`;
     const blob = await res.blob();
     return { blob, filename };
   },
@@ -655,9 +703,13 @@ export const api = {
   downloadReportsDocx: async (
     pid: string,
     period: 'today' | 'yesterday' | 'week' | 'month',
+    opts?: { area_id?: string | null; scope?: 'mine' | 'area' | null },
   ): Promise<{ blob: Blob; filename: string }> => {
     const tok = await storage.secureGet<string>('syncsite_token', '');
-    const res = await fetch(`${BASE}/projects/${pid}/export/reports.docx?period=${period}`, {
+    const qs = new URLSearchParams({ period });
+    if (opts?.area_id) qs.set('area_id', opts.area_id);
+    if (opts?.scope) qs.set('scope', opts.scope);
+    const res = await fetch(`${BASE}/projects/${pid}/export/reports.docx?${qs.toString()}`, {
       method: 'GET',
       headers: tok ? { Authorization: `Bearer ${tok}` } : {},
     });
@@ -669,7 +721,7 @@ export const api = {
     }
     const cd = res.headers.get('Content-Disposition') || '';
     const m = cd.match(/filename="?([^"]+)"?/);
-    const filename = (m && m[1]) || `synco_reportes_${period}.docx`;
+    const filename = (m && m[1]) || `reporte_${period}.docx`;
     const blob = await res.blob();
     return { blob, filename };
   },
@@ -678,9 +730,13 @@ export const api = {
   downloadReportsPptx: async (
     pid: string,
     period: 'today' | 'yesterday' | 'week' | 'month',
+    opts?: { area_id?: string | null; scope?: 'mine' | 'area' | null },
   ): Promise<{ blob: Blob; filename: string }> => {
     const tok = await storage.secureGet<string>('syncsite_token', '');
-    const res = await fetch(`${BASE}/projects/${pid}/export/reports.pptx?period=${period}`, {
+    const qs = new URLSearchParams({ period });
+    if (opts?.area_id) qs.set('area_id', opts.area_id);
+    if (opts?.scope) qs.set('scope', opts.scope);
+    const res = await fetch(`${BASE}/projects/${pid}/export/reports.pptx?${qs.toString()}`, {
       method: 'GET',
       headers: tok ? { Authorization: `Bearer ${tok}` } : {},
     });
@@ -692,7 +748,7 @@ export const api = {
     }
     const cd = res.headers.get('Content-Disposition') || '';
     const m = cd.match(/filename="?([^"]+)"?/);
-    const filename = (m && m[1]) || `synco_reportes_${period}.pptx`;
+    const filename = (m && m[1]) || `reporte_${period}.pptx`;
     const blob = await res.blob();
     return { blob, filename };
   },

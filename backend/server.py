@@ -145,12 +145,15 @@ class ProjectIn(BaseModel):
     name: str
     constructora: str
     contract_number: str
+    objeto_contrato: Optional[str] = None  # Descripción institucional del objeto del contrato
     start_date: Optional[str] = None  # ISO date "2026-01-15"
     end_date: Optional[str] = None
     description: Optional[str] = None
     reference_files: Optional[List[dict]] = None  # [{"name": str, "url": str}]
     contratistas_list: Optional[List[str]] = None  # Catálogo dinámico de contratistas
     contratos_list: Optional[List[str]] = None  # Catálogo dinámico de números de contrato
+    categorias_personal: Optional[List[str]] = None  # Catálogo de categorías de personal
+    categorias_equipo: Optional[List[str]] = None  # Catálogo de categorías de equipo
 
 
 class ProjectOut(BaseModel):
@@ -158,12 +161,15 @@ class ProjectOut(BaseModel):
     name: str
     constructora: str
     contract_number: str
+    objeto_contrato: Optional[str] = None
     start_date: Optional[str] = None
     end_date: Optional[str] = None
     description: Optional[str] = None
     reference_files: List[dict] = Field(default_factory=list)
     contratistas_list: List[str] = Field(default_factory=list)
     contratos_list: List[str] = Field(default_factory=list)
+    categorias_personal: List[str] = Field(default_factory=list)
+    categorias_equipo: List[str] = Field(default_factory=list)
     created_by: str
     created_at: datetime
     archived: bool = False
@@ -263,6 +269,8 @@ class ReportIn(BaseModel):
     notes: Optional[str] = None
     avance: Optional[str] = None
     observaciones: Optional[str] = None
+    incidencias: Optional[str] = None  # Notas sobre eventos/desviaciones del día
+    severidad: Optional[Literal["informativo", "importante", "urgente"]] = "informativo"
     contratista: Optional[str] = None
     personnel: List[str] = Field(default_factory=list)
     equipment: List[str] = Field(default_factory=list)
@@ -280,6 +288,7 @@ class ReportOut(BaseModel):
     project_id: str
     node_id: str
     node_path_names: List[str]
+    node_path_ids: List[str] = Field(default_factory=list)  # ids ancestrales para filtros
     measurement_type: str
     measurement_value: dict
     area_id: Optional[str] = None
@@ -287,6 +296,8 @@ class ReportOut(BaseModel):
     notes: Optional[str] = None
     avance: Optional[str] = None
     observaciones: Optional[str] = None
+    incidencias: Optional[str] = None
+    severidad: str = "informativo"
     contratista: Optional[str] = None
     personnel: List[str] = Field(default_factory=list)
     equipment: List[str] = Field(default_factory=list)
@@ -739,12 +750,15 @@ async def create_project(body: ProjectIn, user: dict = Depends(require_role(ROLE
         "name": body.name.strip(),
         "constructora": body.constructora.strip(),
         "contract_number": body.contract_number.strip(),
+        "objeto_contrato": (body.objeto_contrato or "").strip() or None,
         "start_date": body.start_date,
         "end_date": body.end_date,
         "description": (body.description or "").strip() or None,
         "reference_files": _sanitize_reference_files(body.reference_files),
         "contratistas_list": _sanitize_str_list(body.contratistas_list),
         "contratos_list": _sanitize_str_list(body.contratos_list),
+        "categorias_personal": _sanitize_str_list(body.categorias_personal),
+        "categorias_equipo": _sanitize_str_list(body.categorias_equipo),
         "created_by": user["id"],
         "created_at": datetime.now(timezone.utc),
         "archived": False,
@@ -761,6 +775,9 @@ async def get_project(pid: str, user: dict = Depends(current_user)):
     p.setdefault("reference_files", [])
     p.setdefault("contratistas_list", [])
     p.setdefault("contratos_list", [])
+    p.setdefault("categorias_personal", [])
+    p.setdefault("categorias_equipo", [])
+    p.setdefault("objeto_contrato", None)
     return p
 
 
@@ -770,6 +787,7 @@ async def update_project(pid: str, body: ProjectIn, user: dict = Depends(require
         "name": body.name.strip(),
         "constructora": body.constructora.strip(),
         "contract_number": body.contract_number.strip(),
+        "objeto_contrato": (body.objeto_contrato or "").strip() or None,
         "start_date": body.start_date,
         "end_date": body.end_date,
         "description": (body.description or "").strip() or None,
@@ -781,6 +799,10 @@ async def update_project(pid: str, body: ProjectIn, user: dict = Depends(require
         upd["contratistas_list"] = _sanitize_str_list(body.contratistas_list)
     if body.contratos_list is not None:
         upd["contratos_list"] = _sanitize_str_list(body.contratos_list)
+    if body.categorias_personal is not None:
+        upd["categorias_personal"] = _sanitize_str_list(body.categorias_personal)
+    if body.categorias_equipo is not None:
+        upd["categorias_equipo"] = _sanitize_str_list(body.categorias_equipo)
     r = await db.projects.update_one({"id": pid}, {"$set": upd})
     if r.matched_count == 0:
         raise HTTPException(404, "Proyecto no existe")
@@ -789,6 +811,9 @@ async def update_project(pid: str, body: ProjectIn, user: dict = Depends(require
     p.setdefault("reference_files", [])
     p.setdefault("contratistas_list", [])
     p.setdefault("contratos_list", [])
+    p.setdefault("categorias_personal", [])
+    p.setdefault("categorias_equipo", [])
+    p.setdefault("objeto_contrato", None)
     return p
 
 
@@ -798,13 +823,18 @@ async def set_project_catalogos(
     body: dict,
     user: dict = Depends(require_role(ROLE_COORD)),
 ):
-    """Actualiza únicamente los catálogos dinámicos del proyecto:
-    contratistas_list y/o contratos_list. Sólo Coordinador General."""
+    """Actualiza catálogos dinámicos del proyecto:
+    contratistas_list, contratos_list, categorias_personal y categorias_equipo.
+    Sólo Coordinador General puede modificarlos."""
     upd: dict = {}
     if isinstance(body.get("contratistas_list"), list):
         upd["contratistas_list"] = _sanitize_str_list(body.get("contratistas_list"))
     if isinstance(body.get("contratos_list"), list):
         upd["contratos_list"] = _sanitize_str_list(body.get("contratos_list"))
+    if isinstance(body.get("categorias_personal"), list):
+        upd["categorias_personal"] = _sanitize_str_list(body.get("categorias_personal"))
+    if isinstance(body.get("categorias_equipo"), list):
+        upd["categorias_equipo"] = _sanitize_str_list(body.get("categorias_equipo"))
     if not upd:
         raise HTTPException(400, "Nada para actualizar")
     r = await db.projects.update_one({"id": pid}, {"$set": upd})
@@ -815,6 +845,9 @@ async def set_project_catalogos(
     p.setdefault("reference_files", [])
     p.setdefault("contratistas_list", [])
     p.setdefault("contratos_list", [])
+    p.setdefault("categorias_personal", [])
+    p.setdefault("categorias_equipo", [])
+    p.setdefault("objeto_contrato", None)
     return p
 
 
@@ -1897,11 +1930,26 @@ async def create_report(body: ReportIn, user: dict = Depends(current_user)):
     if mv.get("coord_source") == "node_metadata":
         inherited_target = {"lat": mv.get("lat"), "lon": mv.get("lon"), "elev": None}
 
+    # ====================================================================
+    # Normalizar severidad (Informativo / Importante / Urgente).
+    # Default = "informativo" (no escala a supervisores en exportaciones).
+    # ====================================================================
+    sev_raw = (body.severidad or "informativo").strip().lower()
+    if sev_raw not in ("informativo", "importante", "urgente"):
+        sev_raw = "informativo"
+
+    # Lista de ids ancestrales (incluye el propio nodo) — para filtros y
+    # vinculación de noticias a ancestros en la exportación.
+    node_path_ids = list(node.get("path") or [])
+    if body.node_id not in node_path_ids:
+        node_path_ids.append(body.node_id)
+
     doc = {
         "id": str(uuid.uuid4()),
         "project_id": body.project_id,
         "node_id": body.node_id,
         "node_path_names": path_names,
+        "node_path_ids": node_path_ids,
         "measurement_type": node["measurement_type"],
         "measurement_value": mv,
         "node_target": inherited_target if inherited_target is not None else (
@@ -1916,6 +1964,8 @@ async def create_report(body: ReportIn, user: dict = Depends(current_user)):
         "notes": (body.notes or "").strip() or None,
         "avance": (body.avance or "").strip() or None,
         "observaciones": (body.observaciones or "").strip() or None,
+        "incidencias": (body.incidencias or "").strip() or None,
+        "severidad": sev_raw,
         "contratista": (body.contratista or "").strip() or None,
         "personnel": body.personnel,
         "equipment": body.equipment,
@@ -2245,7 +2295,9 @@ class AnnouncementIn(BaseModel):
     body: str
     pinned: bool = False
     jerarquia: Optional[str] = None  # 'urgente' | 'importante' | 'informativo' | None
+    severidad: Optional[str] = None  # alias front-end de jerarquia
     audiencia: Optional[str] = None  # 'general' o area_id
+    node_id: Optional[str] = None    # nodo al que se vincula la noticia (cualquier nivel)
 
 
 class AnnouncementPatch(BaseModel):
@@ -2253,7 +2305,9 @@ class AnnouncementPatch(BaseModel):
     body: Optional[str] = None
     pinned: Optional[bool] = None
     jerarquia: Optional[str] = None
+    severidad: Optional[str] = None
     audiencia: Optional[str] = None
+    node_id: Optional[str] = None  # "" o null para desvincular
 
 
 def _announcement_out(doc: dict) -> dict:
@@ -2291,16 +2345,30 @@ async def create_announcement(
         raise HTTPException(400, "Título máximo 140 caracteres")
     if len(text) > 4000:
         raise HTTPException(400, "Cuerpo máximo 4000 caracteres")
-    # Normaliza jerarquía: 'urgente' | 'importante' | 'informativo' | None
-    jerarquia = (body.jerarquia or "").strip().lower() or None
-    if jerarquia and jerarquia not in ("urgente", "importante", "informativo"):
-        raise HTTPException(400, "Jerarquía inválida")
+    # Normaliza severidad/jerarquía (acepta ambos nombres).
+    sev_raw = (body.severidad or body.jerarquia or "").strip().lower() or None
+    if sev_raw and sev_raw not in ("urgente", "importante", "informativo"):
+        raise HTTPException(400, "Severidad inválida")
+    jerarquia = sev_raw
     # Audiencia: "general" (proyecto completo) o area_id
     audiencia = (body.audiencia or "").strip() or "general"
     if audiencia != "general":
         area = await db.areas.find_one({"id": audiencia, "project_id": pid})
         if not area:
             raise HTTPException(400, "Audiencia (área) inválida")
+    # Vínculo opcional a nodo (cualquier nivel). Calculamos node_path_ids para
+    # que el filtro por ancestros en la exportación sea O(1) en lectura.
+    node_id = (body.node_id or "").strip() or None
+    node_path_ids: list[str] = []
+    node_name: Optional[str] = None
+    if node_id:
+        node = await db.location_nodes.find_one({"id": node_id, "project_id": pid})
+        if not node:
+            raise HTTPException(400, "Nodo no existe en este proyecto")
+        node_path_ids = list(node.get("path") or [])
+        if node_id not in node_path_ids:
+            node_path_ids.append(node_id)
+        node_name = node.get("name")
     now = datetime.now(timezone.utc)
     doc = {
         "id": str(uuid.uuid4()),
@@ -2310,6 +2378,9 @@ async def create_announcement(
         "pinned": bool(body.pinned),
         "jerarquia": jerarquia,
         "audiencia": audiencia,
+        "node_id": node_id,
+        "node_path_ids": node_path_ids,
+        "node_name": node_name,
         "author_id": user["id"],
         "author_name": user["name"],
         "author_role": user["role"],
@@ -2356,14 +2427,15 @@ async def update_announcement(
         if not is_coord:
             raise HTTPException(403, "Sólo el Coordinador puede fijar noticias")
         update["pinned"] = bool(body.pinned)
-    if body.jerarquia is not None:
-        j = (body.jerarquia or "").strip().lower()
+    if body.jerarquia is not None or body.severidad is not None:
+        j_raw = body.severidad if body.severidad is not None else body.jerarquia
+        j = (j_raw or "").strip().lower()
         if j == "":
             update["jerarquia"] = None
         elif j in ("urgente", "importante", "informativo"):
             update["jerarquia"] = j
         else:
-            raise HTTPException(400, "Jerarquía inválida")
+            raise HTTPException(400, "Severidad inválida")
     if body.audiencia is not None:
         aud = (body.audiencia or "").strip() or "general"
         if aud != "general":
@@ -2371,6 +2443,22 @@ async def update_announcement(
             if not area:
                 raise HTTPException(400, "Audiencia (área) inválida")
         update["audiencia"] = aud
+    if body.node_id is not None:
+        nid = (body.node_id or "").strip()
+        if not nid:
+            update["node_id"] = None
+            update["node_path_ids"] = []
+            update["node_name"] = None
+        else:
+            node = await db.location_nodes.find_one({"id": nid, "project_id": a["project_id"]})
+            if not node:
+                raise HTTPException(400, "Nodo no existe en este proyecto")
+            path_ids = list(node.get("path") or [])
+            if nid not in path_ids:
+                path_ids.append(nid)
+            update["node_id"] = nid
+            update["node_path_ids"] = path_ids
+            update["node_name"] = node.get("name")
     if not update:
         return _announcement_out(a)
     update["updated_at"] = datetime.now(timezone.utc)
@@ -3163,6 +3251,81 @@ def _fmt_fecha_es(dt: datetime) -> str:
         return dt.strftime("%Y-%m-%d") if isinstance(dt, datetime) else "—"
 
 
+def _fmt_fecha_dd_mm_yyyy(dt) -> str:
+    """Formato corto DD-MM-YYYY en zona horaria America/Mexico_City.
+
+    Nunca regresa palabras como "Hoy" o "Ayer" — es el formato institucional
+    requerido en exportaciones."""
+    try:
+        if not isinstance(dt, datetime):
+            return "—"
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.astimezone(MX_TZ)
+        return dt.strftime("%d-%m-%Y")
+    except Exception:
+        return "—"
+
+
+def _fmt_fecha_dd_mm_yyyy_hhmm(dt) -> str:
+    """Formato DD-MM-YYYY HH:MM en zona horaria America/Mexico_City."""
+    try:
+        if not isinstance(dt, datetime):
+            return "—"
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.astimezone(MX_TZ)
+        return dt.strftime("%d-%m-%Y %H:%M")
+    except Exception:
+        return "—"
+
+
+_SEVERIDAD_ORDER = {"urgente": 0, "importante": 1, "informativo": 2}
+
+
+def _severidad_label(sev: Optional[str]) -> str:
+    s = (sev or "informativo").lower()
+    return {"urgente": "Urgente", "importante": "Importante", "informativo": "Informativo"}.get(s, "Informativo")
+
+
+def _severidad_hex(sev: Optional[str]) -> str:
+    s = (sev or "informativo").lower()
+    # Semáforo institucional: rojo / ámbar / azul.
+    return {"urgente": "#DC2626", "importante": "#D97706", "informativo": "#1D4ED8"}.get(s, "#1D4ED8")
+
+
+def _export_severity_filter(role: str) -> set:
+    """Severidades incluidas en el documento exportado según rol del usuario.
+
+    - Especialista: Importante + Urgente (excluye Informativo).
+    - Supervisor (sub-coord, jefe, coord): Importante + Urgente.
+    - Esta regla aplica a reportes Y noticias inyectadas."""
+    return {"importante", "urgente"}
+
+
+async def _announcements_for_node(
+    pid: str,
+    node_path_ids: List[str],
+    start_dt: datetime,
+    end_dt: datetime,
+) -> List[dict]:
+    """Devuelve noticias vinculadas al nodo o cualquiera de sus ancestros,
+    con severidad Importante/Urgente, en el rango [start_dt, end_dt]."""
+    if not node_path_ids:
+        return []
+    q = {
+        "project_id": pid,
+        "jerarquia": {"$in": ["importante", "urgente"]},
+        "$or": [
+            {"node_id": {"$in": node_path_ids}},
+            {"node_path_ids": {"$elemMatch": {"$in": node_path_ids}}},
+        ],
+        "created_at": {"$gte": start_dt, "$lte": end_dt},
+    }
+    items = await db.announcements.find(q).sort("created_at", -1).to_list(length=200)
+    return items
+
+
 def _extract_numeric_reading(report: dict) -> Optional[float]:
     """Extrae el valor numérico capturado en el reporte según measurement_type.
     Retorna None si no se puede convertir a número (ej. 'eje', coordenadas)."""
@@ -3270,11 +3433,17 @@ def _strip_b64_prefix(s: str) -> str:
 async def export_reports_pdf(
     pid: str,
     period: str = Query("today", description="today|yesterday|week|month"),
+    area_id: Optional[str] = Query(None, description="Filtro por área (opcional)"),
+    scope: Optional[str] = Query(None, description="mine|area (para especialistas)"),
     user: dict = Depends(current_user),
 ):
-    """Motor PDF paramétrico (Coord = todos / Esp = propios / Sub = scope).
-    Render bloqueante (reportlab) ejecutado en thread aparte para no congelar
-    el event loop ante muchas fotos en periodos largos (week / month)."""
+    """Motor PDF paramétrico.
+
+    Filtros aplicados automáticamente (no negociables):
+      - Severidad: SOLO Importante + Urgente (excluye Informativo).
+      - Área: si `area_id` se especifica, filtra por esa área.
+      - Especialistas con toggle `scope=mine` ven solo sus reportes.
+    Render bloqueante (reportlab) en thread aparte."""
     try:
         import base64
         from reportlab.lib.pagesizes import A4, landscape
@@ -3285,72 +3454,40 @@ async def export_reports_pdf(
     except Exception as e:
         raise HTTPException(500, f"reportlab no instalado: {e}")
 
-    await ensure_project_access(user, pid)
-    proj = await db.projects.find_one({"id": pid})
-    if not proj:
-        raise HTTPException(404, "Proyecto no existe")
+    scope_mine_only = (scope or "").lower() == "mine"
+    data = await _gather_export_data(pid, period, user, area_id=area_id, scope_mine_only=scope_mine_only)
+    proj = data["proj"]
+    leaf_nodes = data["leaf_nodes"]
+    reports_by_node = data["reports_by_node"]
+    announcements_by_node = data["announcements_by_node"]
+    path_cache = data["path_cache"]
+    start_dt = data["start_dt"]
+    end_dt = data["end_dt"]
+    prev_reading_by_node = data["prev_reading_by_node"]
 
-    start_dt, end_dt, period_label = _period_range(period)
-
-    # --- Carga árbol y nodos -------------------------------------------------
-    nodes_raw = await db.location_nodes.find({"project_id": pid}).to_list(length=10000)
-    nodes_by_id = {n["id"]: n for n in nodes_raw}
-    root_ids = [n["id"] for n in nodes_raw if not n.get("parent_id")]
-    root_ids.sort(key=lambda nid: (nodes_by_id[nid].get("order", 0), nodes_by_id[nid].get("name", "")))
-    leaf_nodes = _flatten_tree_in_order(nodes_by_id, root_ids)
-
-    # --- Filtro scope por rol ------------------------------------------------
     role = user["role"]
-    allowed_node_ids: Optional[set] = None
-    # Sub-coordinador: scope GLOBAL (sin restricción) -- igual que Coordinador.
-
-    # --- Query reportes del período -----------------------------------------
-    q: dict = {
-        "project_id": pid,
-        "created_at": {"$gte": start_dt, "$lte": end_dt},
-    }
-    if role != ROLE_COORD:
-        q["captured_by"] = user["id"]
-    if allowed_node_ids is not None:
-        q["node_id"] = {"$in": list(allowed_node_ids)}
-
-    reports = await db.reports.find(q).to_list(length=20000)
-    reports_by_node: dict = {}
-    for r in reports:
-        reports_by_node.setdefault(r.get("node_id"), []).append(r)
-    for nid, lst in reports_by_node.items():
-        lst.sort(key=lambda r: r.get("created_at") or datetime.min)
-
-    # --- Primera lectura inicial por nodo (último reporte ANTERIOR al periodo)
-    # Si no hay histórico previo → primera = 0.0
-    prev_reading_by_node: dict = {}
-    for nid in reports_by_node.keys():
-        pre_q: dict = {
-            "project_id": pid,
-            "node_id": nid,
-            "created_at": {"$lt": start_dt},
-        }
-        if role != ROLE_COORD:
-            pre_q["captured_by"] = user["id"]
-        prev = await db.reports.find(pre_q).sort("created_at", -1).limit(1).to_list(length=1)
-        prev_reading_by_node[nid] = _extract_numeric_reading(prev[0]) if prev else None
-
-    # --- Rutas de nodos (cache) ---------------------------------------------
-    path_cache: dict = {}
-    for nid in list(reports_by_node.keys()):
-        names = await node_path_names(nid)
-        path_cache[nid] = " › ".join(names)
 
     # Snapshot inmutable para el thread bloqueante
     project_name = proj.get("name", "Proyecto")
     project_contract = proj.get("contract_number") or "—"
     project_constructora = proj.get("constructora") or "—"
+    project_objeto = proj.get("objeto_contrato") or None
+    constructora_logo_b64 = (proj.get("constructora_logo") or "").strip() or None
     user_name = user.get("name", "")
     user_email = user.get("email", "")
     role_label = (
         "Coordinador" if role == ROLE_COORD
         else ("Especialista" if role == ROLE_ESPECIALISTA else "Sub-Coordinador")
     )
+    # Etiqueta de área seleccionada (para portada)
+    area_label = "Todas las áreas"
+    if area_id:
+        area = await db.areas.find_one({"id": area_id, "project_id": pid})
+        if area:
+            area_label = f"Área: {area.get('name', '—')}"
+
+    # Rango DD-MM-YYYY (sin "Hoy"/"Ayer")
+    fechas_label = f"{_fmt_fecha_dd_mm_yyyy(start_dt)} a {_fmt_fecha_dd_mm_yyyy(end_dt)}"
 
     # ========================================================================
     # GENERACIÓN BLOQUEANTE (CPU-bound) → asyncio.to_thread
@@ -3366,21 +3503,29 @@ async def export_reports_pdf(
         BORDER = HexColor("#E2E8F0")
         TEXT = HexColor("#0F172A")
 
+        def _draw_logo(x, y, max_w, max_h):
+            """Inyecta el logo de la constructora (alta resolución) si el proyecto lo tiene."""
+            if not constructora_logo_b64:
+                return False
+            try:
+                raw = base64.b64decode(_strip_b64_prefix(constructora_logo_b64))
+                img = ImageReader(io.BytesIO(raw))
+                c.drawImage(img, x, y, width=max_w, height=max_h,
+                            preserveAspectRatio=True, mask='auto')
+                return True
+            except Exception:
+                return False
+
         def draw_header(page_num: int):
-            if LOGO_PATH.exists():
-                try:
-                    logo = ImageReader(str(LOGO_PATH))
-                    c.drawImage(logo, 1.2 * cm, PH - 1.9 * cm, width=3.0 * cm, height=1.2 * cm,
-                                preserveAspectRatio=True, mask='auto')
-                except Exception:
-                    pass
+            # Logo institucional (constructora) en esquina superior izquierda
+            _draw_logo(1.2 * cm, PH - 2.0 * cm, 3.5 * cm, 1.4 * cm)
             c.setFillColor(BRAND)
             c.setFont("Helvetica-Bold", 11)
-            c.drawString(4.0 * cm, PH - 1.2 * cm, f"SynCo · {project_name}")
+            c.drawString(5.2 * cm, PH - 1.2 * cm, project_name)
             c.setFillColor(MUTED)
             c.setFont("Helvetica", 8)
-            c.drawString(4.0 * cm, PH - 1.6 * cm,
-                         f"Reporte {period_label} · Exportado {datetime.now(timezone.utc).astimezone(MX_TZ).strftime('%Y-%m-%d %H:%M')} (CDMX)")
+            c.drawString(5.2 * cm, PH - 1.6 * cm,
+                         f"{project_constructora}  ·  Contrato {project_contract}  ·  Exportado {_fmt_fecha_dd_mm_yyyy_hhmm(datetime.now(timezone.utc))}")
             c.setStrokeColor(BORDER)
             c.setLineWidth(0.5)
             c.line(1.2 * cm, PH - 2.0 * cm, PW - 1.2 * cm, PH - 2.0 * cm)
@@ -3390,32 +3535,40 @@ async def export_reports_pdf(
 
         # --- PORTADA --------------------------------------------------------
         page_num = 1
-        if LOGO_PATH.exists():
-            try:
-                logo = ImageReader(str(LOGO_PATH))
-                c.drawImage(logo, (PW - 8 * cm) / 2, PH - 6.5 * cm, width=8 * cm, height=3 * cm,
-                            preserveAspectRatio=True, mask='auto')
-            except Exception:
-                pass
+        # Logo institucional centrado en la portada (alta resolución)
+        _draw_logo((PW - 8 * cm) / 2, PH - 6.5 * cm, 8 * cm, 3 * cm)
         c.setFillColor(BRAND)
         c.setFont("Helvetica-Bold", 28)
         c.drawCentredString(PW / 2, PH - 8.5 * cm, "Reporte de Avance")
         c.setFillColor(TEXT)
         c.setFont("Helvetica-Bold", 18)
         c.drawCentredString(PW / 2, PH - 9.8 * cm, project_name)
+        if project_objeto:
+            c.setFillColor(TEXT)
+            c.setFont("Helvetica", 11)
+            # Wrap a 2 líneas si es largo
+            words = project_objeto.split()
+            line1, line2 = "", ""
+            for w in words:
+                if c.stringWidth((line1 + " " + w).strip(), "Helvetica", 11) < (PW - 6 * cm):
+                    line1 = (line1 + " " + w).strip()
+                else:
+                    line2 = (line2 + " " + w).strip()
+            c.drawCentredString(PW / 2, PH - 10.6 * cm, line1)
+            if line2:
+                c.drawCentredString(PW / 2, PH - 11.1 * cm, line2[:120])
         c.setFillColor(MUTED)
         c.setFont("Helvetica", 12)
-        c.drawCentredString(PW / 2, PH - 11.2 * cm, f"Período: {period_label}")
-        c.drawCentredString(PW / 2, PH - 12.0 * cm,
-                            f"{(start_dt.astimezone(MX_TZ) if start_dt.tzinfo else start_dt.replace(tzinfo=timezone.utc).astimezone(MX_TZ)).strftime('%Y-%m-%d %H:%M')} – {(end_dt.astimezone(MX_TZ) if end_dt.tzinfo else end_dt.replace(tzinfo=timezone.utc).astimezone(MX_TZ)).strftime('%Y-%m-%d %H:%M')} (CDMX)")
+        c.drawCentredString(PW / 2, PH - 12.2 * cm, f"Período: {fechas_label}")
+        c.drawCentredString(PW / 2, PH - 12.9 * cm, area_label)
         c.setFont("Helvetica-Bold", 11)
         c.setFillColor(TEXT)
-        c.drawCentredString(PW / 2, PH - 13.5 * cm, f"{role_label}: {user_name}")
+        c.drawCentredString(PW / 2, PH - 14.0 * cm, f"{role_label}: {user_name}")
         c.setFont("Helvetica", 10)
         c.setFillColor(MUTED)
-        c.drawCentredString(PW / 2, PH - 14.2 * cm, user_email)
+        c.drawCentredString(PW / 2, PH - 14.7 * cm, user_email)
         total_reportes = sum(len(v) for v in reports_by_node.values())
-        c.drawCentredString(PW / 2, PH - 15.5 * cm, f"Total de reportes incluidos: {total_reportes}")
+        c.drawCentredString(PW / 2, PH - 16.0 * cm, f"Total de reportes incluidos: {total_reportes}")
         c.setFont("Helvetica", 7)
         c.drawRightString(PW - 1.2 * cm, 0.8 * cm, f"Página {page_num}")
         c.showPage()
@@ -3463,9 +3616,6 @@ async def export_reports_pdf(
             if not node_reps:
                 continue
             node_path = path_cache.get(n["id"]) or n.get("name", "")
-            mtype = n.get("measurement_type") or "—"
-            actividad = f"Supervisión de obra / {_measurement_label(mtype)}"
-
             # Acumulado de "Primera lectura" — arranca con el último valor previo
             # al periodo (o 0 si es el primer reporte histórico del nodo).
             primera_acc = prev_reading_by_node.get(n["id"])
@@ -3561,16 +3711,17 @@ async def export_reports_pdf(
                 avance_str = str(_av).strip() if _av not in (None, "") else "—"
 
                 ts = r.get("created_at")
-                fecha_str = _fmt_fecha_es(ts) if isinstance(ts, datetime) else "—"
+                fecha_str = _fmt_fecha_dd_mm_yyyy(ts) if isinstance(ts, datetime) else "—"
                 nombre = r.get("captured_by_name") or "—"
-                # Constructora siempre desde el proyecto (P0 fix v2.0)
+                # Constructora siempre desde el proyecto
                 contratista = (project_constructora or "").strip() or "N/A"
                 unidad_r = (r.get("unidad") or "m").strip() or "m"
                 personal_list = [p for p in (r.get("personnel") or []) if p]
                 equipo_list = [e for e in (r.get("equipment") or []) if e]
                 personal_str = ", ".join(personal_list) if personal_list else "N/A"
                 equipo_str = ", ".join(equipo_list) if equipo_list else "N/A"
-                obs_str = (r.get("notes") or "").strip() or "N/A"
+                obs_str = (r.get("observaciones") or r.get("notes") or "").strip() or "N/A"
+                incidencias_str = (r.get("incidencias") or "").strip() or None
 
                 def field(label: str, value, font="Helvetica", size=9.5, leading=12):
                     nonlocal cy
@@ -3582,17 +3733,32 @@ async def export_reports_pdf(
                                            font=font, size=size, leading=leading)
                     cy -= 0.20 * cm
 
+                # ====== Orden institucional de campos ======
                 field("Fecha", fecha_str)
-                field("Nombre", nombre)
-                field("Actividad", actividad)
-                field("No. De Contrato", project_contract)
-                field("Contratista", contratista)
-                field("Ubicación", node_path)
+                field("Especialista", nombre)
+                field("Constructora", contratista)
+                field("No. de Contrato", project_contract)
+                field("Nodo / Ubicación", node_path)
                 field("Reporte de avance",
                       f"Primera lectura: {primera_str} {unidad_r}    |    Última lectura: {ultima_str} {unidad_r}    |    Avance: {avance_str}")
+                if incidencias_str:
+                    field("Incidencias", incidencias_str)
                 field("Personal", personal_str)
                 field("Equipo", equipo_str)
-                field("Observaciones", obs_str)
+                if obs_str and obs_str != "N/A":
+                    field("Observaciones", obs_str)
+
+                # Banner de severidad (semáforo) en esquina inferior derecha
+                sev = (r.get("severidad") or "informativo").lower()
+                sev_hex = _severidad_hex(sev)
+                c.setFillColor(HexColor(sev_hex))
+                c.roundRect(PW - 4.5 * cm, photo_y - 0.2 * cm - 0.6 * cm, 3.3 * cm, 0.7 * cm,
+                            radius=4, stroke=0, fill=1)
+                c.setFillColor(HexColor("#FFFFFF"))
+                c.setFont("Helvetica-Bold", 10)
+                c.drawCentredString(PW - 4.5 * cm + 1.65 * cm,
+                                    photo_y - 0.2 * cm - 0.2 * cm,
+                                    _severidad_label(sev).upper())
 
                 # Pie del reporte
                 c.setFillColor(MUTED)
@@ -3602,13 +3768,62 @@ async def export_reports_pdf(
                 c.showPage()
                 page_num += 1
 
+            # =================================================================
+            # NOTAS / NOTICIAS vinculadas al nodo (Importante + Urgente)
+            # Se imprimen al final del bloque del nodo si existen.
+            # =================================================================
+            node_announ = announcements_by_node.get(n["id"]) or []
+            if node_announ:
+                draw_header(page_num)
+                c.setFillColor(BRAND)
+                c.setFont("Helvetica-Bold", 16)
+                c.drawString(1.5 * cm, PH - 3.0 * cm, f"Notas y noticias · {node_path}")
+                c.setStrokeColor(BRAND)
+                c.setLineWidth(0.8)
+                c.line(1.5 * cm, PH - 3.2 * cm, PW - 1.5 * cm, PH - 3.2 * cm)
+                cy = PH - 3.9 * cm
+                for ann in node_announ:
+                    sev = (ann.get("jerarquia") or "informativo").lower()
+                    sev_color = HexColor(_severidad_hex(sev))
+                    if cy < 2.5 * cm:
+                        c.showPage()
+                        page_num += 1
+                        draw_header(page_num)
+                        cy = PH - 3.0 * cm
+                    # Etiqueta de severidad
+                    c.setFillColor(sev_color)
+                    c.roundRect(1.5 * cm, cy - 0.45 * cm, 2.8 * cm, 0.55 * cm,
+                                radius=4, stroke=0, fill=1)
+                    c.setFillColor(HexColor("#FFFFFF"))
+                    c.setFont("Helvetica-Bold", 8)
+                    c.drawCentredString(1.5 * cm + 1.4 * cm, cy - 0.28 * cm,
+                                        _severidad_label(sev).upper())
+                    # Título de la nota
+                    c.setFillColor(TEXT)
+                    c.setFont("Helvetica-Bold", 11)
+                    title_txt = (ann.get("title") or "").strip() or "—"
+                    c.drawString(4.6 * cm, cy - 0.25 * cm, title_txt[:140])
+                    # Fecha
+                    c.setFillColor(MUTED)
+                    c.setFont("Helvetica", 8)
+                    c.drawRightString(PW - 1.5 * cm, cy - 0.25 * cm,
+                                       _fmt_fecha_dd_mm_yyyy(ann.get("created_at")))
+                    cy -= 0.8 * cm
+                    # Cuerpo de la nota
+                    body_txt = (ann.get("body") or "").strip()
+                    if body_txt:
+                        cy = render_text_block(1.5 * cm, cy, PW - 3.0 * cm,
+                                               [body_txt], font="Helvetica", size=10, leading=13)
+                    cy -= 0.4 * cm
+                c.showPage()
+                page_num += 1
+
         c.save()
         return buf.getvalue()
 
     # Render bloqueante en thread aparte → libera event loop
     pdf_bytes = await asyncio.to_thread(_build_pdf_blocking)
-    safe_name = re.sub(r"[^A-Za-z0-9_-]+", "_", proj.get("name", "proyecto"))[:60] or "proyecto"
-    fname = f"synco_{safe_name}_{period}_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M')}.pdf"
+    fname = _safe_export_filename(proj.get("name", "proyecto"), period, "pdf")
     return StreamingResponse(
         io.BytesIO(pdf_bytes),
         media_type="application/pdf",
@@ -3623,9 +3838,27 @@ async def export_reports_pdf(
 # Procesamiento ESTRICTAMENTE en memoria (io.BytesIO) - NO se escribe ningún
 # archivo al disco del dispositivo ni del servidor.
 
-async def _gather_export_data(pid: str, period: str, user: dict) -> dict:
-    """Carga proyecto, nodos, reportes y rutas aplicando el filtro de rol/scope.
-    Devuelve un dict listo para que docx/pptx (CPU-bound) generen el binario."""
+async def _gather_export_data(
+    pid: str,
+    period: str,
+    user: dict,
+    area_id: Optional[str] = None,
+    scope_mine_only: bool = False,
+) -> dict:
+    """Carga proyecto, nodos, reportes, anuncios y rutas aplicando filtros.
+
+    Reglas:
+      - Severidad: por instrucción institucional, las exportaciones SIEMPRE
+        excluyen reportes 'informativo' (solo Importante + Urgente).
+      - Área: si `area_id` viene, filtra reportes por esa área (cualquier rol).
+      - Scope:
+        * Coord / Sub-coord / Jefe → ven todos (a menos que pasen area_id).
+        * Especialista → ve sus propios por defecto; si `scope_mine_only=False`
+          y tiene `area_id`, ve los reportes del área (otros especialistas
+          de su misma área también).
+      - Noticias inyectables: Importante + Urgente vinculadas a cada nodo
+        (o sus ancestros) dentro del periodo.
+    """
     await ensure_project_access(user, pid)
     proj = await db.projects.find_one({"id": pid})
     if not proj:
@@ -3640,17 +3873,36 @@ async def _gather_export_data(pid: str, period: str, user: dict) -> dict:
     leaf_nodes = _flatten_tree_in_order(nodes_by_id, root_ids)
 
     role = user["role"]
-    allowed_node_ids: Optional[set] = None
-    # Sub-coordinador: scope GLOBAL (sin restricción).
+    sev_filter = _export_severity_filter(role)
 
+    # --- Construir query base con filtros institucionales ---
     q: dict = {
         "project_id": pid,
         "created_at": {"$gte": start_dt, "$lte": end_dt},
+        # Severidad filter (solo Importante + Urgente). Si el documento legacy
+        # no tenía severidad, se considera 'informativo' y queda EXCLUIDO.
+        "severidad": {"$in": list(sev_filter)},
     }
+
+    # Scope
     if role == ROLE_ESPECIALISTA:
-        q["captured_by"] = user["id"]
-    if allowed_node_ids is not None:
-        q["node_id"] = {"$in": list(allowed_node_ids)}
+        # Especialista: por defecto solo sus propios reportes.
+        # Si `scope_mine_only=False` y tiene area_id, ampliamos al área.
+        my_area = user.get("area_id")
+        if scope_mine_only or not my_area:
+            q["captured_by"] = user["id"]
+        else:
+            q["area_id"] = my_area
+    else:
+        # Supervisor (sub/jefe/coord): ven todo, opcionalmente filtrado por área.
+        if area_id:
+            q["area_id"] = area_id
+
+    # Filtro área explícito (cuando coordinador/sub pasa area_id sin importar
+    # el rol — ya manejado arriba para supervisores; para especialista lo
+    # tomamos en cuenta también si pasa area_id explícito y no scope_mine_only).
+    if role == ROLE_ESPECIALISTA and area_id and not scope_mine_only:
+        q["area_id"] = area_id
 
     reports = await db.reports.find(q).to_list(length=20000)
     reports_by_node: dict = {}
@@ -3664,12 +3916,36 @@ async def _gather_export_data(pid: str, period: str, user: dict) -> dict:
         names = await node_path_names(nid)
         path_cache[nid] = " › ".join(names)
 
+    # --- Noticias por nodo (Importante+Urgente, vinculadas a nodo o ancestros)
+    announcements_by_node: dict = {}
+    for nid in list(reports_by_node.keys()):
+        node = nodes_by_id.get(nid)
+        if not node:
+            continue
+        path_ids = list(node.get("path") or [])
+        if nid not in path_ids:
+            path_ids.append(nid)
+        announcements_by_node[nid] = await _announcements_for_node(pid, path_ids, start_dt, end_dt)
+
+    # --- Primera lectura previa por nodo (continuidad histórica) ---
+    prev_reading_by_node: dict = {}
+    for nid in reports_by_node.keys():
+        pre_q: dict = {"project_id": pid, "node_id": nid, "created_at": {"$lt": start_dt}}
+        if role == ROLE_ESPECIALISTA and scope_mine_only:
+            pre_q["captured_by"] = user["id"]
+        prev = await db.reports.find(pre_q).sort("created_at", -1).limit(1).to_list(length=1)
+        prev_reading_by_node[nid] = _extract_numeric_reading(prev[0]) if prev else None
+
     return {
         "proj": proj,
         "leaf_nodes": leaf_nodes,
         "reports_by_node": reports_by_node,
+        "announcements_by_node": announcements_by_node,
         "path_cache": path_cache,
         "period_label": period_label,
+        "start_dt": start_dt,
+        "end_dt": end_dt,
+        "prev_reading_by_node": prev_reading_by_node,
         "user": user,
     }
 
@@ -3677,71 +3953,121 @@ async def _gather_export_data(pid: str, period: str, user: dict) -> dict:
 def _safe_export_filename(name: str, period: str, ext: str) -> str:
     safe = re.sub(r"[^A-Za-z0-9_-]+", "_", name or "proyecto")[:60] or "proyecto"
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M")
-    return f"synco_{safe}_{period}_{ts}.{ext}"
+    # Sin prefijo "synco_": el archivo debe ser 100% institucional.
+    return f"reporte_{safe}_{period}_{ts}.{ext}"
 
 
 @api.get("/projects/{pid}/export/reports.docx")
 async def export_reports_docx(
     pid: str,
     period: str = Query("today", description="today|yesterday|week|month"),
+    area_id: Optional[str] = Query(None, description="Filtro por área (opcional)"),
+    scope: Optional[str] = Query(None, description="mine|area (para especialistas)"),
     user: dict = Depends(current_user),
 ):
-    """Exporta reportes en formato Microsoft Word (.docx). 100 % en RAM."""
+    """Exporta reportes en formato Microsoft Word (.docx). 100 % en RAM.
+
+    Filtros idénticos al PDF: severidad (Importante+Urgente), área opcional,
+    y scope para especialistas."""
     try:
         import base64
         from docx import Document
         from docx.shared import Cm, Pt, RGBColor
         from docx.enum.text import WD_ALIGN_PARAGRAPH
+        from docx.oxml.ns import qn
+        from docx.oxml import OxmlElement
     except Exception as e:
         raise HTTPException(500, f"python-docx no instalado: {e}")
 
-    data = await _gather_export_data(pid, period, user)
+    scope_mine_only = (scope or "").lower() == "mine"
+    data = await _gather_export_data(pid, period, user, area_id=area_id, scope_mine_only=scope_mine_only)
     proj = data["proj"]
     leaf_nodes = data["leaf_nodes"]
     reports_by_node = data["reports_by_node"]
+    announcements_by_node = data["announcements_by_node"]
     path_cache = data["path_cache"]
-    period_label = data["period_label"]
+    start_dt = data["start_dt"]
+    end_dt = data["end_dt"]
 
     project_name = proj.get("name", "Proyecto")
     project_contract = proj.get("contract_number") or "—"
     project_constructora = proj.get("constructora") or "—"
+    project_objeto = proj.get("objeto_contrato") or None
+    constructora_logo_b64 = (proj.get("constructora_logo") or "").strip() or None
+    fechas_label = f"{_fmt_fecha_dd_mm_yyyy(start_dt)} a {_fmt_fecha_dd_mm_yyyy(end_dt)}"
+
+    area_label = "Todas las áreas"
+    if area_id:
+        area = await db.areas.find_one({"id": area_id, "project_id": pid})
+        if area:
+            area_label = f"Área: {area.get('name', '—')}"
 
     def _build_docx_blocking() -> bytes:
         doc = Document()
-        # Márgenes ajustados
         for section in doc.sections:
             section.left_margin = Cm(1.8)
             section.right_margin = Cm(1.8)
-            section.top_margin = Cm(1.8)
-            section.bottom_margin = Cm(1.8)
+            section.top_margin = Cm(2.2)
+            section.bottom_margin = Cm(2.0)
+            # Encabezado institucional
+            header = section.header
+            hp = header.paragraphs[0]
+            hp.alignment = WD_ALIGN_PARAGRAPH.LEFT
+            if constructora_logo_b64:
+                try:
+                    raw = base64.b64decode(_strip_b64_prefix(constructora_logo_b64))
+                    hp.add_run().add_picture(io.BytesIO(raw), height=Cm(1.2))
+                except Exception:
+                    pass
+            hp.add_run(f"   {project_constructora}   ·   Contrato {project_contract}").font.size = Pt(9)
+            # Pie de página institucional
+            footer = section.footer
+            fp = footer.paragraphs[0]
+            fp.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            fr = fp.add_run(f"{project_name}   ·   Exportado {_fmt_fecha_dd_mm_yyyy_hhmm(datetime.now(timezone.utc))}")
+            fr.font.size = Pt(8)
+            fr.font.color.rgb = RGBColor(0x64, 0x75, 0x8B)
 
         # === PORTADA ===
+        if constructora_logo_b64:
+            try:
+                raw = base64.b64decode(_strip_b64_prefix(constructora_logo_b64))
+                portada = doc.add_paragraph()
+                portada.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                portada.add_run().add_picture(io.BytesIO(raw), width=Cm(7))
+            except Exception:
+                pass
         h = doc.add_paragraph()
         h.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        run = h.add_run(f"SynCo · {project_name}")
+        run = h.add_run("Reporte de Avance")
         run.bold = True
-        run.font.size = Pt(20)
+        run.font.size = Pt(28)
         run.font.color.rgb = RGBColor(0x1E, 0x3A, 0x8A)
-
         sub = doc.add_paragraph()
         sub.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        sr = sub.add_run(f"Reporte exportado · {period_label}")
-        sr.font.size = Pt(12)
-        sr.font.color.rgb = RGBColor(0x64, 0x75, 0x8B)
-
+        sr = sub.add_run(project_name)
+        sr.font.size = Pt(18)
+        sr.bold = True
+        sr.font.color.rgb = RGBColor(0x0F, 0x17, 0x2A)
+        if project_objeto:
+            obj = doc.add_paragraph()
+            obj.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            obr = obj.add_run(project_objeto)
+            obr.italic = True
+            obr.font.size = Pt(11)
+            obr.font.color.rgb = RGBColor(0x33, 0x33, 0x33)
         meta = doc.add_paragraph()
         meta.alignment = WD_ALIGN_PARAGRAPH.CENTER
         mr = meta.add_run(
             f"Contrato: {project_contract}    ·    Constructora: {project_constructora}"
         )
-        mr.font.size = Pt(10)
+        mr.font.size = Pt(11)
         mr.font.color.rgb = RGBColor(0x64, 0x75, 0x8B)
-
-        date_p = doc.add_paragraph()
-        date_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        dr = date_p.add_run(datetime.now(timezone.utc).strftime("Generado %Y-%m-%d %H:%M UTC"))
-        dr.font.size = Pt(9)
-        dr.font.color.rgb = RGBColor(0x94, 0xA3, 0xB8)
+        pp = doc.add_paragraph()
+        pp.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        ppr = pp.add_run(f"Período: {fechas_label}     ·     {area_label}")
+        ppr.font.size = Pt(11)
+        ppr.font.color.rgb = RGBColor(0x64, 0x75, 0x8B)
 
         any_data = False
 
@@ -3751,8 +4077,6 @@ async def export_reports_docx(
                 continue
             any_data = True
             node_path = path_cache.get(n["id"]) or n.get("name", "")
-            mtype = n.get("measurement_type") or "—"
-            actividad = f"Supervisión de obra / {_measurement_label(mtype)}"
 
             # Separador por nodo
             doc.add_page_break()
@@ -3821,16 +4145,27 @@ async def export_reports_docx(
                 _av = r.get("avance")
                 avance_str = str(_av).strip() if _av not in (None, "") else "—"
                 ts = r.get("created_at")
-                fecha_str = _fmt_fecha_es(ts) if isinstance(ts, datetime) else "—"
+                fecha_str = _fmt_fecha_dd_mm_yyyy(ts) if isinstance(ts, datetime) else "—"
                 nombre = r.get("captured_by_name") or "—"
-                contratista_rep = (r.get("contratista") or "").strip() or (project_constructora or "—")
-                contrato_rep = (r.get("contract_number") or "").strip() or project_contract
+                contratista_rep = (project_constructora or "—").strip()
                 unidad_r = (r.get("unidad") or "m").strip() or "m"
                 personal_list = [p for p in (r.get("personnel") or []) if p]
                 equipo_list = [e for e in (r.get("equipment") or []) if e]
                 personal_str = ", ".join(personal_list) if personal_list else "N/A"
                 equipo_str = ", ".join(equipo_list) if equipo_list else "N/A"
-                obs_str = (r.get("notes") or "").strip() or "N/A"
+                obs_str = (r.get("observaciones") or r.get("notes") or "").strip() or "N/A"
+                incidencias_str = (r.get("incidencias") or "").strip() or None
+                sev = (r.get("severidad") or "informativo").lower()
+                sev_label = _severidad_label(sev).upper()
+
+                # Banner de severidad
+                sev_p = doc.add_paragraph()
+                sev_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                sev_r = sev_p.add_run(f"[ {sev_label} ]")
+                sev_r.bold = True
+                sev_r.font.size = Pt(11)
+                hexc = _severidad_hex(sev).lstrip("#")
+                sev_r.font.color.rgb = RGBColor(int(hexc[0:2], 16), int(hexc[2:4], 16), int(hexc[4:6], 16))
 
                 table = doc.add_table(rows=0, cols=2)
                 table.autofit = True
@@ -3847,24 +4182,52 @@ async def export_reports_docx(
                     pvr.font.size = Pt(10)
                     pvr.font.color.rgb = RGBColor(0x0F, 0x17, 0x2A)
 
+                # === Orden institucional ===
                 _row("Fecha", fecha_str)
-                _row("Nombre", nombre)
-                _row("Actividad", actividad)
-                _row("No. De Contrato", contrato_rep)
-                _row("Contratista", contratista_rep)
-                _row("Ubicación", node_path)
+                _row("Especialista", nombre)
+                _row("Constructora", contratista_rep)
+                _row("No. de Contrato", project_contract)
+                _row("Nodo / Ubicación", node_path)
                 _row("Reporte de avance",
                      f"Primera: {primera_str} {unidad_r}  |  Última: {ultima_str} {unidad_r}  |  Avance: {avance_str}")
+                if incidencias_str:
+                    _row("Incidencias", incidencias_str)
                 _row("Personal", personal_str)
                 _row("Equipo", equipo_str)
-                _row("Observaciones", obs_str)
+                if obs_str and obs_str != "N/A":
+                    _row("Observaciones", obs_str)
 
-                foot = doc.add_paragraph()
-                foot.alignment = WD_ALIGN_PARAGRAPH.LEFT
-                fr = foot.add_run(f"Capturado por: {nombre}")
-                fr.italic = True
-                fr.font.size = Pt(8)
-                fr.font.color.rgb = RGBColor(0x64, 0x75, 0x8B)
+            # === Sección "Notas/Noticias" del nodo (Importante+Urgente) ===
+            node_announ = announcements_by_node.get(n["id"]) or []
+            if node_announ:
+                doc.add_page_break()
+                head = doc.add_paragraph()
+                head.alignment = WD_ALIGN_PARAGRAPH.LEFT
+                hr = head.add_run(f"Notas y noticias · {node_path}")
+                hr.bold = True
+                hr.font.size = Pt(16)
+                hr.font.color.rgb = RGBColor(0x1E, 0x3A, 0x8A)
+                for ann in node_announ:
+                    sev_a = (ann.get("jerarquia") or "informativo").lower()
+                    hexa = _severidad_hex(sev_a).lstrip("#")
+                    note_p = doc.add_paragraph()
+                    note_p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+                    note_label = note_p.add_run(f"[ {_severidad_label(sev_a).upper()} ]   ")
+                    note_label.bold = True
+                    note_label.font.size = Pt(10)
+                    note_label.font.color.rgb = RGBColor(int(hexa[0:2], 16), int(hexa[2:4], 16), int(hexa[4:6], 16))
+                    title_r = note_p.add_run((ann.get("title") or "—").strip())
+                    title_r.bold = True
+                    title_r.font.size = Pt(11)
+                    title_r.font.color.rgb = RGBColor(0x0F, 0x17, 0x2A)
+                    date_r = note_p.add_run(f"    ({_fmt_fecha_dd_mm_yyyy(ann.get('created_at'))})")
+                    date_r.italic = True
+                    date_r.font.size = Pt(9)
+                    date_r.font.color.rgb = RGBColor(0x64, 0x75, 0x8B)
+                    body_p = doc.add_paragraph()
+                    br = body_p.add_run((ann.get("body") or "").strip())
+                    br.font.size = Pt(10)
+                    br.font.color.rgb = RGBColor(0x0F, 0x17, 0x2A)
 
         if not any_data:
             empty = doc.add_paragraph()
@@ -3891,9 +4254,19 @@ async def export_reports_docx(
 async def export_reports_pptx(
     pid: str,
     period: str = Query("today", description="today|yesterday|week|month"),
+    area_id: Optional[str] = Query(None, description="Filtro por área (opcional)"),
+    scope: Optional[str] = Query(None, description="mine|area (para especialistas)"),
     user: dict = Depends(current_user),
 ):
-    """Exporta reportes en formato PowerPoint (.pptx). 100 % en RAM."""
+    """Exporta reportes en formato PowerPoint (.pptx) 100 % institucional.
+
+    - SIN branding 'SynCo'.
+    - Logo de la constructora si está disponible (alta resolución).
+    - Filtros: severidad por rol, área opcional, scope para especialistas.
+    - Inyecta noticias Importante/Urgente por nodo al final de su sección.
+    - Reordena los campos siguiendo el orden institucional (igual a PDF/DOCX).
+    - Fechas en zona horaria 'America/Mexico_City' (DD-MM-YYYY).
+    """
     try:
         import base64
         from pptx import Presentation
@@ -3903,16 +4276,30 @@ async def export_reports_pptx(
     except Exception as e:
         raise HTTPException(500, f"python-pptx no instalado: {e}")
 
-    data = await _gather_export_data(pid, period, user)
+    scope_mine_only = (scope or "").lower() == "mine"
+    data = await _gather_export_data(
+        pid, period, user, area_id=area_id, scope_mine_only=scope_mine_only,
+    )
     proj = data["proj"]
     leaf_nodes = data["leaf_nodes"]
     reports_by_node = data["reports_by_node"]
+    announcements_by_node = data["announcements_by_node"]
     path_cache = data["path_cache"]
-    period_label = data["period_label"]
+    start_dt = data["start_dt"]
+    end_dt = data["end_dt"]
 
     project_name = proj.get("name", "Proyecto")
     project_contract = proj.get("contract_number") or "—"
     project_constructora = proj.get("constructora") or "—"
+    project_objeto = (proj.get("objeto_contrato") or "").strip() or None
+    constructora_logo_b64 = (proj.get("constructora_logo") or "").strip() or None
+    fechas_label = f"{_fmt_fecha_dd_mm_yyyy(start_dt)} a {_fmt_fecha_dd_mm_yyyy(end_dt)}"
+
+    area_label = "Todas las áreas"
+    if area_id:
+        area = await db.areas.find_one({"id": area_id, "project_id": pid})
+        if area:
+            area_label = f"Área: {area.get('name', '—')}"
 
     def _build_pptx_blocking() -> bytes:
         prs = Presentation()
@@ -3936,40 +4323,70 @@ async def export_reports_pptx(
             run.font.color.rgb = PRGBColor(*color)
             return tb
 
+        def add_logo(slide, x, y, w_cm: float, h_cm: float):
+            """Inserta el logo de la constructora si está disponible."""
+            if not constructora_logo_b64:
+                return False
+            try:
+                raw = base64.b64decode(_strip_b64_prefix(constructora_logo_b64))
+                slide.shapes.add_picture(
+                    io.BytesIO(raw), x, y,
+                    width=Cm(w_cm), height=Cm(h_cm),
+                )
+                return True
+            except Exception:
+                return False
+
+        def add_header_footer(slide):
+            """Encabezado (constructora + contrato) y pie (proyecto + fecha exportación)."""
+            # Header: logo + texto institucional
+            if constructora_logo_b64:
+                try:
+                    raw = base64.b64decode(_strip_b64_prefix(constructora_logo_b64))
+                    slide.shapes.add_picture(
+                        io.BytesIO(raw), Cm(0.6), Cm(0.25),
+                        height=Cm(1.0),
+                    )
+                except Exception:
+                    pass
+            add_text(slide, Cm(2.2), Cm(0.4), SW - Cm(3.5), Cm(0.8),
+                     f"{project_constructora}   ·   Contrato {project_contract}",
+                     size=10, bold=True, color=(0x1E, 0x3A, 0x8A))
+            # Footer
+            export_stamp = _fmt_fecha_dd_mm_yyyy_hhmm(datetime.now(timezone.utc))
+            add_text(slide, Cm(1.0), SH - Cm(0.7), SW - Cm(2.0), Cm(0.5),
+                     f"{project_name}   ·   Exportado {export_stamp}",
+                     size=8, italic=True, color=(0x64, 0x75, 0x8B),
+                     align=PP_ALIGN.CENTER)
+
         # ===== PORTADA =====
         s = prs.slides.add_slide(blank)
+        logo_w = 6.0
+        logo_h = 2.6
+        logo_x = (SW - Cm(logo_w)) // 2
+        added_logo = add_logo(s, logo_x, Cm(1.4), logo_w, logo_h)
+        if not added_logo:
+            # Si no hay logo, dejamos espacio en blanco para centrar el título.
+            pass
 
-        # Logo DIRAC en la portada (descarga 100% en RAM con BytesIO).
-        # CERO huella local: no se escribe a disco.
-        try:
-            import requests as _http  # local import para no inflar el módulo
-            _logo_url = (
-                "https://customer-assets.emergentagent.com/"
-                "job_offline-report-sync/artifacts/eprp6ziy_logo%20driac.png"
-            )
-            _logo_resp = _http.get(_logo_url, timeout=8)
-            if _logo_resp.status_code == 200 and _logo_resp.content:
-                _logo_buf = io.BytesIO(_logo_resp.content)
-                _logo_w = Cm(5.0)
-                _logo_h = Cm(2.2)
-                _logo_x = (SW - _logo_w) // 2
-                _logo_y = Cm(1.6)
-                s.shapes.add_picture(_logo_buf, _logo_x, _logo_y,
-                                     width=_logo_w, height=_logo_h)
-        except Exception as _logo_err:  # pragma: no cover
-            logging.warning("No se pudo incrustar logo DIRAC en PPTX: %s", _logo_err)
-
-        add_text(s, Cm(1.5), Cm(4.5), SW - Cm(3.0), Cm(2.0),
-                 f"SynCo · {project_name}",
-                 size=36, bold=True, color=(0x1E, 0x3A, 0x8A), align=PP_ALIGN.CENTER)
-        add_text(s, Cm(1.5), Cm(7.0), SW - Cm(3.0), Cm(1.0),
-                 f"Reporte exportado · {period_label}",
-                 size=18, color=(0x64, 0x75, 0x8B), align=PP_ALIGN.CENTER)
-        add_text(s, Cm(1.5), Cm(8.5), SW - Cm(3.0), Cm(1.0),
+        add_text(s, Cm(1.5), Cm(4.6), SW - Cm(3.0), Cm(1.5),
+                 "Reporte de Avance",
+                 size=40, bold=True, color=(0x1E, 0x3A, 0x8A), align=PP_ALIGN.CENTER)
+        add_text(s, Cm(1.5), Cm(6.4), SW - Cm(3.0), Cm(1.2),
+                 project_name,
+                 size=24, bold=True, color=(0x0F, 0x17, 0x2A), align=PP_ALIGN.CENTER)
+        if project_objeto:
+            add_text(s, Cm(1.5), Cm(7.8), SW - Cm(3.0), Cm(1.0),
+                     project_objeto,
+                     size=14, italic=True, color=(0x33, 0x33, 0x33), align=PP_ALIGN.CENTER)
+        add_text(s, Cm(1.5), Cm(9.4), SW - Cm(3.0), Cm(0.8),
                  f"Contrato: {project_contract}    ·    Constructora: {project_constructora}",
-                 size=12, color=(0x64, 0x75, 0x8B), align=PP_ALIGN.CENTER)
-        add_text(s, Cm(1.5), Cm(12.5), SW - Cm(3.0), Cm(0.8),
-                 datetime.now(timezone.utc).strftime("Generado %Y-%m-%d %H:%M UTC"),
+                 size=13, color=(0x64, 0x75, 0x8B), align=PP_ALIGN.CENTER)
+        add_text(s, Cm(1.5), Cm(10.4), SW - Cm(3.0), Cm(0.8),
+                 f"Período: {fechas_label}     ·     {area_label}",
+                 size=13, color=(0x64, 0x75, 0x8B), align=PP_ALIGN.CENTER)
+        add_text(s, Cm(1.5), Cm(13.2), SW - Cm(3.0), Cm(0.6),
+                 f"Generado {_fmt_fecha_dd_mm_yyyy_hhmm(datetime.now(timezone.utc))}",
                  size=9, color=(0x94, 0xA3, 0xB8), align=PP_ALIGN.CENTER)
 
         any_data = False
@@ -3979,11 +4396,10 @@ async def export_reports_pptx(
                 continue
             any_data = True
             node_path = path_cache.get(n["id"]) or n.get("name", "")
-            mtype = n.get("measurement_type") or "—"
-            actividad = f"Supervisión de obra / {_measurement_label(mtype)}"
 
             # === Slide separador por nodo ===
             s = prs.slides.add_slide(blank)
+            add_header_footer(s)
             add_text(s, Cm(1.5), Cm(5.0), SW - Cm(3.0), Cm(2.0),
                      node_path, size=32, bold=True, color=(0x1E, 0x3A, 0x8A),
                      align=PP_ALIGN.CENTER)
@@ -4000,11 +4416,7 @@ async def export_reports_pptx(
 
             for r in node_reps:
                 slide = prs.slides.add_slide(blank)
-
-                # Header
-                add_text(slide, Cm(1.0), Cm(0.4), SW - Cm(2.0), Cm(0.8),
-                         f"SynCo · {project_name}",
-                         size=11, bold=True, color=(0x1E, 0x3A, 0x8A))
+                add_header_footer(slide)
 
                 # Foto izquierda
                 photo_x = Cm(1.0)
@@ -4046,36 +4458,51 @@ async def export_reports_pptx(
                 _av = r.get("avance")
                 avance_str = str(_av).strip() if _av not in (None, "") else "—"
                 ts = r.get("created_at")
-                fecha_str = _fmt_fecha_es(ts) if isinstance(ts, datetime) else "—"
+                fecha_str = _fmt_fecha_dd_mm_yyyy(ts) if isinstance(ts, datetime) else "—"
                 nombre = r.get("captured_by_name") or "—"
-                contratista_rep = (r.get("contratista") or "").strip() or (project_constructora or "—")
-                contrato_rep = (r.get("contract_number") or "").strip() or project_contract
+                contratista_rep = (project_constructora or "—").strip()
                 unidad_r = (r.get("unidad") or "m").strip() or "m"
                 personal_list = [p for p in (r.get("personnel") or []) if p]
                 equipo_list = [e for e in (r.get("equipment") or []) if e]
                 personal_str = ", ".join(personal_list) if personal_list else "N/A"
                 equipo_str = ", ".join(equipo_list) if equipo_list else "N/A"
-                obs_str = (r.get("notes") or "").strip() or "N/A"
+                obs_str = (r.get("observaciones") or r.get("notes") or "").strip() or "N/A"
+                incidencias_str = (r.get("incidencias") or "").strip() or None
+                sev = (r.get("severidad") or "informativo").lower()
+                sev_label = _severidad_label(sev).upper()
+                hexc = _severidad_hex(sev).lstrip("#")
+                sev_color = (int(hexc[0:2], 16), int(hexc[2:4], 16), int(hexc[4:6], 16))
 
                 data_x = Cm(11.5)
                 data_y = Cm(1.6)
                 data_w = SW - data_x - Cm(1.0)
 
+                # Banner de severidad arriba de la tabla de datos
+                add_text(slide, data_x, data_y, data_w, Cm(0.7),
+                         f"[ {sev_label} ]", size=12, bold=True,
+                         color=sev_color, align=PP_ALIGN.LEFT)
+
                 rows = [
                     ("Fecha", fecha_str),
-                    ("Nombre", nombre),
-                    ("Actividad", actividad),
-                    ("No. De Contrato", contrato_rep),
-                    ("Contratista", contratista_rep),
-                    ("Ubicación", node_path),
+                    ("Especialista", nombre),
+                    ("Constructora", contratista_rep),
+                    ("No. de Contrato", project_contract),
+                    ("Nodo / Ubicación", node_path),
                     ("Reporte de avance",
-                     f"P: {primera_str} {unidad_r}  |  U: {ultima_str} {unidad_r}  |  Avance: {avance_str}"),
+                     f"Primera: {primera_str} {unidad_r}  |  Última: {ultima_str} {unidad_r}  |  Avance: {avance_str}"),
+                ]
+                if incidencias_str:
+                    rows.append(("Incidencias",
+                                 incidencias_str[:240] + ("…" if len(incidencias_str) > 240 else "")))
+                rows.extend([
                     ("Personal", personal_str),
                     ("Equipo", equipo_str),
-                    ("Observaciones", obs_str[:240] + ("…" if len(obs_str) > 240 else "")),
-                ]
+                ])
+                if obs_str and obs_str != "N/A":
+                    rows.append(("Observaciones",
+                                 obs_str[:240] + ("…" if len(obs_str) > 240 else "")))
 
-                tb = slide.shapes.add_textbox(data_x, data_y, data_w, Cm(11.0))
+                tb = slide.shapes.add_textbox(data_x, data_y + Cm(0.8), data_w, Cm(10.5))
                 tf = tb.text_frame
                 tf.word_wrap = True
                 first = True
@@ -4095,13 +4522,50 @@ async def export_reports_pptx(
                     r_val.font.color.rgb = PRGBColor(0x0F, 0x17, 0x2A)
                     first = False
 
-                # Footer
-                add_text(slide, Cm(1.0), SH - Cm(0.8), SW - Cm(2.0), Cm(0.6),
-                         f"Capturado por: {nombre}",
-                         size=9, italic=True, color=(0x64, 0x75, 0x8B))
+            # === Slide(s) de Notas/Noticias vinculadas al nodo ===
+            node_announ = announcements_by_node.get(n["id"]) or []
+            if node_announ:
+                an_slide = prs.slides.add_slide(blank)
+                add_header_footer(an_slide)
+                add_text(an_slide, Cm(1.0), Cm(1.4), SW - Cm(2.0), Cm(1.2),
+                         f"Notas y noticias · {node_path}",
+                         size=22, bold=True, color=(0x1E, 0x3A, 0x8A),
+                         align=PP_ALIGN.LEFT)
+                cur_y = Cm(3.0)
+                for ann in node_announ:
+                    if cur_y > Cm(12.5):
+                        # Nuevo slide si se llena el espacio
+                        an_slide = prs.slides.add_slide(blank)
+                        add_header_footer(an_slide)
+                        add_text(an_slide, Cm(1.0), Cm(1.4), SW - Cm(2.0), Cm(1.2),
+                                 f"Notas y noticias · {node_path} (cont.)",
+                                 size=22, bold=True, color=(0x1E, 0x3A, 0x8A),
+                                 align=PP_ALIGN.LEFT)
+                        cur_y = Cm(3.0)
+                    sev_a = (ann.get("jerarquia") or "informativo").lower()
+                    hexa = _severidad_hex(sev_a).lstrip("#")
+                    sev_a_color = (int(hexa[0:2], 16), int(hexa[2:4], 16), int(hexa[4:6], 16))
+                    add_text(an_slide, Cm(1.0), cur_y, Cm(4.5), Cm(0.6),
+                             f"[ {_severidad_label(sev_a).upper()} ]",
+                             size=10, bold=True, color=sev_a_color)
+                    add_text(an_slide, Cm(5.5), cur_y, SW - Cm(7.0), Cm(0.6),
+                             (ann.get("title") or "—").strip(),
+                             size=12, bold=True, color=(0x0F, 0x17, 0x2A))
+                    add_text(an_slide, Cm(5.5), cur_y + Cm(0.6),
+                             SW - Cm(7.0), Cm(0.5),
+                             f"({_fmt_fecha_dd_mm_yyyy(ann.get('created_at'))})",
+                             size=9, italic=True, color=(0x64, 0x75, 0x8B))
+                    body_text = (ann.get("body") or "").strip()
+                    if body_text:
+                        add_text(an_slide, Cm(5.5), cur_y + Cm(1.1),
+                                 SW - Cm(7.0), Cm(1.2),
+                                 body_text[:220] + ("…" if len(body_text) > 220 else ""),
+                                 size=10, color=(0x0F, 0x17, 0x2A))
+                    cur_y += Cm(2.5)
 
         if not any_data:
             s2 = prs.slides.add_slide(blank)
+            add_header_footer(s2)
             add_text(s2, Cm(1.5), Cm(6.0), SW - Cm(3.0), Cm(2.0),
                      "Sin reportes en el período seleccionado.",
                      size=20, italic=True, color=(0x64, 0x75, 0x8B),

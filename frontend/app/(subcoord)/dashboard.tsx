@@ -72,6 +72,9 @@ export default function SubCoordDashboard() {
   // P4 - Estado del modal de exportación avanzada
   const [expFormat, setExpFormat] = useState<'xlsx' | 'pdf' | 'docx' | 'pptx'>('xlsx');
   const [expPeriod, setExpPeriod] = useState<'today' | 'yesterday' | 'week' | 'month'>('today');
+  // P0 Mega-Feature: filtro por Área para exportación (Supervisores)
+  const [expAreas, setExpAreas] = useState<Array<{ id: string; name: string; color?: string }>>([]);
+  const [expAreaId, setExpAreaId] = useState<string | null>(null); // null = "Todas las áreas"
 
   const loadProjects = useCallback(async () => {
     try {
@@ -355,6 +358,21 @@ export default function SubCoordDashboard() {
     }
   }
 
+  // P0 Mega-Feature: cargar áreas al abrir el modal de exportación
+  useEffect(() => {
+    if (!advExportOpen || !pid) return;
+    let alive = true;
+    (async () => {
+      try {
+        const list = await api.listAreas(pid);
+        if (alive) setExpAreas((list || []).map((a) => ({ id: a.id, name: a.name, color: a.color })));
+      } catch {
+        if (alive) setExpAreas([]);
+      }
+    })();
+    return () => { alive = false; };
+  }, [advExportOpen, pid]);
+
   // P0 - Exportación Avanzada: PDF / XLSX / DOCX / PPTX × Hoy/Ayer/Semana/Mes
   async function onAdvExport() {
     if (!pid || advExporting) return;
@@ -362,20 +380,21 @@ export default function SubCoordDashboard() {
       setAdvExporting(true);
       let blob: Blob;
       let filename: string;
+      const exportOpts = expAreaId ? { area_id: expAreaId } : undefined;
       if (expFormat === 'xlsx') {
         const r = await api.downloadReportsXlsx(pid);
         blob = r.blob;
         filename = r.filename;
       } else if (expFormat === 'pdf') {
-        const r = await api.downloadReportsPdf(pid, expPeriod);
+        const r = await api.downloadReportsPdf(pid, expPeriod, exportOpts);
         blob = r.blob;
         filename = r.filename;
       } else if (expFormat === 'docx') {
-        const r = await api.downloadReportsDocx(pid, expPeriod);
+        const r = await api.downloadReportsDocx(pid, expPeriod, exportOpts);
         blob = r.blob;
         filename = r.filename;
       } else {
-        const r = await api.downloadReportsPptx(pid, expPeriod);
+        const r = await api.downloadReportsPptx(pid, expPeriod, exportOpts);
         blob = r.blob;
         filename = r.filename;
       }
@@ -1065,6 +1084,46 @@ export default function SubCoordDashboard() {
                   </Text>
                 )}
               </View>
+              {expFormat !== 'xlsx' && expAreas.length > 0 && (
+                <View>
+                  <Text style={styles.advLabel}>Área</Text>
+                  <View style={styles.advGrid}>
+                    <Pressable
+                      onPress={() => setExpAreaId(null)}
+                      style={[styles.advChip, expAreaId === null && styles.advChipActive]}
+                    >
+                      <Text style={[styles.advChipTxt, expAreaId === null && styles.advChipTxtActive]}>
+                        Todas
+                      </Text>
+                    </Pressable>
+                    {expAreas.map((a) => {
+                      const active = expAreaId === a.id;
+                      return (
+                        <Pressable
+                          key={a.id}
+                          onPress={() => setExpAreaId(a.id)}
+                          style={[styles.advChip, active && styles.advChipActive]}
+                        >
+                          {!!a.color && (
+                            <View
+                              style={{
+                                width: 8, height: 8, borderRadius: 4,
+                                backgroundColor: a.color, marginRight: 6,
+                              }}
+                            />
+                          )}
+                          <Text style={[styles.advChipTxt, active && styles.advChipTxtActive]}>
+                            {a.name}
+                          </Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                  <Text style={styles.advHint}>
+                    Filtra los reportes por área. Sólo se incluyen severidades Importante y Urgente.
+                  </Text>
+                </View>
+              )}
               <Pressable
                 onPress={onAdvExport}
                 disabled={advExporting}
