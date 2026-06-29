@@ -14,6 +14,7 @@ export default function NewProjectScreen() {
   const [name, setName] = useState('');
   const [constructora, setConstructora] = useState('');
   const [contract, setContract] = useState('');
+  const [objetoContrato, setObjetoContrato] = useState('');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [description, setDescription] = useState('');
@@ -32,6 +33,7 @@ export default function NewProjectScreen() {
         name: name.trim(),
         constructora: constructora.trim(),
         contract_number: contract.trim(),
+        objeto_contrato: objetoContrato.trim() || null,
         start_date: startDate.trim() || null,
         end_date: endDate.trim() || null,
         description: description.trim() || null,
@@ -61,6 +63,14 @@ export default function NewProjectScreen() {
         <Field label="Nombre del proyecto *" value={name} onChangeText={setName} placeholder="Ej. Libramiento Norte Tramo II" icon="briefcase-outline" />
         <Field label="Constructora *" value={constructora} onChangeText={setConstructora} placeholder="Ej. ICA SA de CV" icon="business-outline" />
         <Field label="Número de contrato *" value={contract} onChangeText={setContract} placeholder="Ej. SCT-2026-114" icon="document-text-outline" />
+        <Field
+          label="Objeto del contrato (opcional)"
+          value={objetoContrato}
+          onChangeText={setObjetoContrato}
+          placeholder="Ej. Supervisión técnica de la construcción del Tramo III…"
+          icon="reader-outline"
+          multiline
+        />
         <Field label="Fecha de inicio (YYYY-MM-DD)" value={startDate} onChangeText={setStartDate} placeholder="2026-01-15" icon="calendar-outline" />
         <Field label="Fecha de término (YYYY-MM-DD)" value={endDate} onChangeText={setEndDate} placeholder="2027-06-30" icon="calendar-outline" />
         <Field label="Descripción (opcional)" value={description} onChangeText={setDescription} placeholder="Notas…" icon="chatbox-ellipses-outline" multiline />

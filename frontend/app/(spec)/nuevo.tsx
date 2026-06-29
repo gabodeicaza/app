@@ -729,6 +729,7 @@ export default function SpecCaptureScreen() {
       <ScrollView
         contentContainerStyle={{ padding: spacing.md, paddingBottom: insets.bottom + spacing.xl + 20 }}
         keyboardShouldPersistTaps="handled"
+        nestedScrollEnabled
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} />}
       >
         {/* AUTO-DATA (read-only) */}
@@ -1248,10 +1249,10 @@ function DynamicItemRow({
   const [focused, setFocused] = useState(false);
   const suggestions = useMemo(() => {
     const q = (item.desc || '').trim().toLowerCase();
-    if (!q) return catalog.slice(0, 6);
+    if (!q) return catalog.slice(0, 60);
     return catalog
       .filter((s) => s.toLowerCase().includes(q) && s.toLowerCase() !== q)
-      .slice(0, 6);
+      .slice(0, 60);
   }, [catalog, item.desc]);
 
   return (
@@ -1284,7 +1285,12 @@ function DynamicItemRow({
           onBlur={() => setTimeout(() => setFocused(false), 120)}
         />
         {focused && suggestions.length > 0 ? (
-          <View style={styles.suggestionsBox}>
+          <ScrollView
+            style={styles.suggestionsBox}
+            nestedScrollEnabled
+            keyboardShouldPersistTaps="always"
+            showsVerticalScrollIndicator
+          >
             {suggestions.map((s) => (
               <Pressable
                 key={s}
@@ -1296,7 +1302,7 @@ function DynamicItemRow({
                 <Text style={styles.suggestionTxt} numberOfLines={1}>{s}</Text>
               </Pressable>
             ))}
-          </View>
+          </ScrollView>
         ) : null}
       </View>
       <Pressable onPress={onRemove} style={styles.removeBtn} hitSlop={6}>
@@ -1799,6 +1805,7 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     paddingVertical: 4,
     zIndex: 10,
+    maxHeight: 220,
     ...shadow.card,
   },
   suggestionItem: {

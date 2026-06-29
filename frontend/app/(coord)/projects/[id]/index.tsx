@@ -102,14 +102,18 @@ export default function ProjectDetailScreen() {
   const [refUploadName, setRefUploadName] = useState<string | null>(null); // nombre archivo en curso
   const [refOpeningId, setRefOpeningId] = useState<string | null>(null);   // file_id en descarga
 
-  // P0 Mega-Feature: configuración de Contrato y Catálogos dinámicos
+  // P0 Mega-Feature: configuración de Catálogos dinámicos (personal/equipo)
   const [catModalOpen, setCatModalOpen] = useState(false);
   const [catSaving, setCatSaving] = useState(false);
-  const [catObjeto, setCatObjeto] = useState('');
   const [catPersonalList, setCatPersonalList] = useState<string[]>([]);
   const [catEquipoList, setCatEquipoList] = useState<string[]>([]);
   const [catPersonalDraft, setCatPersonalDraft] = useState('');
   const [catEquipoDraft, setCatEquipoDraft] = useState('');
+
+  // P0 — Objeto del contrato (modal independiente, también disponible al crear el proyecto)
+  const [objetoModalOpen, setObjetoModalOpen] = useState(false);
+  const [objetoSaving, setObjetoSaving] = useState(false);
+  const [objetoDraft, setObjetoDraft] = useState('');
 
   const load = useCallback(async () => {
     try {
@@ -343,15 +347,38 @@ export default function ProjectDetailScreen() {
     catch (e: any) { Alert.alert('Error', e?.message || 'No se pudo archivar'); }
   }
 
-  // === Catálogos del proyecto: objeto del contrato + categorías personal/equipo
+  // === Catálogos del proyecto: categorías personal/equipo ====================
   function openCatModal() {
     if (!project) return;
-    setCatObjeto(project.objeto_contrato || '');
     setCatPersonalList(((project as any).categorias_personal as string[]) || []);
     setCatEquipoList(((project as any).categorias_equipo as string[]) || []);
     setCatPersonalDraft('');
     setCatEquipoDraft('');
     setCatModalOpen(true);
+  }
+
+  // === Objeto del contrato (modal independiente) ============================
+  function openObjetoModal() {
+    if (!project) return;
+    setObjetoDraft((project as any).objeto_contrato || '');
+    setObjetoModalOpen(true);
+  }
+
+  async function saveObjeto() {
+    if (!pid || objetoSaving) return;
+    try {
+      setObjetoSaving(true);
+      const upd = await api.updateProject(pid, {
+        objeto_contrato: objetoDraft.trim() || null,
+      } as any);
+      setProject((p) => ({ ...(p || ({} as any)), ...upd }));
+      setObjetoModalOpen(false);
+      Alert.alert('Guardado', 'El objeto del contrato se actualizó correctamente.');
+    } catch (e: any) {
+      Alert.alert('No se pudo guardar', e?.message || 'Inténtalo nuevamente.');
+    } finally {
+      setObjetoSaving(false);
+    }
   }
 
   function addCatPersonal() {
@@ -378,16 +405,13 @@ export default function ProjectDetailScreen() {
     if (!pid || catSaving) return;
     try {
       setCatSaving(true);
-      // 1) Guardar objeto_contrato vía updateProject
-      const upd = await api.updateProject(pid, {
-        objeto_contrato: catObjeto.trim() || null,
-      } as any);
-      // 2) Guardar catálogos dinámicos
+      // Guardar catálogos dinámicos (Personal / Equipo).
+      // Nota: `objeto_contrato` ya NO se edita aquí — vive en su propio modal (objetoModal).
       const upd2 = await api.setProjectCatalogos(pid, {
         categorias_personal: catPersonalList,
         categorias_equipo: catEquipoList,
       });
-      setProject((p) => ({ ...(p || ({} as any)), ...upd, ...upd2 }));
+      setProject((p) => ({ ...(p || ({} as any)), ...upd2 }));
       setCatModalOpen(false);
       Alert.alert('Guardado', 'La configuración del proyecto se actualizó correctamente.');
     } catch (e: any) {
@@ -590,9 +614,15 @@ export default function ProjectDetailScreen() {
               onPress={() => router.push({ pathname: '/(coord)/projects/[id]/invitations', params: { id: pid } })}
             />
             <ActionTile
-              icon="document-text-outline"
-              title="Contrato y Catálogos"
-              subtitle="Objeto del contrato · Categorías de personal y equipo"
+              icon="reader-outline"
+              title="Objeto del contrato"
+              subtitle="Descripción institucional que aparece en la portada de los reportes"
+              onPress={openObjetoModal}
+            />
+            <ActionTile
+              icon="list-circle-outline"
+              title="Catálogos (Personal y Equipo)"
+              subtitle="Categorías que el especialista verá al capturar reportes"
               onPress={openCatModal}
             />
             <ActionTile
@@ -1179,25 +1209,6 @@ export default function ProjectDetailScreen() {
               keyboardShouldPersistTaps="handled"
               contentContainerStyle={{ paddingHorizontal: spacing.md, paddingBottom: spacing.lg, gap: spacing.md }}
             >
-              <View>
-                <Text style={styles.catLabel}>Objeto del contrato</Text>
-                <Text style={styles.catHelper}>
-                  Descripción institucional. Aparece en la portada de los PDF/DOCX/PPTX.
-                </Text>
-                <TextInput
-                  value={catObjeto}
-                  onChangeText={setCatObjeto}
-                  placeholder="Ej. Supervisión técnica de la construcción del Tramo III…"
-                  placeholderTextColor={colors.textMuted}
-                  multiline
-                  numberOfLines={3}
-                  textAlignVertical="top"
-                  style={styles.catTextArea}
-                  maxLength={600}
-                />
-                <Text style={styles.catCounter}>{catObjeto.length} / 600</Text>
-              </View>
-
               <View>
                 <Text style={styles.catLabel}>Categorías de personal</Text>
                 <Text style={styles.catHelper}>

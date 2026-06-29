@@ -154,6 +154,24 @@ class ProjectIn(BaseModel):
     contratos_list: Optional[List[str]] = None  # Catálogo dinámico de números de contrato
     categorias_personal: Optional[List[str]] = None  # Catálogo de categorías de personal
     categorias_equipo: Optional[List[str]] = None  # Catálogo de categorías de equipo
+    constructora_logo: Optional[str] = None  # Base64 (data URI o crudo) del logo institucional
+
+
+class ProjectPatch(BaseModel):
+    """PUT parcial — todos los campos opcionales. No exige name/constructora/contract_number."""
+    name: Optional[str] = None
+    constructora: Optional[str] = None
+    contract_number: Optional[str] = None
+    objeto_contrato: Optional[str] = None
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    description: Optional[str] = None
+    reference_files: Optional[List[dict]] = None
+    contratistas_list: Optional[List[str]] = None
+    contratos_list: Optional[List[str]] = None
+    categorias_personal: Optional[List[str]] = None
+    categorias_equipo: Optional[List[str]] = None
+    constructora_logo: Optional[str] = None
 
 
 class ProjectOut(BaseModel):
@@ -782,17 +800,33 @@ async def get_project(pid: str, user: dict = Depends(current_user)):
 
 
 @api.put("/projects/{pid}")
-async def update_project(pid: str, body: ProjectIn, user: dict = Depends(require_role(ROLE_COORD))):
-    upd = {
-        "name": body.name.strip(),
-        "constructora": body.constructora.strip(),
-        "contract_number": body.contract_number.strip(),
-        "objeto_contrato": (body.objeto_contrato or "").strip() or None,
-        "start_date": body.start_date,
-        "end_date": body.end_date,
-        "description": (body.description or "").strip() or None,
-    }
-    # Sólo sobrescribimos reference_files si vienen explícitos en el payload
+async def update_project(pid: str, body: ProjectPatch, user: dict = Depends(require_role(ROLE_COORD))):
+    """PATCH parcial: sólo actualiza los campos enviados.
+
+    Permite, por ejemplo, actualizar únicamente `objeto_contrato` o catálogos
+    sin tener que reenviar name/constructora/contract_number.
+    """
+    existing = await db.projects.find_one({"id": pid})
+    if not existing:
+        raise HTTPException(404, "Proyecto no existe")
+
+    upd: dict = {}
+    if body.name is not None:
+        n = body.name.strip()
+        if n:
+            upd["name"] = n
+    if body.constructora is not None:
+        upd["constructora"] = body.constructora.strip()
+    if body.contract_number is not None:
+        upd["contract_number"] = body.contract_number.strip()
+    if body.objeto_contrato is not None:
+        upd["objeto_contrato"] = body.objeto_contrato.strip() or None
+    if body.start_date is not None:
+        upd["start_date"] = body.start_date
+    if body.end_date is not None:
+        upd["end_date"] = body.end_date
+    if body.description is not None:
+        upd["description"] = body.description.strip() or None
     if body.reference_files is not None:
         upd["reference_files"] = _sanitize_reference_files(body.reference_files)
     if body.contratistas_list is not None:
@@ -803,9 +837,13 @@ async def update_project(pid: str, body: ProjectIn, user: dict = Depends(require
         upd["categorias_personal"] = _sanitize_str_list(body.categorias_personal)
     if body.categorias_equipo is not None:
         upd["categorias_equipo"] = _sanitize_str_list(body.categorias_equipo)
-    r = await db.projects.update_one({"id": pid}, {"$set": upd})
-    if r.matched_count == 0:
-        raise HTTPException(404, "Proyecto no existe")
+    if body.constructora_logo is not None:
+        # Aceptamos cadena vacía para "limpiar" el logo
+        upd["constructora_logo"] = body.constructora_logo or None
+
+    if upd:
+        await db.projects.update_one({"id": pid}, {"$set": upd})
+
     p = await db.projects.find_one({"id": pid})
     p.pop("_id", None)
     p.setdefault("reference_files", [])
@@ -3429,6 +3467,55 @@ def _strip_b64_prefix(s: str) -> str:
     return s
 
 
+# ============================================================================
+# Logo institucional por defecto (DIRAC) — cache en memoria.
+# Si el proyecto NO tiene `constructora_logo` configurado, las exportaciones
+# usan el logo DIRAC para que la cabecera/portada nunca quede vacía.
+# ============================================================================
+_DIRAC_LOGO_URL = (
+    "https://customer-assets.emergentagent.com/"
+    "job_offline-report-sync/artifacts/eprp6ziy_logo%20driac.png"
+)
+_DIRAC_LOGO_CACHE: dict = {"bytes": None, "tried": False}
+
+
+def _get_default_logo_bytes() -> Optional[bytes]:
+    """Devuelve los bytes del logo DIRAC. Sólo descarga una vez por proceso.
+
+    Si la descarga falla, devuelve None y los exports renderizan sin logo.
+    """
+    if _DIRAC_LOGO_CACHE["bytes"] is not None:
+        return _DIRAC_LOGO_CACHE["bytes"]
+    if _DIRAC_LOGO_CACHE["tried"]:
+        return None
+    _DIRAC_LOGO_CACHE["tried"] = True
+    try:
+        import requests as _http
+        resp = _http.get(_DIRAC_LOGO_URL, timeout=6)
+        if resp.status_code == 200 and resp.content:
+            _DIRAC_LOGO_CACHE["bytes"] = resp.content
+            return resp.content
+    except Exception as e:  # pragma: no cover
+        logging.warning("No se pudo descargar logo DIRAC: %s", e)
+    return None
+
+
+def _resolve_export_logo_bytes(proj_logo_b64: Optional[str]) -> Optional[bytes]:
+    """Devuelve los bytes del logo institucional priorizando el del proyecto.
+
+    1) Si el proyecto tiene `constructora_logo` (base64), lo usa.
+    2) Si no, cae al logo DIRAC por defecto (cacheado).
+    3) Si todo falla, retorna None y las exportaciones omiten el logo.
+    """
+    import base64 as _b64
+    if proj_logo_b64:
+        try:
+            return _b64.b64decode(_strip_b64_prefix(proj_logo_b64))
+        except Exception:
+            pass
+    return _get_default_logo_bytes()
+
+
 @api.get("/projects/{pid}/export/reports.pdf")
 async def export_reports_pdf(
     pid: str,
@@ -3503,14 +3590,22 @@ async def export_reports_pdf(
         BORDER = HexColor("#E2E8F0")
         TEXT = HexColor("#0F172A")
 
+        # Bytes del logo institucional: prioriza el del proyecto, fallback DIRAC.
+        # Cargamos UNA SOLA VEZ para todo el PDF.
+        logo_bytes = _resolve_export_logo_bytes(constructora_logo_b64)
+        logo_reader = None
+        if logo_bytes:
+            try:
+                logo_reader = ImageReader(io.BytesIO(logo_bytes))
+            except Exception:
+                logo_reader = None
+
         def _draw_logo(x, y, max_w, max_h):
-            """Inyecta el logo de la constructora (alta resolución) si el proyecto lo tiene."""
-            if not constructora_logo_b64:
+            """Dibuja el logo institucional (constructora o DIRAC) en (x, y)."""
+            if logo_reader is None:
                 return False
             try:
-                raw = base64.b64decode(_strip_b64_prefix(constructora_logo_b64))
-                img = ImageReader(io.BytesIO(raw))
-                c.drawImage(img, x, y, width=max_w, height=max_h,
+                c.drawImage(logo_reader, x, y, width=max_w, height=max_h,
                             preserveAspectRatio=True, mask='auto')
                 return True
             except Exception:
@@ -3688,6 +3783,16 @@ async def export_reports_pdf(
                     c.setFont("Helvetica-Oblique", 10)
                     c.drawCentredString(PW / 2, photo_y + PHOTO_H / 2, "(sin fotografía)")
 
+                # === Contador "Foto 1 de N" si hay múltiples imágenes ======
+                if len(imgs) > 1:
+                    c.setFillColor(MUTED)
+                    c.setFont("Helvetica-Oblique", 8)
+                    c.drawCentredString(
+                        photo_x + PHOTO_W / 2,
+                        photo_y - 0.35 * cm,
+                        f"Foto 1 de {len(imgs)}",
+                    )
+
                 # === Bloque de datos a la derecha de la foto ==============
                 data_x = photo_x + PHOTO_W + 0.8 * cm
                 data_w = PW - data_x - 1.2 * cm
@@ -3767,6 +3872,79 @@ async def export_reports_pdf(
 
                 c.showPage()
                 page_num += 1
+
+                # =====================================================
+                # GALERÍA: fotos adicionales del MISMO reporte (si > 1)
+                # Imprimimos 4 fotos por página en grilla 2x2 con header.
+                # =====================================================
+                extra_imgs = imgs[1:] if len(imgs) > 1 else []
+                if extra_imgs:
+                    GRID_COLS = 2
+                    GRID_ROWS = 2
+                    PER_PAGE = GRID_COLS * GRID_ROWS  # = 4
+                    # Área útil bajo el encabezado
+                    GX0 = 1.5 * cm
+                    GY_TOP = PH - 3.0 * cm
+                    GY_BOT = 1.8 * cm
+                    GAP = 0.5 * cm
+                    grid_w = PW - 2 * GX0
+                    grid_h = GY_TOP - GY_BOT - 1.2 * cm  # reserva para subtítulo
+                    cell_w = (grid_w - GAP * (GRID_COLS - 1)) / GRID_COLS
+                    cell_h = (grid_h - GAP * (GRID_ROWS - 1)) / GRID_ROWS
+                    n_extras = len(extra_imgs)
+                    for chunk_start in range(0, n_extras, PER_PAGE):
+                        chunk = extra_imgs[chunk_start:chunk_start + PER_PAGE]
+                        draw_header(page_num)
+                        # Título de la galería
+                        c.setFillColor(BRAND)
+                        c.setFont("Helvetica-Bold", 14)
+                        c.drawString(
+                            GX0, PH - 3.0 * cm,
+                            f"Fotografías adicionales · {nombre} · {node_path[:60]}",
+                        )
+                        c.setStrokeColor(BORDER)
+                        c.setLineWidth(0.8)
+                        c.line(GX0, PH - 3.2 * cm, PW - GX0, PH - 3.2 * cm)
+                        c.setFillColor(MUTED)
+                        c.setFont("Helvetica-Oblique", 9)
+                        c.drawString(
+                            GX0, PH - 3.7 * cm,
+                            f"Reporte de {fecha_str} · Página {chunk_start // PER_PAGE + 1} de "
+                            f"{(n_extras + PER_PAGE - 1) // PER_PAGE}",
+                        )
+                        # Pintar grilla
+                        cy_top_grid = PH - 4.2 * cm
+                        for idx, b64 in enumerate(chunk):
+                            row = idx // GRID_COLS
+                            col = idx % GRID_COLS
+                            cx = GX0 + col * (cell_w + GAP)
+                            cyy = cy_top_grid - row * (cell_h + GAP) - cell_h
+                            try:
+                                raw_g = base64.b64decode(_strip_b64_prefix(b64))
+                                imgg = ImageReader(io.BytesIO(raw_g))
+                                c.drawImage(
+                                    imgg, cx, cyy, width=cell_w, height=cell_h,
+                                    preserveAspectRatio=True, mask='auto',
+                                )
+                            except Exception:
+                                c.setStrokeColor(BORDER)
+                                c.setFillColor(HexColor("#F8FAFC"))
+                                c.rect(cx, cyy, cell_w, cell_h, fill=1, stroke=1)
+                                c.setFillColor(MUTED)
+                                c.setFont("Helvetica-Oblique", 9)
+                                c.drawCentredString(
+                                    cx + cell_w / 2, cyy + cell_h / 2,
+                                    "(imagen no legible)",
+                                )
+                            # Contador "Foto X de N" debajo de la celda
+                            c.setFillColor(MUTED)
+                            c.setFont("Helvetica", 7)
+                            c.drawCentredString(
+                                cx + cell_w / 2, cyy - 0.3 * cm,
+                                f"Foto {chunk_start + idx + 2} de {len(imgs)}",
+                            )
+                        c.showPage()
+                        page_num += 1
 
             # =================================================================
             # NOTAS / NOTICIAS vinculadas al nodo (Importante + Urgente)
@@ -4003,6 +4181,9 @@ async def export_reports_docx(
             area_label = f"Área: {area.get('name', '—')}"
 
     def _build_docx_blocking() -> bytes:
+        # Resuelve logo institucional UNA sola vez (proyecto → DIRAC fallback)
+        logo_bytes = _resolve_export_logo_bytes(constructora_logo_b64)
+
         doc = Document()
         for section in doc.sections:
             section.left_margin = Cm(1.8)
@@ -4013,10 +4194,9 @@ async def export_reports_docx(
             header = section.header
             hp = header.paragraphs[0]
             hp.alignment = WD_ALIGN_PARAGRAPH.LEFT
-            if constructora_logo_b64:
+            if logo_bytes:
                 try:
-                    raw = base64.b64decode(_strip_b64_prefix(constructora_logo_b64))
-                    hp.add_run().add_picture(io.BytesIO(raw), height=Cm(1.2))
+                    hp.add_run().add_picture(io.BytesIO(logo_bytes), height=Cm(1.2))
                 except Exception:
                     pass
             hp.add_run(f"   {project_constructora}   ·   Contrato {project_contract}").font.size = Pt(9)
@@ -4029,12 +4209,11 @@ async def export_reports_docx(
             fr.font.color.rgb = RGBColor(0x64, 0x75, 0x8B)
 
         # === PORTADA ===
-        if constructora_logo_b64:
+        if logo_bytes:
             try:
-                raw = base64.b64decode(_strip_b64_prefix(constructora_logo_b64))
                 portada = doc.add_paragraph()
                 portada.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                portada.add_run().add_picture(io.BytesIO(raw), width=Cm(7))
+                portada.add_run().add_picture(io.BytesIO(logo_bytes), width=Cm(7))
             except Exception:
                 pass
         h = doc.add_paragraph()
@@ -4106,7 +4285,8 @@ async def export_reports_docx(
             for r in node_reps:
                 doc.add_page_break()
 
-                # Foto centrada
+                # Foto centrada (la primera). Las adicionales se imprimen
+                # más abajo en una sección "Fotografías adicionales".
                 img_b64 = None
                 imgs = r.get("images") or []
                 if imgs:
@@ -4118,6 +4298,13 @@ async def export_reports_docx(
                         img_p = doc.add_paragraph()
                         img_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
                         img_p.add_run().add_picture(img_buf, width=Cm(10))
+                        if len(imgs) > 1:
+                            cap = doc.add_paragraph()
+                            cap.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                            cap_r = cap.add_run(f"Foto 1 de {len(imgs)}")
+                            cap_r.italic = True
+                            cap_r.font.size = Pt(8)
+                            cap_r.font.color.rgb = RGBColor(0x64, 0x75, 0x8B)
                     except Exception:
                         p = doc.add_paragraph()
                         p.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -4196,6 +4383,33 @@ async def export_reports_docx(
                 _row("Equipo", equipo_str)
                 if obs_str and obs_str != "N/A":
                     _row("Observaciones", obs_str)
+
+                # === Galería de fotos adicionales (cuando hay 2+) ===
+                if len(imgs) > 1:
+                    gh = doc.add_paragraph()
+                    gh.alignment = WD_ALIGN_PARAGRAPH.LEFT
+                    gh_r = gh.add_run(f"Fotografías adicionales ({len(imgs) - 1})")
+                    gh_r.bold = True
+                    gh_r.font.size = Pt(11)
+                    gh_r.font.color.rgb = RGBColor(0x1E, 0x3A, 0x8A)
+                    for ex_idx, b64 in enumerate(imgs[1:], start=2):
+                        try:
+                            raw_ex = base64.b64decode(_strip_b64_prefix(b64))
+                            ip = doc.add_paragraph()
+                            ip.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                            ip.add_run().add_picture(io.BytesIO(raw_ex), width=Cm(10))
+                            cap = doc.add_paragraph()
+                            cap.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                            cap_r = cap.add_run(f"Foto {ex_idx} de {len(imgs)}")
+                            cap_r.italic = True
+                            cap_r.font.size = Pt(8)
+                            cap_r.font.color.rgb = RGBColor(0x64, 0x75, 0x8B)
+                        except Exception:
+                            err = doc.add_paragraph()
+                            err.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                            er = err.add_run(f"(Foto {ex_idx} no legible)")
+                            er.italic = True
+                            er.font.color.rgb = RGBColor(0x64, 0x75, 0x8B)
 
             # === Sección "Notas/Noticias" del nodo (Importante+Urgente) ===
             node_announ = announcements_by_node.get(n["id"]) or []
@@ -4323,14 +4537,16 @@ async def export_reports_pptx(
             run.font.color.rgb = PRGBColor(*color)
             return tb
 
+        # Logo institucional (proyecto o DIRAC). Una sola descarga.
+        logo_bytes = _resolve_export_logo_bytes(constructora_logo_b64)
+
         def add_logo(slide, x, y, w_cm: float, h_cm: float):
-            """Inserta el logo de la constructora si está disponible."""
-            if not constructora_logo_b64:
+            """Inserta el logo institucional (constructora o DIRAC)."""
+            if not logo_bytes:
                 return False
             try:
-                raw = base64.b64decode(_strip_b64_prefix(constructora_logo_b64))
                 slide.shapes.add_picture(
-                    io.BytesIO(raw), x, y,
+                    io.BytesIO(logo_bytes), x, y,
                     width=Cm(w_cm), height=Cm(h_cm),
                 )
                 return True
@@ -4338,13 +4554,11 @@ async def export_reports_pptx(
                 return False
 
         def add_header_footer(slide):
-            """Encabezado (constructora + contrato) y pie (proyecto + fecha exportación)."""
-            # Header: logo + texto institucional
-            if constructora_logo_b64:
+            """Encabezado (logo + constructora + contrato) y pie (proyecto + fecha)."""
+            if logo_bytes:
                 try:
-                    raw = base64.b64decode(_strip_b64_prefix(constructora_logo_b64))
                     slide.shapes.add_picture(
-                        io.BytesIO(raw), Cm(0.6), Cm(0.25),
+                        io.BytesIO(logo_bytes), Cm(0.6), Cm(0.25),
                         height=Cm(1.0),
                     )
                 except Exception:
@@ -4444,6 +4658,15 @@ async def export_reports_pptx(
                              color=(0x64, 0x75, 0x8B), italic=True,
                              align=PP_ALIGN.CENTER)
 
+                # Contador "Foto 1 de N" debajo de la foto principal
+                if len(imgs) > 1:
+                    add_text(
+                        slide, photo_x, photo_y + photo_h + Cm(0.1), photo_w, Cm(0.4),
+                        f"Foto 1 de {len(imgs)}",
+                        size=9, italic=True, color=(0x64, 0x75, 0x8B),
+                        align=PP_ALIGN.CENTER,
+                    )
+
                 # Datos derecha
                 def _raw_to_str(v):
                     if v is None or v == "":
@@ -4521,6 +4744,52 @@ async def export_reports_pptx(
                     r_val.font.size = Pt(10)
                     r_val.font.color.rgb = PRGBColor(0x0F, 0x17, 0x2A)
                     first = False
+
+                # === Slides de "Fotografías adicionales" (grilla 2x2) ===
+                if len(imgs) > 1:
+                    PER_PAGE = 4  # 2x2
+                    cell_w = Cm(11.0)
+                    cell_h = Cm(5.0)
+                    margin_x = Cm(1.0)
+                    margin_y_top = Cm(2.0)
+                    gap_x = Cm(0.5)
+                    gap_y = Cm(0.6)
+                    extras = imgs[1:]
+                    total_pages = (len(extras) + PER_PAGE - 1) // PER_PAGE
+                    for chunk_idx in range(total_pages):
+                        chunk = extras[chunk_idx * PER_PAGE:(chunk_idx + 1) * PER_PAGE]
+                        g_slide = prs.slides.add_slide(blank)
+                        add_header_footer(g_slide)
+                        add_text(
+                            g_slide, Cm(1.0), Cm(1.2), SW - Cm(2.0), Cm(0.7),
+                            f"Fotografías adicionales · {nombre} · {node_path[:60]}",
+                            size=16, bold=True, color=(0x1E, 0x3A, 0x8A),
+                            align=PP_ALIGN.LEFT,
+                        )
+                        for idx, b64 in enumerate(chunk):
+                            row = idx // 2
+                            col = idx % 2
+                            cx = margin_x + col * (cell_w + gap_x)
+                            cyy = margin_y_top + row * (cell_h + gap_y)
+                            try:
+                                raw_g = base64.b64decode(_strip_b64_prefix(b64))
+                                g_slide.shapes.add_picture(
+                                    io.BytesIO(raw_g), cx, cyy,
+                                    width=cell_w, height=cell_h,
+                                )
+                            except Exception:
+                                add_text(
+                                    g_slide, cx, cyy + cell_h / 2, cell_w, Cm(0.6),
+                                    "(imagen no legible)",
+                                    size=10, italic=True, color=(0x64, 0x75, 0x8B),
+                                    align=PP_ALIGN.CENTER,
+                                )
+                            add_text(
+                                g_slide, cx, cyy + cell_h + Cm(0.05), cell_w, Cm(0.35),
+                                f"Foto {chunk_idx * PER_PAGE + idx + 2} de {len(imgs)}",
+                                size=8, italic=True, color=(0x64, 0x75, 0x8B),
+                                align=PP_ALIGN.CENTER,
+                            )
 
             # === Slide(s) de Notas/Noticias vinculadas al nodo ===
             node_announ = announcements_by_node.get(n["id"]) or []
