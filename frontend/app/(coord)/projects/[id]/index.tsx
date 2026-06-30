@@ -110,10 +110,12 @@ export default function ProjectDetailScreen() {
   const [catPersonalDraft, setCatPersonalDraft] = useState('');
   const [catEquipoDraft, setCatEquipoDraft] = useState('');
 
-  // P0 — Objeto del contrato (modal independiente, también disponible al crear el proyecto)
+  // P0 — Identidad institucional (objeto_contrato + cliente_principal + color_tema)
   const [objetoModalOpen, setObjetoModalOpen] = useState(false);
   const [objetoSaving, setObjetoSaving] = useState(false);
   const [objetoDraft, setObjetoDraft] = useState('');
+  const [clienteDraft, setClienteDraft] = useState('');
+  const [colorDraft, setColorDraft] = useState('#003366');
 
   const load = useCallback(async () => {
     try {
@@ -357,10 +359,12 @@ export default function ProjectDetailScreen() {
     setCatModalOpen(true);
   }
 
-  // === Objeto del contrato (modal independiente) ============================
+  // === Identidad institucional (objeto + cliente + color) ===================
   function openObjetoModal() {
     if (!project) return;
     setObjetoDraft((project as any).objeto_contrato || '');
+    setClienteDraft((project as any).cliente_principal || '');
+    setColorDraft((project as any).color_tema || '#003366');
     setObjetoModalOpen(true);
   }
 
@@ -370,10 +374,12 @@ export default function ProjectDetailScreen() {
       setObjetoSaving(true);
       const upd = await api.updateProject(pid, {
         objeto_contrato: objetoDraft.trim() || null,
+        cliente_principal: clienteDraft.trim() || null,
+        color_tema: colorDraft.trim() || null,
       } as any);
       setProject((p) => ({ ...(p || ({} as any)), ...upd }));
       setObjetoModalOpen(false);
-      Alert.alert('Guardado', 'El objeto del contrato se actualizó correctamente.');
+      Alert.alert('Guardado', 'La identidad institucional del proyecto se actualizó correctamente.');
     } catch (e: any) {
       Alert.alert('No se pudo guardar', e?.message || 'Inténtalo nuevamente.');
     } finally {
@@ -614,9 +620,9 @@ export default function ProjectDetailScreen() {
               onPress={() => router.push({ pathname: '/(coord)/projects/[id]/invitations', params: { id: pid } })}
             />
             <ActionTile
-              icon="reader-outline"
-              title="Objeto del contrato"
-              subtitle="Descripción institucional que aparece en la portada de los reportes"
+              icon="color-palette-outline"
+              title="Identidad institucional"
+              subtitle="Objeto del contrato · Cliente principal · Color institucional"
               onPress={openObjetoModal}
             />
             <ActionTile
@@ -1298,6 +1304,124 @@ export default function ProjectDetailScreen() {
                   <>
                     <Ionicons name="save-outline" size={18} color="#fff" />
                     <Text style={styles.catSaveTxt}>Guardar configuración</Text>
+                  </>
+                )}
+              </Pressable>
+            </ScrollView>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      {/* ===== Modal: Identidad institucional (objeto + cliente + color) ===== */}
+      <Modal
+        visible={objetoModalOpen}
+        animationType="slide"
+        transparent
+        onRequestClose={() => !objetoSaving && setObjetoModalOpen(false)}
+      >
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          style={styles.exportBackdrop}
+        >
+          <Pressable
+            style={StyleSheet.absoluteFill}
+            onPress={() => !objetoSaving && setObjetoModalOpen(false)}
+          />
+          <View style={[styles.exportSheet, { maxHeight: '88%' }]}>
+            <View style={styles.exportHandle} />
+            <View style={styles.exportHeader}>
+              <View style={styles.exportBack} />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.exportTitle}>Identidad institucional</Text>
+                <Text style={styles.exportSubtitle}>
+                  Estos datos aparecen en las portadas y encabezados de los reportes exportados (PDF, Word, PowerPoint).
+                </Text>
+              </View>
+              <Pressable
+                onPress={() => !objetoSaving && setObjetoModalOpen(false)}
+                hitSlop={10}
+                style={styles.exportBack}
+              >
+                <Ionicons name="close" size={22} color={colors.text} />
+              </Pressable>
+            </View>
+            <ScrollView
+              keyboardShouldPersistTaps="handled"
+              contentContainerStyle={{ paddingHorizontal: spacing.md, paddingBottom: spacing.lg, gap: spacing.md }}
+            >
+              <View>
+                <Text style={styles.catLabel}>Cliente principal</Text>
+                <Text style={styles.catHelper}>
+                  Dependencia o entidad que contrata la obra (aparece como "CLIENTE" en la portada).
+                </Text>
+                <TextInput
+                  value={clienteDraft}
+                  onChangeText={setClienteDraft}
+                  placeholder="Ej. Gobierno de la Ciudad de México - SOBSE"
+                  placeholderTextColor={colors.textMuted}
+                  style={styles.catInput}
+                />
+              </View>
+
+              <View>
+                <Text style={styles.catLabel}>Color institucional (#RRGGBB)</Text>
+                <Text style={styles.catHelper}>
+                  Color principal usado en banners, portadas y subtítulos de los reportes.
+                </Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                  <TextInput
+                    value={colorDraft}
+                    onChangeText={setColorDraft}
+                    placeholder="#003366"
+                    placeholderTextColor={colors.textMuted}
+                    autoCapitalize="characters"
+                    style={[styles.catInput, { flex: 1 }]}
+                  />
+                  <View
+                    style={{
+                      width: 44,
+                      height: 44,
+                      borderRadius: radius.sm,
+                      borderWidth: 1,
+                      borderColor: colors.borderStrong,
+                      backgroundColor: /^#([0-9a-fA-F]{3}){1,2}$/.test((colorDraft || '').trim())
+                        ? colorDraft.trim()
+                        : '#003366',
+                    }}
+                  />
+                </View>
+              </View>
+
+              <View>
+                <Text style={styles.catLabel}>Objeto del contrato</Text>
+                <Text style={styles.catHelper}>
+                  Descripción institucional del alcance del contrato (aparece en la portada como descripción de la obra).
+                </Text>
+                <TextInput
+                  value={objetoDraft}
+                  onChangeText={setObjetoDraft}
+                  placeholder="Ej. Supervisión técnica de la construcción del Tramo III…"
+                  placeholderTextColor={colors.textMuted}
+                  multiline
+                  style={[styles.catInput, { minHeight: 90, textAlignVertical: 'top', paddingTop: 10 }]}
+                />
+              </View>
+
+              <Pressable
+                onPress={saveObjeto}
+                disabled={objetoSaving}
+                style={({ pressed }) => [
+                  styles.catSaveBtn,
+                  objetoSaving && { opacity: 0.7 },
+                  pressed && !objetoSaving && { opacity: 0.85 },
+                ]}
+              >
+                {objetoSaving ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <>
+                    <Ionicons name="save-outline" size={18} color="#fff" />
+                    <Text style={styles.catSaveTxt}>Guardar identidad</Text>
                   </>
                 )}
               </Pressable>

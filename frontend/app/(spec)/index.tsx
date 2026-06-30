@@ -15,7 +15,6 @@ import {
 import * as Clipboard from 'expo-clipboard';
 import * as Sharing from 'expo-sharing';
 import * as FileSystem from 'expo-file-system/legacy';
-import * as Print from 'expo-print';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -24,6 +23,7 @@ import { useAuth } from '@/src/auth-context';
 import { colors, radius, shadow, spacing, areaTone } from '@/src/theme';
 import { confirm } from '@/src/utils/confirm';
 import { api, FeedItem, FeedResponse, Project } from '@/src/api';
+import { storage } from '@/src/utils/storage';
 import { ReportPeriod } from '@/src/components/PeriodSheet';
 import { downloadBlob } from '@/src/utils/downloadBlob';
 import { DailyGoalsPanel } from '@/src/components/DailyGoalsPanel';
@@ -79,7 +79,14 @@ export default function SpecFeedScreen() {
   const [sharingReportId, setSharingReportId] = useState<string | null>(null);
   const [previewItem, setPreviewItem] = useState<FeedItem | null>(null);
 
-  // === Compartir reporte individual en WhatsApp (Mini-PDF con TODAS las fotos) ====
+  // === Compartir reporte individual en WhatsApp =============================
+  // Estrategia nativa (sin expo-print) con fallback a Collage 2x2:
+  //   • 0 fotos  → comparte sólo .txt con la descripción del reporte.
+  //   • 1 foto   → descarga la foto y la comparte como image/jpeg (+ caption copiada al portapapeles).
+  //   • 2-4 fotos → descarga el collage 2x2 generado por el backend (/api/reports/{id}/collage.jpg)
+  //                  y lo comparte como una sola imagen (caption en portapapeles).
+  //   • 5+ fotos → mismo collage 2x2 con las primeras 4; el caption aclara cuántas más existen.
+  // -------------------------------------------------------------------------
   const shareReportWhatsApp = useCallback(async (item: FeedItem) => {
     if (sharingReportId) return;
     try {
@@ -91,6 +98,19 @@ export default function SpecFeedScreen() {
       }
       const path = (item.node_path_names || []).join(' › ') || '—';
       const ts = item.created_at ? new Date(item.created_at).toLocaleString('es-MX') : '';
+
+      // 1) Resolvemos cuántas fotos tiene el reporte realmente.
+      let totalFotos = item.images_count || (item.thumbnail_base64 ? 1 : 0);
+      let firstPhotoB64: string | null = item.thumbnail_base64 || null;
+      try {
+        const full = await api.getReport(item.id);
+        if (full && Array.isArray(full.images)) {
+          totalFotos = full.images.length;
+          if (!firstPhotoB64 && full.images[0]) firstPhotoB64 = full.images[0];
+        }
+      } catch { /* sin red — usamos lo que tengamos */ }
+
+      // 2) Construimos el caption.
       const captionLines = [
         '📋 *Reporte de obra — SynCo*',
         '',
@@ -98,32 +118,20 @@ export default function SpecFeedScreen() {
         `👤 *Capturado por:* ${item.captured_by_name || '—'}`,
         ts ? `🕒 *Fecha:* ${ts}` : '',
         item.area_name ? `🏷️ *Área:* ${item.area_name}` : '',
+        totalFotos > 4
+          ? `🖼️ *Fotografías:* ${totalFotos} (collage muestra las primeras 4)`
+          : (totalFotos > 1 ? `🖼️ *Fotografías:* ${totalFotos} (collage 2x2)` : ''),
         item.avance ? `\n📝 *Avance:*\n${item.avance}` : '',
       ].filter(Boolean);
       const caption = captionLines.join('\n');
 
-      // Intentar traer el reporte COMPLETO con todas las fotos. Si falla, caemos al
-      // flujo anterior (thumbnail o texto).
-      let allImages: string[] = [];
-      try {
-        const full = await api.getReport(item.id);
-        if (full && Array.isArray(full.images)) {
-          allImages = full.images.filter((s) => typeof s === 'string' && s.length > 0);
-        }
-      } catch {
-        // si falla, intentamos con la miniatura disponible
-      }
-      if (allImages.length === 0 && item.thumbnail_base64) {
-        allImages = [item.thumbnail_base64];
-      }
-
-      // Si NO hay fotos: compartimos solo texto plano.
-      if (allImages.length === 0) {
-        const fileUri = `${FileSystem.cacheDirectory}reporte_${item.id}.txt`;
-        await FileSystem.writeAsStringAsync(fileUri, caption, {
+      // 3) CASO 0 fotos → texto plano.
+      if (totalFotos <= 0) {
+        const txtUri = `${FileSystem.cacheDirectory}reporte_${item.id}.txt`;
+        await FileSystem.writeAsStringAsync(txtUri, caption, {
           encoding: FileSystem.EncodingType.UTF8,
         });
-        await Sharing.shareAsync(fileUri, {
+        await Sharing.shareAsync(txtUri, {
           mimeType: 'text/plain',
           dialogTitle: 'Compartir reporte',
           UTI: 'public.plain-text',
@@ -131,125 +139,57 @@ export default function SpecFeedScreen() {
         return;
       }
 
-      // Hay fotos -> generamos un Mini-PDF con texto + TODAS las fotos.
-      const esc = (s: string) =>
-        String(s)
-          .replace(/&/g, '&amp;')
-          .replace(/</g, '&lt;')
-          .replace(/>/g, '&gt;')
-          .replace(/\n/g, '<br/>');
+      // 4) CASO 1 foto → la compartimos directo.
+      if (totalFotos === 1 && firstPhotoB64) {
+        const oneUri = `${FileSystem.cacheDirectory}reporte_${item.id}.jpg`;
+        const raw = firstPhotoB64.startsWith('data:')
+          ? firstPhotoB64.split(',', 2)[1] || firstPhotoB64
+          : firstPhotoB64;
+        await FileSystem.writeAsStringAsync(oneUri, raw, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+        try { await Clipboard.setStringAsync(caption); } catch {}
+        await Sharing.shareAsync(oneUri, {
+          mimeType: 'image/jpeg',
+          dialogTitle: 'Compartir reporte',
+          UTI: 'public.jpeg',
+        });
+        return;
+      }
 
-      const toDataUri = (raw: string) => {
-        if (raw.startsWith('data:')) return raw;
-        // Asumimos JPEG si viene base64 puro.
-        return `data:image/jpeg;base64,${raw}`;
-      };
-
-      const personnel = (item.personnel || []).filter(Boolean);
-      const equipment = (item.equipment || []).filter(Boolean);
-
-      const headerHtml = `
-        <div style="border-bottom:3px solid #0B57D0;padding-bottom:10px;margin-bottom:14px;">
-          <div style="font-size:11px;color:#666;letter-spacing:2px;">SYNCO · REPORTE DE OBRA</div>
-          <div style="font-size:22px;font-weight:700;color:#0B57D0;margin-top:4px;">${esc(item.area_name || 'Reporte')}</div>
-          <div style="font-size:12px;color:#444;margin-top:6px;">${esc(path)}</div>
-        </div>
-      `;
-
-      const metaRows = [
-        ['Capturado por', item.captured_by_name || '—'],
-        ['Fecha', ts || '—'],
-        item.area_name ? ['Área', item.area_name] : null,
-        item.contratista ? ['Contratista', item.contratista] : null,
-        personnel.length ? ['Personal', personnel.join(', ')] : null,
-        equipment.length ? ['Equipo', equipment.join(', ')] : null,
-      ].filter(Boolean) as [string, string][];
-
-      const metaHtml = `
-        <table style="width:100%;border-collapse:collapse;margin-bottom:14px;font-size:12px;">
-          ${metaRows
-            .map(
-              ([k, v]) => `
-            <tr>
-              <td style="padding:6px 8px;background:#F1F4F9;color:#374151;font-weight:600;width:30%;border:1px solid #E5E7EB;">${esc(k)}</td>
-              <td style="padding:6px 8px;color:#111827;border:1px solid #E5E7EB;">${esc(v)}</td>
-            </tr>`
-            )
-            .join('')}
-        </table>
-      `;
-
-      const avanceHtml = item.avance
-        ? `
-        <div style="margin-bottom:14px;">
-          <div style="font-size:13px;font-weight:700;color:#0B57D0;margin-bottom:6px;">📝 Avance</div>
-          <div style="font-size:12px;color:#111827;line-height:1.5;background:#F9FAFB;border-left:3px solid #0B57D0;padding:10px 12px;">${esc(item.avance)}</div>
-        </div>`
-        : '';
-
-      const obsHtml = item.observaciones
-        ? `
-        <div style="margin-bottom:14px;">
-          <div style="font-size:13px;font-weight:700;color:#B45309;margin-bottom:6px;">⚠️ Observaciones</div>
-          <div style="font-size:12px;color:#111827;line-height:1.5;background:#FEF3C7;border-left:3px solid #B45309;padding:10px 12px;">${esc(item.observaciones)}</div>
-        </div>`
-        : '';
-
-      const galleryHtml = `
-        <div style="page-break-before:auto;">
-          <div style="font-size:13px;font-weight:700;color:#0B57D0;margin:14px 0 8px;">📷 Galería (${allImages.length} foto${allImages.length === 1 ? '' : 's'})</div>
-          <div>
-            ${allImages
-              .map(
-                (img, idx) => `
-              <div style="margin-bottom:12px;page-break-inside:avoid;text-align:center;">
-                <img src="${toDataUri(img)}" style="max-width:100%;max-height:520px;border-radius:6px;border:1px solid #E5E7EB;" />
-                <div style="font-size:10px;color:#6B7280;margin-top:4px;">Foto ${idx + 1} de ${allImages.length}</div>
-              </div>`
-              )
-              .join('')}
-          </div>
-        </div>
-      `;
-
-      const html = `
-        <!DOCTYPE html>
-        <html>
-          <head>
-            <meta charset="utf-8" />
-            <style>
-              body { font-family: -apple-system, Helvetica, Arial, sans-serif; padding: 24px; color: #111; }
-              @page { margin: 24px; }
-            </style>
-          </head>
-          <body>
-            ${headerHtml}
-            ${metaHtml}
-            ${avanceHtml}
-            ${obsHtml}
-            ${galleryHtml}
-            <div style="margin-top:18px;text-align:center;font-size:10px;color:#9CA3AF;">Generado con SynCo · ${esc(ts || '')}</div>
-          </body>
-        </html>
-      `;
-
-      const printed = await Print.printToFileAsync({ html, base64: false });
-      const safeArea = (item.area_name || 'reporte').replace(/[^a-zA-Z0-9_-]+/g, '_');
-      const targetUri = `${FileSystem.cacheDirectory}SynCo_${safeArea}_${item.id.slice(0, 8)}.pdf`;
-      try {
-        // Renombrar para que WhatsApp muestre un nombre amigable.
-        await FileSystem.deleteAsync(targetUri, { idempotent: true });
-        await FileSystem.copyAsync({ from: printed.uri, to: targetUri });
-      } catch {
-        // si falla el rename, usamos el uri original
+      // 5) CASO 2+ fotos → descargamos el collage 2x2 del backend.
+      const base = (process.env.EXPO_PUBLIC_BACKEND_URL || '').replace(/\/$/, '');
+      const collageUrl = `${base}/api/reports/${item.id}/collage.jpg`;
+      const tok = await storage.secureGet<string>('syncsite_token', '');
+      const collageUri = `${FileSystem.cacheDirectory}SynCo_collage_${item.id.slice(0, 8)}.jpg`;
+      const dl = await FileSystem.downloadAsync(collageUrl, collageUri, {
+        headers: tok ? { Authorization: `Bearer ${tok}` } : {},
+      });
+      if (dl.status !== 200) {
+        // Fallback final: si el collage falla, compartimos la primera foto disponible.
+        if (firstPhotoB64) {
+          const oneUri = `${FileSystem.cacheDirectory}reporte_${item.id}.jpg`;
+          const raw = firstPhotoB64.startsWith('data:')
+            ? firstPhotoB64.split(',', 2)[1] || firstPhotoB64
+            : firstPhotoB64;
+          await FileSystem.writeAsStringAsync(oneUri, raw, {
+            encoding: FileSystem.EncodingType.Base64,
+          });
+          try { await Clipboard.setStringAsync(caption); } catch {}
+          await Sharing.shareAsync(oneUri, {
+            mimeType: 'image/jpeg',
+            dialogTitle: 'Compartir reporte',
+            UTI: 'public.jpeg',
+          });
+          return;
+        }
+        throw new Error('No se pudo generar el collage.');
       }
       try { await Clipboard.setStringAsync(caption); } catch {}
-
-      const fileToShare = (await FileSystem.getInfoAsync(targetUri)).exists ? targetUri : printed.uri;
-      await Sharing.shareAsync(fileToShare, {
-        mimeType: 'application/pdf',
+      await Sharing.shareAsync(dl.uri, {
+        mimeType: 'image/jpeg',
         dialogTitle: 'Compartir reporte',
-        UTI: 'com.adobe.pdf',
+        UTI: 'public.jpeg',
       });
     } catch (e: any) {
       Alert.alert('No se pudo compartir', e?.message || 'Inténtalo nuevamente.');

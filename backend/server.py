@@ -146,6 +146,8 @@ class ProjectIn(BaseModel):
     constructora: str
     contract_number: str
     objeto_contrato: Optional[str] = None  # Descripción institucional del objeto del contrato
+    cliente_principal: Optional[str] = None  # Cliente / dependencia que contrata (aparece en portada)
+    color_tema: Optional[str] = None  # Color institucional del proyecto (#RRGGBB). Default #003366
     start_date: Optional[str] = None  # ISO date "2026-01-15"
     end_date: Optional[str] = None
     description: Optional[str] = None
@@ -163,6 +165,8 @@ class ProjectPatch(BaseModel):
     constructora: Optional[str] = None
     contract_number: Optional[str] = None
     objeto_contrato: Optional[str] = None
+    cliente_principal: Optional[str] = None
+    color_tema: Optional[str] = None
     start_date: Optional[str] = None
     end_date: Optional[str] = None
     description: Optional[str] = None
@@ -180,6 +184,8 @@ class ProjectOut(BaseModel):
     constructora: str
     contract_number: str
     objeto_contrato: Optional[str] = None
+    cliente_principal: Optional[str] = None
+    color_tema: Optional[str] = None
     start_date: Optional[str] = None
     end_date: Optional[str] = None
     description: Optional[str] = None
@@ -744,6 +750,18 @@ def _sanitize_str_list(items, max_items: int = 200, max_len: int = 200) -> list:
     return out
 
 
+def _sanitize_color_hex(value: Optional[str]) -> Optional[str]:
+    """Valida un color hex `#RRGGBB` o `#RGB`. Devuelve `#RRGGBB` en mayúsculas o None."""
+    if not value or not isinstance(value, str):
+        return None
+    s = value.strip().lstrip("#")
+    if len(s) == 3 and all(ch in "0123456789abcdefABCDEF" for ch in s):
+        s = "".join(ch * 2 for ch in s)
+    if len(s) != 6 or any(ch not in "0123456789abcdefABCDEF" for ch in s):
+        return None
+    return "#" + s.upper()
+
+
 @api.get("/projects")
 async def list_projects(user: dict = Depends(current_user)):
     if user["role"] in (ROLE_COORD, ROLE_JEFE):
@@ -769,6 +787,8 @@ async def create_project(body: ProjectIn, user: dict = Depends(require_role(ROLE
         "constructora": body.constructora.strip(),
         "contract_number": body.contract_number.strip(),
         "objeto_contrato": (body.objeto_contrato or "").strip() or None,
+        "cliente_principal": (body.cliente_principal or "").strip() or None,
+        "color_tema": _sanitize_color_hex(body.color_tema) or "#003366",
         "start_date": body.start_date,
         "end_date": body.end_date,
         "description": (body.description or "").strip() or None,
@@ -796,6 +816,8 @@ async def get_project(pid: str, user: dict = Depends(current_user)):
     p.setdefault("categorias_personal", [])
     p.setdefault("categorias_equipo", [])
     p.setdefault("objeto_contrato", None)
+    p.setdefault("cliente_principal", None)
+    p.setdefault("color_tema", "#003366")
     return p
 
 
@@ -821,6 +843,10 @@ async def update_project(pid: str, body: ProjectPatch, user: dict = Depends(requ
         upd["contract_number"] = body.contract_number.strip()
     if body.objeto_contrato is not None:
         upd["objeto_contrato"] = body.objeto_contrato.strip() or None
+    if body.cliente_principal is not None:
+        upd["cliente_principal"] = body.cliente_principal.strip() or None
+    if body.color_tema is not None:
+        upd["color_tema"] = _sanitize_color_hex(body.color_tema) or "#003366"
     if body.start_date is not None:
         upd["start_date"] = body.start_date
     if body.end_date is not None:
@@ -852,6 +878,8 @@ async def update_project(pid: str, body: ProjectPatch, user: dict = Depends(requ
     p.setdefault("categorias_personal", [])
     p.setdefault("categorias_equipo", [])
     p.setdefault("objeto_contrato", None)
+    p.setdefault("cliente_principal", None)
+    p.setdefault("color_tema", "#003366")
     return p
 
 
@@ -886,6 +914,8 @@ async def set_project_catalogos(
     p.setdefault("categorias_personal", [])
     p.setdefault("categorias_equipo", [])
     p.setdefault("objeto_contrato", None)
+    p.setdefault("cliente_principal", None)
+    p.setdefault("color_tema", "#003366")
     return p
 
 
@@ -2298,6 +2328,96 @@ async def get_report(rid: str, user: dict = Depends(current_user)):
     return r
 
 
+# ---------------------------------------------------------------------------
+# COLLAGE 2x2 (Fallback nativo para compartir en WhatsApp / mensajeros)
+# ---------------------------------------------------------------------------
+@api.get("/reports/{rid}/collage.jpg")
+async def get_report_collage(rid: str, user: dict = Depends(current_user)):
+    """Devuelve un JPEG con un collage 2x2 de hasta 4 fotos del reporte.
+    Diseñado como fallback de compartir nativo: una sola imagen unificada
+    incluye todo el material fotográfico clave del reporte.
+    """
+    r = await db.reports.find_one({"id": rid})
+    if not r:
+        raise HTTPException(404, "Reporte no existe")
+    await ensure_project_access(user, r["project_id"])
+    if user["role"] == ROLE_ESPECIALISTA:
+        if r["node_id"] not in (user.get("scope_node_ids") or []):
+            raise HTTPException(403, "Sin acceso a este reporte")
+    imgs = (r.get("images") or [])[:4]
+    if not imgs:
+        raise HTTPException(404, "El reporte no tiene fotografías")
+
+    from PIL import Image, ImageDraw, ImageFont  # noqa: WPS433
+
+    # Lienzo final 1600x1600 (cuadrado, compatible con previews de WhatsApp).
+    CANVAS = 1600
+    GAP = 16
+    CELL = (CANVAS - 3 * GAP) // 2  # 784 px por celda
+    canvas = Image.new("RGB", (CANVAS, CANVAS), (245, 246, 250))
+
+    # Cargar y normalizar cada imagen como un cuadrado CELL x CELL (cover).
+    cells = []
+    for b64 in imgs:
+        try:
+            raw = base64.b64decode(_strip_b64_prefix(b64))
+            im = Image.open(io.BytesIO(raw)).convert("RGB")
+            # Cover crop: escalar y recortar al centro
+            iw, ih = im.size
+            ratio = max(CELL / iw, CELL / ih)
+            new_w, new_h = int(iw * ratio), int(ih * ratio)
+            im = im.resize((new_w, new_h), Image.LANCZOS)
+            left = (new_w - CELL) // 2
+            top = (new_h - CELL) // 2
+            im = im.crop((left, top, left + CELL, top + CELL))
+            cells.append(im)
+        except Exception:
+            placeholder = Image.new("RGB", (CELL, CELL), (220, 220, 220))
+            cells.append(placeholder)
+
+    positions = [
+        (GAP, GAP),
+        (GAP * 2 + CELL, GAP),
+        (GAP, GAP * 2 + CELL),
+        (GAP * 2 + CELL, GAP * 2 + CELL),
+    ]
+    for i, cell in enumerate(cells):
+        if i >= 4:
+            break
+        canvas.paste(cell, positions[i])
+
+    # Marca SynCo discreta en la esquina inferior derecha
+    try:
+        draw = ImageDraw.Draw(canvas)
+        try:
+            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 22)
+        except Exception:
+            font = ImageFont.load_default()
+        stamp = f"SynCo · {len(cells)} foto{'s' if len(cells) != 1 else ''}"
+        bbox = draw.textbbox((0, 0), stamp, font=font)
+        w = bbox[2] - bbox[0]
+        h = bbox[3] - bbox[1]
+        pad = 10
+        x0 = CANVAS - w - 2 * pad - GAP
+        y0 = CANVAS - h - 2 * pad - GAP
+        draw.rectangle([x0, y0, x0 + w + 2 * pad, y0 + h + 2 * pad],
+                       fill=(15, 23, 42))
+        draw.text((x0 + pad, y0 + pad), stamp, fill=(255, 255, 255), font=font)
+    except Exception:
+        pass
+
+    buf = io.BytesIO()
+    canvas.save(buf, format="JPEG", quality=88, optimize=True)
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="image/jpeg",
+        headers={"Content-Disposition": f'inline; filename="collage_{rid[:8]}.jpg"'},
+    )
+
+
+
+
 @api.delete("/reports/{rid}")
 async def delete_report(rid: str, user: dict = Depends(current_user)):
     r = await db.reports.find_one({"id": rid})
@@ -2589,15 +2709,23 @@ async def _ensure_default_channels(pid: str) -> None:
 def _can_access_channel(user: dict, ch: dict) -> bool:
     pid = ch["project_id"]
     project_ids = user.get("project_ids") or []
-    if user["role"] == ROLE_COORD:
-        # Coord global access — pero igual valida pertenencia básica al proyecto
-        return pid in project_ids
+    # ===== Roles gerenciales con acceso TRANSVERSAL al proyecto =====
+    # coord_general / jefe_proyecto / sub_coordinador pueden ver y participar
+    # en cualquier canal (general, por área, o directo donde sean miembros).
+    if user["role"] in (ROLE_COORD, ROLE_JEFE, ROLE_SUB):
+        if pid not in project_ids:
+            return False
+        if ch["type"] == "direct":
+            # Aún en DMs deben ser miembros explícitos del canal directo.
+            return user["id"] in (ch.get("member_ids") or [])
+        return True
+    # ===== Especialistas =====
     if pid not in project_ids:
         return False
     if ch["type"] == "general":
         return True
     if ch["type"] == "area":
-        # Especialistas con area_id que coincide. Sub-coords no pertenecen a un área.
+        # Especialistas con area_id que coincide.
         return user.get("area_id") and user.get("area_id") == ch.get("area_id")
     if ch["type"] == "direct":
         return user["id"] in (ch.get("member_ids") or [])
@@ -3559,6 +3687,8 @@ async def export_reports_pdf(
     project_contract = proj.get("contract_number") or "—"
     project_constructora = proj.get("constructora") or "—"
     project_objeto = proj.get("objeto_contrato") or None
+    project_cliente = (proj.get("cliente_principal") or "").strip() or None
+    project_color = _sanitize_color_hex(proj.get("color_tema")) or "#003366"
     constructora_logo_b64 = (proj.get("constructora_logo") or "").strip() or None
     user_name = user.get("name", "")
     user_email = user.get("email", "")
@@ -3585,10 +3715,11 @@ async def export_reports_pdf(
         PW, PH = PAGE
         c = _canvas.Canvas(buf, pagesize=PAGE)
 
-        BRAND = HexColor("#1E3A8A")
+        BRAND = HexColor(project_color)
         MUTED = HexColor("#64748B")
         BORDER = HexColor("#E2E8F0")
         TEXT = HexColor("#0F172A")
+        WHITE = HexColor("#FFFFFF")
 
         # Bytes del logo institucional: prioriza el del proyecto, fallback DIRAC.
         # Cargamos UNA SOLA VEZ para todo el PDF.
@@ -3628,44 +3759,84 @@ async def export_reports_pdf(
             c.setFont("Helvetica", 7)
             c.drawRightString(PW - 1.2 * cm, 0.8 * cm, f"Página {page_num}")
 
-        # --- PORTADA --------------------------------------------------------
+        # --- PORTADA INSTITUCIONAL ----------------------------------------
+        # Fondo completo en color_tema del proyecto. Bloque superior con logo
+        # y cliente_principal, bloque central con título y objeto del contrato
+        # en letras blancas, y pie con período/responsable.
         page_num = 1
-        # Logo institucional centrado en la portada (alta resolución)
-        _draw_logo((PW - 8 * cm) / 2, PH - 6.5 * cm, 8 * cm, 3 * cm)
         c.setFillColor(BRAND)
-        c.setFont("Helvetica-Bold", 28)
-        c.drawCentredString(PW / 2, PH - 8.5 * cm, "Reporte de Avance")
-        c.setFillColor(TEXT)
-        c.setFont("Helvetica-Bold", 18)
-        c.drawCentredString(PW / 2, PH - 9.8 * cm, project_name)
-        if project_objeto:
+        c.rect(0, 0, PW, PH, stroke=0, fill=1)
+        # Banda blanca translúcida en la parte superior para el logo
+        c.setFillColor(WHITE)
+        c.setFillAlpha(0.92)
+        c.rect(0, PH - 4.5 * cm, PW, 4.5 * cm, stroke=0, fill=1)
+        c.setFillAlpha(1.0)
+        _draw_logo(1.5 * cm, PH - 4.0 * cm, 5.0 * cm, 3.0 * cm)
+        # Cliente principal arriba a la derecha
+        if project_cliente:
+            c.setFillColor(BRAND)
+            c.setFont("Helvetica-Bold", 11)
+            c.drawRightString(PW - 1.5 * cm, PH - 2.0 * cm, "CLIENTE")
             c.setFillColor(TEXT)
-            c.setFont("Helvetica", 11)
-            # Wrap a 2 líneas si es largo
-            words = project_objeto.split()
-            line1, line2 = "", ""
-            for w in words:
-                if c.stringWidth((line1 + " " + w).strip(), "Helvetica", 11) < (PW - 6 * cm):
-                    line1 = (line1 + " " + w).strip()
+            c.setFont("Helvetica-Bold", 16)
+            c.drawRightString(PW - 1.5 * cm, PH - 2.8 * cm, project_cliente[:60])
+        # Título principal
+        c.setFillColor(WHITE)
+        c.setFont("Helvetica-Bold", 12)
+        c.drawCentredString(PW / 2, PH - 7.5 * cm, "INFORME DE AVANCE Y SUPERVISIÓN")
+        c.setFont("Helvetica-Bold", 32)
+        # Nombre del proyecto (wrap si es largo)
+        proj_words = project_name.split()
+        proj_l1, proj_l2 = "", ""
+        for w in proj_words:
+            if c.stringWidth((proj_l1 + " " + w).strip(), "Helvetica-Bold", 32) < (PW - 4 * cm):
+                proj_l1 = (proj_l1 + " " + w).strip()
+            else:
+                proj_l2 = (proj_l2 + " " + w).strip()
+        c.drawCentredString(PW / 2, PH - 9.5 * cm, proj_l1)
+        if proj_l2:
+            c.drawCentredString(PW / 2, PH - 10.8 * cm, proj_l2[:80])
+        # Objeto del contrato — texto blanco grande
+        if project_objeto:
+            c.setFillColor(WHITE)
+            c.setFont("Helvetica-Oblique", 14)
+            # wrap en hasta 3 líneas
+            obj_words = project_objeto.split()
+            lines = [""]
+            for w in obj_words:
+                tentative = (lines[-1] + " " + w).strip()
+                if c.stringWidth(tentative, "Helvetica-Oblique", 14) < (PW - 6 * cm):
+                    lines[-1] = tentative
                 else:
-                    line2 = (line2 + " " + w).strip()
-            c.drawCentredString(PW / 2, PH - 10.6 * cm, line1)
-            if line2:
-                c.drawCentredString(PW / 2, PH - 11.1 * cm, line2[:120])
-        c.setFillColor(MUTED)
-        c.setFont("Helvetica", 12)
-        c.drawCentredString(PW / 2, PH - 12.2 * cm, f"Período: {fechas_label}")
-        c.drawCentredString(PW / 2, PH - 12.9 * cm, area_label)
+                    if len(lines) >= 3:
+                        break
+                    lines.append(w)
+            base_y = PH - 13.0 * cm
+            for i, ln in enumerate(lines[:3]):
+                c.drawCentredString(PW / 2, base_y - i * 0.7 * cm, ln)
+        # Pie de la portada: período, responsable, contrato
+        c.setFillColor(WHITE)
+        c.setFillAlpha(0.3)
+        c.rect(0, 2.2 * cm, PW, 0.05 * cm, stroke=0, fill=1)
+        c.setFillAlpha(1.0)
+        c.setFillColor(WHITE)
         c.setFont("Helvetica-Bold", 11)
-        c.setFillColor(TEXT)
-        c.drawCentredString(PW / 2, PH - 14.0 * cm, f"{role_label}: {user_name}")
-        c.setFont("Helvetica", 10)
-        c.setFillColor(MUTED)
-        c.drawCentredString(PW / 2, PH - 14.7 * cm, user_email)
+        c.drawString(1.5 * cm, 4.2 * cm, "PERÍODO")
+        c.setFont("Helvetica", 12)
+        c.drawString(1.5 * cm, 3.5 * cm, fechas_label)
+        c.setFont("Helvetica-Bold", 11)
+        c.drawString(11 * cm, 4.2 * cm, role_label.upper())
+        c.setFont("Helvetica", 12)
+        c.drawString(11 * cm, 3.5 * cm, user_name)
+        c.setFont("Helvetica-Bold", 11)
+        c.drawRightString(PW - 1.5 * cm, 4.2 * cm, "CONTRATO")
+        c.setFont("Helvetica", 12)
+        c.drawRightString(PW - 1.5 * cm, 3.5 * cm, project_contract)
+        # Total reportes (línea inferior)
         total_reportes = sum(len(v) for v in reports_by_node.values())
-        c.drawCentredString(PW / 2, PH - 16.0 * cm, f"Total de reportes incluidos: {total_reportes}")
-        c.setFont("Helvetica", 7)
-        c.drawRightString(PW - 1.2 * cm, 0.8 * cm, f"Página {page_num}")
+        c.setFont("Helvetica-Oblique", 10)
+        c.drawCentredString(PW / 2, 1.4 * cm,
+                            f"{area_label} · {total_reportes} reporte(s) incluido(s)")
         c.showPage()
         page_num += 1
 
@@ -3846,12 +4017,20 @@ async def export_reports_pdf(
                 field("Nodo / Ubicación", node_path)
                 field("Reporte de avance",
                       f"Primera lectura: {primera_str} {unidad_r}    |    Última lectura: {ultima_str} {unidad_r}    |    Avance: {avance_str}")
-                if incidencias_str:
-                    field("Incidencias", incidencias_str)
+                # SITUACIÓN SOCIAL: imprime incidencias o "Sin incidencias"
+                field("Situación social",
+                      incidencias_str if incidencias_str else "Sin incidencias.")
+                # ACTIVIDADES: imprime observaciones / avance descriptivo + métricas
+                actividades_lines = []
+                if obs_str and obs_str != "N/A":
+                    actividades_lines.append(obs_str)
+                actividades_lines.append(
+                    f"Métricas — Primera lectura: {primera_str} {unidad_r} · "
+                    f"Última lectura: {ultima_str} {unidad_r} · Avance: {avance_str}."
+                )
+                field("Actividades", " ".join(actividades_lines))
                 field("Personal", personal_str)
                 field("Equipo", equipo_str)
-                if obs_str and obs_str != "N/A":
-                    field("Observaciones", obs_str)
 
                 # Banner de severidad (semáforo) en esquina inferior derecha
                 sev = (r.get("severidad") or "informativo").lower()
@@ -3875,73 +4054,67 @@ async def export_reports_pdf(
 
                 # =====================================================
                 # GALERÍA: fotos adicionales del MISMO reporte (si > 1)
-                # Imprimimos 4 fotos por página en grilla 2x2 con header.
+                # Layout institucional: 2 fotos por página, lado a lado,
+                # con tamaño exacto 13.37 cm (ancho) × 10 cm (alto).
                 # =====================================================
                 extra_imgs = imgs[1:] if len(imgs) > 1 else []
                 if extra_imgs:
-                    GRID_COLS = 2
-                    GRID_ROWS = 2
-                    PER_PAGE = GRID_COLS * GRID_ROWS  # = 4
-                    # Área útil bajo el encabezado
-                    GX0 = 1.5 * cm
-                    GY_TOP = PH - 3.0 * cm
-                    GY_BOT = 1.8 * cm
-                    GAP = 0.5 * cm
-                    grid_w = PW - 2 * GX0
-                    grid_h = GY_TOP - GY_BOT - 1.2 * cm  # reserva para subtítulo
-                    cell_w = (grid_w - GAP * (GRID_COLS - 1)) / GRID_COLS
-                    cell_h = (grid_h - GAP * (GRID_ROWS - 1)) / GRID_ROWS
+                    GAL_W = 13.37 * cm
+                    GAL_H = 10.0 * cm
+                    PER_PAGE = 2
                     n_extras = len(extra_imgs)
                     for chunk_start in range(0, n_extras, PER_PAGE):
                         chunk = extra_imgs[chunk_start:chunk_start + PER_PAGE]
                         draw_header(page_num)
-                        # Título de la galería
+                        # Encabezado de la galería
                         c.setFillColor(BRAND)
                         c.setFont("Helvetica-Bold", 14)
                         c.drawString(
-                            GX0, PH - 3.0 * cm,
-                            f"Fotografías adicionales · {nombre} · {node_path[:60]}",
+                            1.5 * cm, PH - 3.0 * cm,
+                            f"Fotografías adicionales · {node_path[:60]}",
                         )
                         c.setStrokeColor(BORDER)
                         c.setLineWidth(0.8)
-                        c.line(GX0, PH - 3.2 * cm, PW - GX0, PH - 3.2 * cm)
+                        c.line(1.5 * cm, PH - 3.2 * cm, PW - 1.5 * cm, PH - 3.2 * cm)
                         c.setFillColor(MUTED)
                         c.setFont("Helvetica-Oblique", 9)
                         c.drawString(
-                            GX0, PH - 3.7 * cm,
+                            1.5 * cm, PH - 3.7 * cm,
                             f"Reporte de {fecha_str} · Página {chunk_start // PER_PAGE + 1} de "
                             f"{(n_extras + PER_PAGE - 1) // PER_PAGE}",
                         )
-                        # Pintar grilla
-                        cy_top_grid = PH - 4.2 * cm
+                        # Cálculo de posiciones: ambas fotos centradas verticalmente
+                        # 2 fotos lado a lado: ancho total = 2*13.37 + gap
+                        gap_x = 0.5 * cm
+                        total_w = PER_PAGE * GAL_W + (PER_PAGE - 1) * gap_x
+                        x0 = (PW - total_w) / 2
+                        # Centrar verticalmente bajo el header
+                        avail_top = PH - 4.0 * cm
+                        avail_bot = 1.5 * cm
+                        y_img = (avail_top + avail_bot - GAL_H) / 2
                         for idx, b64 in enumerate(chunk):
-                            row = idx // GRID_COLS
-                            col = idx % GRID_COLS
-                            cx = GX0 + col * (cell_w + GAP)
-                            cyy = cy_top_grid - row * (cell_h + GAP) - cell_h
+                            cx = x0 + idx * (GAL_W + gap_x)
+                            c.setStrokeColor(BORDER)
+                            c.setLineWidth(0.8)
+                            c.rect(cx, y_img, GAL_W, GAL_H, stroke=1, fill=0)
                             try:
                                 raw_g = base64.b64decode(_strip_b64_prefix(b64))
                                 imgg = ImageReader(io.BytesIO(raw_g))
                                 c.drawImage(
-                                    imgg, cx, cyy, width=cell_w, height=cell_h,
+                                    imgg, cx, y_img, width=GAL_W, height=GAL_H,
                                     preserveAspectRatio=True, mask='auto',
                                 )
                             except Exception:
-                                c.setStrokeColor(BORDER)
-                                c.setFillColor(HexColor("#F8FAFC"))
-                                c.rect(cx, cyy, cell_w, cell_h, fill=1, stroke=1)
                                 c.setFillColor(MUTED)
-                                c.setFont("Helvetica-Oblique", 9)
-                                c.drawCentredString(
-                                    cx + cell_w / 2, cyy + cell_h / 2,
-                                    "(imagen no legible)",
-                                )
-                            # Contador "Foto X de N" debajo de la celda
+                                c.setFont("Helvetica-Oblique", 10)
+                                c.drawCentredString(cx + GAL_W / 2, y_img + GAL_H / 2,
+                                                    "(imagen no legible)")
+                            # Pie de foto
                             c.setFillColor(MUTED)
-                            c.setFont("Helvetica", 7)
+                            c.setFont("Helvetica", 8)
                             c.drawCentredString(
-                                cx + cell_w / 2, cyy - 0.3 * cm,
-                                f"Foto {chunk_start + idx + 2} de {len(imgs)}",
+                                cx + GAL_W / 2, y_img - 0.4 * cm,
+                                f"Foto {chunk_start + idx + 2} de {len(imgs)} · 13.37 × 10 cm",
                             )
                         c.showPage()
                         page_num += 1
@@ -4171,6 +4344,8 @@ async def export_reports_docx(
     project_contract = proj.get("contract_number") or "—"
     project_constructora = proj.get("constructora") or "—"
     project_objeto = proj.get("objeto_contrato") or None
+    project_cliente = (proj.get("cliente_principal") or "").strip() or None
+    project_color = _sanitize_color_hex(proj.get("color_tema")) or "#003366"
     constructora_logo_b64 = (proj.get("constructora_logo") or "").strip() or None
     fechas_label = f"{_fmt_fecha_dd_mm_yyyy(start_dt)} a {_fmt_fecha_dd_mm_yyyy(end_dt)}"
 
@@ -4183,6 +4358,24 @@ async def export_reports_docx(
     def _build_docx_blocking() -> bytes:
         # Resuelve logo institucional UNA sola vez (proyecto → DIRAC fallback)
         logo_bytes = _resolve_export_logo_bytes(constructora_logo_b64)
+
+        # Color institucional del proyecto (hex → RGB)
+        _ch = (project_color or "#003366").lstrip("#")
+        BRAND_RGB = RGBColor(int(_ch[0:2], 16), int(_ch[2:4], 16), int(_ch[4:6], 16))
+        TEXT_RGB = RGBColor(0x0F, 0x17, 0x2A)
+        MUTED_RGB = RGBColor(0x64, 0x75, 0x8B)
+
+        def _shade_cell(cell, hex_color: str):
+            """Pinta el fondo de una celda Word con el hex dado."""
+            try:
+                tc_pr = cell._tc.get_or_add_tcPr()
+                shd = OxmlElement('w:shd')
+                shd.set(qn('w:val'), 'clear')
+                shd.set(qn('w:color'), 'auto')
+                shd.set(qn('w:fill'), hex_color.lstrip('#'))
+                tc_pr.append(shd)
+            except Exception:
+                pass
 
         doc = Document()
         for section in doc.sections:
@@ -4206,47 +4399,66 @@ async def export_reports_docx(
             fp.alignment = WD_ALIGN_PARAGRAPH.CENTER
             fr = fp.add_run(f"{project_name}   ·   Exportado {_fmt_fecha_dd_mm_yyyy_hhmm(datetime.now(timezone.utc))}")
             fr.font.size = Pt(8)
-            fr.font.color.rgb = RGBColor(0x64, 0x75, 0x8B)
+            fr.font.color.rgb = MUTED_RGB
 
-        # === PORTADA ===
+        # === PORTADA INSTITUCIONAL ===
+        # Word no permite color de fondo en página directamente; usamos una tabla
+        # de 1x1 a ancho completo con shading en color_tema y texto blanco.
+        portada_tbl = doc.add_table(rows=1, cols=1)
+        portada_tbl.autofit = False
+        portada_cell = portada_tbl.rows[0].cells[0]
+        # Ancho ~ 17 cm (A4 - márgenes)
+        portada_cell.width = Cm(17)
+        _shade_cell(portada_cell, project_color)
+        # Limpiar primer párrafo (default) y construir contenido
+        portada_cell.paragraphs[0].clear() if False else None  # mantener referencia
+        # Logo + cliente
         if logo_bytes:
             try:
-                portada = doc.add_paragraph()
-                portada.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                portada.add_run().add_picture(io.BytesIO(logo_bytes), width=Cm(7))
+                logo_p = portada_cell.paragraphs[0]
+                logo_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                logo_p.add_run().add_picture(io.BytesIO(logo_bytes), width=Cm(5.5))
             except Exception:
                 pass
-        h = doc.add_paragraph()
-        h.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        run = h.add_run("Reporte de Avance")
-        run.bold = True
-        run.font.size = Pt(28)
-        run.font.color.rgb = RGBColor(0x1E, 0x3A, 0x8A)
-        sub = doc.add_paragraph()
-        sub.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        sr = sub.add_run(project_name)
-        sr.font.size = Pt(18)
-        sr.bold = True
-        sr.font.color.rgb = RGBColor(0x0F, 0x17, 0x2A)
+        if project_cliente:
+            cli_p = portada_cell.add_paragraph()
+            cli_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            cli_r = cli_p.add_run(project_cliente)
+            cli_r.bold = True
+            cli_r.font.size = Pt(14)
+            cli_r.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
+        # Encabezado del informe
+        inf_p = portada_cell.add_paragraph()
+        inf_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        inf_r = inf_p.add_run("INFORME DE AVANCE Y SUPERVISIÓN")
+        inf_r.bold = True
+        inf_r.font.size = Pt(11)
+        inf_r.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
+        # Nombre del proyecto
+        np_p = portada_cell.add_paragraph()
+        np_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        np_r = np_p.add_run(project_name)
+        np_r.bold = True
+        np_r.font.size = Pt(26)
+        np_r.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
+        # Objeto del contrato (cursiva blanca)
         if project_objeto:
-            obj = doc.add_paragraph()
-            obj.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            obr = obj.add_run(project_objeto)
-            obr.italic = True
-            obr.font.size = Pt(11)
-            obr.font.color.rgb = RGBColor(0x33, 0x33, 0x33)
-        meta = doc.add_paragraph()
-        meta.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        mr = meta.add_run(
-            f"Contrato: {project_contract}    ·    Constructora: {project_constructora}"
+            obj_p = portada_cell.add_paragraph()
+            obj_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            obj_r = obj_p.add_run(project_objeto)
+            obj_r.italic = True
+            obj_r.font.size = Pt(12)
+            obj_r.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
+        # Separador
+        portada_cell.add_paragraph()
+        # Pie portada: contrato + período + área
+        info_p = portada_cell.add_paragraph()
+        info_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        info_r = info_p.add_run(
+            f"Contrato: {project_contract}   ·   Período: {fechas_label}\n{area_label}"
         )
-        mr.font.size = Pt(11)
-        mr.font.color.rgb = RGBColor(0x64, 0x75, 0x8B)
-        pp = doc.add_paragraph()
-        pp.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        ppr = pp.add_run(f"Período: {fechas_label}     ·     {area_label}")
-        ppr.font.size = Pt(11)
-        ppr.font.color.rgb = RGBColor(0x64, 0x75, 0x8B)
+        info_r.font.size = Pt(11)
+        info_r.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
 
         any_data = False
 
@@ -4264,7 +4476,7 @@ async def export_reports_docx(
             nr = np.add_run(node_path)
             nr.bold = True
             nr.font.size = Pt(18)
-            nr.font.color.rgb = RGBColor(0x1E, 0x3A, 0x8A)
+            nr.font.color.rgb = BRAND_RGB
 
             try:
                 coord_text = _format_measurement_for_display(node_reps[0]) or "—"
@@ -4297,14 +4509,17 @@ async def export_reports_docx(
                         img_buf = io.BytesIO(raw)
                         img_p = doc.add_paragraph()
                         img_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                        img_p.add_run().add_picture(img_buf, width=Cm(10))
-                        if len(imgs) > 1:
-                            cap = doc.add_paragraph()
-                            cap.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                            cap_r = cap.add_run(f"Foto 1 de {len(imgs)}")
-                            cap_r.italic = True
-                            cap_r.font.size = Pt(8)
-                            cap_r.font.color.rgb = RGBColor(0x64, 0x75, 0x8B)
+                        # Tamaño institucional: 13.37 cm de ancho × 10 cm de alto
+                        img_p.add_run().add_picture(img_buf, width=Cm(13.37), height=Cm(10.0))
+                        cap = doc.add_paragraph()
+                        cap.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                        cap_r = cap.add_run(
+                            f"Foto 1 de {len(imgs)} · 13.37 × 10 cm"
+                            if len(imgs) > 1 else "13.37 × 10 cm"
+                        )
+                        cap_r.italic = True
+                        cap_r.font.size = Pt(8)
+                        cap_r.font.color.rgb = MUTED_RGB
                     except Exception:
                         p = doc.add_paragraph()
                         p.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -4359,15 +4574,17 @@ async def export_reports_docx(
 
                 def _row(label: str, value: str):
                     row = table.add_row().cells
+                    # Etiqueta: fondo color_tema, texto blanco
+                    _shade_cell(row[0], project_color)
                     pl = row[0].paragraphs[0]
                     plr = pl.add_run(label.upper())
                     plr.bold = True
                     plr.font.size = Pt(9)
-                    plr.font.color.rgb = RGBColor(0x1E, 0x3A, 0x8A)
+                    plr.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
                     pv = row[1].paragraphs[0]
                     pvr = pv.add_run(str(value))
                     pvr.font.size = Pt(10)
-                    pvr.font.color.rgb = RGBColor(0x0F, 0x17, 0x2A)
+                    pvr.font.color.rgb = TEXT_RGB
 
                 # === Orden institucional ===
                 _row("Fecha", fecha_str)
@@ -4377,39 +4594,60 @@ async def export_reports_docx(
                 _row("Nodo / Ubicación", node_path)
                 _row("Reporte de avance",
                      f"Primera: {primera_str} {unidad_r}  |  Última: {ultima_str} {unidad_r}  |  Avance: {avance_str}")
-                if incidencias_str:
-                    _row("Incidencias", incidencias_str)
+                # Situación social (incidencias o "Sin incidencias")
+                _row("Situación social",
+                     incidencias_str if incidencias_str else "Sin incidencias.")
+                # Actividades (observaciones + métricas)
+                _actividades = []
+                if obs_str and obs_str != "N/A":
+                    _actividades.append(obs_str)
+                _actividades.append(
+                    f"Métricas — Primera lectura: {primera_str} {unidad_r} · "
+                    f"Última lectura: {ultima_str} {unidad_r} · Avance: {avance_str}."
+                )
+                _row("Actividades", " ".join(_actividades))
                 _row("Personal", personal_str)
                 _row("Equipo", equipo_str)
-                if obs_str and obs_str != "N/A":
-                    _row("Observaciones", obs_str)
 
-                # === Galería de fotos adicionales (cuando hay 2+) ===
-                if len(imgs) > 1:
+                # === Galería de fotos adicionales — 2 por página, 13.37×10 cm ===
+                extra_imgs = imgs[1:] if len(imgs) > 1 else []
+                if extra_imgs:
+                    doc.add_page_break()
                     gh = doc.add_paragraph()
                     gh.alignment = WD_ALIGN_PARAGRAPH.LEFT
-                    gh_r = gh.add_run(f"Fotografías adicionales ({len(imgs) - 1})")
+                    gh_r = gh.add_run(f"Fotografías adicionales ({len(extra_imgs)})")
                     gh_r.bold = True
-                    gh_r.font.size = Pt(11)
-                    gh_r.font.color.rgb = RGBColor(0x1E, 0x3A, 0x8A)
-                    for ex_idx, b64 in enumerate(imgs[1:], start=2):
-                        try:
-                            raw_ex = base64.b64decode(_strip_b64_prefix(b64))
-                            ip = doc.add_paragraph()
-                            ip.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                            ip.add_run().add_picture(io.BytesIO(raw_ex), width=Cm(10))
-                            cap = doc.add_paragraph()
-                            cap.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                            cap_r = cap.add_run(f"Foto {ex_idx} de {len(imgs)}")
-                            cap_r.italic = True
-                            cap_r.font.size = Pt(8)
-                            cap_r.font.color.rgb = RGBColor(0x64, 0x75, 0x8B)
-                        except Exception:
-                            err = doc.add_paragraph()
-                            err.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                            er = err.add_run(f"(Foto {ex_idx} no legible)")
-                            er.italic = True
-                            er.font.color.rgb = RGBColor(0x64, 0x75, 0x8B)
+                    gh_r.font.size = Pt(13)
+                    gh_r.font.color.rgb = BRAND_RGB
+                    # 2 fotos por página → cada par en su propio bloque + page break
+                    for chunk_start in range(0, len(extra_imgs), 2):
+                        chunk = extra_imgs[chunk_start:chunk_start + 2]
+                        for off, b64 in enumerate(chunk):
+                            try:
+                                raw_ex = base64.b64decode(_strip_b64_prefix(b64))
+                                ip = doc.add_paragraph()
+                                ip.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                                ip.add_run().add_picture(
+                                    io.BytesIO(raw_ex),
+                                    width=Cm(13.37), height=Cm(10.0),
+                                )
+                                cap = doc.add_paragraph()
+                                cap.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                                cap_r = cap.add_run(
+                                    f"Foto {chunk_start + off + 2} de {len(imgs)} · 13.37 × 10 cm"
+                                )
+                                cap_r.italic = True
+                                cap_r.font.size = Pt(8)
+                                cap_r.font.color.rgb = MUTED_RGB
+                            except Exception:
+                                err = doc.add_paragraph()
+                                err.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                                er = err.add_run(f"(Foto {chunk_start + off + 2} no legible)")
+                                er.italic = True
+                                er.font.color.rgb = MUTED_RGB
+                        # Salto de página después de cada par (excepto el último)
+                        if chunk_start + 2 < len(extra_imgs):
+                            doc.add_page_break()
 
             # === Sección "Notas/Noticias" del nodo (Importante+Urgente) ===
             node_announ = announcements_by_node.get(n["id"]) or []
@@ -4420,7 +4658,7 @@ async def export_reports_docx(
                 hr = head.add_run(f"Notas y noticias · {node_path}")
                 hr.bold = True
                 hr.font.size = Pt(16)
-                hr.font.color.rgb = RGBColor(0x1E, 0x3A, 0x8A)
+                hr.font.color.rgb = BRAND_RGB
                 for ann in node_announ:
                     sev_a = (ann.get("jerarquia") or "informativo").lower()
                     hexa = _severidad_hex(sev_a).lstrip("#")
@@ -4506,6 +4744,10 @@ async def export_reports_pptx(
     project_contract = proj.get("contract_number") or "—"
     project_constructora = proj.get("constructora") or "—"
     project_objeto = (proj.get("objeto_contrato") or "").strip() or None
+    project_cliente = (proj.get("cliente_principal") or "").strip() or None
+    project_color = _sanitize_color_hex(proj.get("color_tema")) or "#003366"
+    _ch = project_color.lstrip("#")
+    BRAND_RGB = (int(_ch[0:2], 16), int(_ch[2:4], 16), int(_ch[4:6], 16))
     constructora_logo_b64 = (proj.get("constructora_logo") or "").strip() or None
     fechas_label = f"{_fmt_fecha_dd_mm_yyyy(start_dt)} a {_fmt_fecha_dd_mm_yyyy(end_dt)}"
 
@@ -4517,10 +4759,28 @@ async def export_reports_pptx(
 
     def _build_pptx_blocking() -> bytes:
         prs = Presentation()
-        prs.slide_width = Cm(25.4)
-        prs.slide_height = Cm(14.29)  # 16:9
+        # A4 apaisado para que quepan 2 fotos lado a lado (13.37 × 2 + márgenes < 29.7)
+        prs.slide_width = Cm(29.7)
+        prs.slide_height = Cm(21.0)
         SW, SH = prs.slide_width, prs.slide_height
         blank = prs.slide_layouts[6]
+
+        # Imports adicionales para shape fill
+        from pptx.enum.shapes import MSO_SHAPE
+        from pptx.oxml.ns import qn as _qn
+        from lxml import etree as _ET
+
+        def add_bg_rect(slide, x, y, w, h, rgb_tuple):
+            """Pinta un rectángulo de fondo con color sólido (sin borde)."""
+            sh = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, x, y, w, h)
+            sh.fill.solid()
+            sh.fill.fore_color.rgb = PRGBColor(*rgb_tuple)
+            sh.line.fill.background()
+            try:
+                sh.shadow.inherit = False
+            except Exception:
+                pass
+            return sh
 
         def add_text(slide, x, y, w, h, text, *, size=14, bold=False, color=(0x0F, 0x17, 0x2A),
                      align=PP_ALIGN.LEFT, italic=False):
@@ -4541,7 +4801,6 @@ async def export_reports_pptx(
         logo_bytes = _resolve_export_logo_bytes(constructora_logo_b64)
 
         def add_logo(slide, x, y, w_cm: float, h_cm: float):
-            """Inserta el logo institucional (constructora o DIRAC)."""
             if not logo_bytes:
                 return False
             try:
@@ -4554,7 +4813,9 @@ async def export_reports_pptx(
                 return False
 
         def add_header_footer(slide):
-            """Encabezado (logo + constructora + contrato) y pie (proyecto + fecha)."""
+            """Encabezado institucional + pie. Color dinámico."""
+            # Banda superior con color_tema
+            add_bg_rect(slide, 0, 0, SW, Cm(1.5), BRAND_RGB)
             if logo_bytes:
                 try:
                     slide.shapes.add_picture(
@@ -4563,45 +4824,67 @@ async def export_reports_pptx(
                     )
                 except Exception:
                     pass
-            add_text(slide, Cm(2.2), Cm(0.4), SW - Cm(3.5), Cm(0.8),
+            add_text(slide, Cm(3.5), Cm(0.4), SW - Cm(4.5), Cm(0.8),
                      f"{project_constructora}   ·   Contrato {project_contract}",
-                     size=10, bold=True, color=(0x1E, 0x3A, 0x8A))
-            # Footer
+                     size=11, bold=True, color=(0xFF, 0xFF, 0xFF))
+            # Footer institucional
             export_stamp = _fmt_fecha_dd_mm_yyyy_hhmm(datetime.now(timezone.utc))
-            add_text(slide, Cm(1.0), SH - Cm(0.7), SW - Cm(2.0), Cm(0.5),
+            add_text(slide, Cm(1.0), SH - Cm(0.8), SW - Cm(2.0), Cm(0.5),
                      f"{project_name}   ·   Exportado {export_stamp}",
                      size=8, italic=True, color=(0x64, 0x75, 0x8B),
                      align=PP_ALIGN.CENTER)
 
-        # ===== PORTADA =====
+        # ===== PORTADA INSTITUCIONAL =====
         s = prs.slides.add_slide(blank)
-        logo_w = 6.0
-        logo_h = 2.6
-        logo_x = (SW - Cm(logo_w)) // 2
-        added_logo = add_logo(s, logo_x, Cm(1.4), logo_w, logo_h)
-        if not added_logo:
-            # Si no hay logo, dejamos espacio en blanco para centrar el título.
-            pass
-
-        add_text(s, Cm(1.5), Cm(4.6), SW - Cm(3.0), Cm(1.5),
-                 "Reporte de Avance",
-                 size=40, bold=True, color=(0x1E, 0x3A, 0x8A), align=PP_ALIGN.CENTER)
-        add_text(s, Cm(1.5), Cm(6.4), SW - Cm(3.0), Cm(1.2),
+        # Fondo completo en color_tema
+        add_bg_rect(s, 0, 0, SW, SH, BRAND_RGB)
+        # Banda blanca translúcida superior con logo
+        add_bg_rect(s, 0, 0, SW, Cm(4.0), (255, 255, 255))
+        if logo_bytes:
+            try:
+                s.shapes.add_picture(io.BytesIO(logo_bytes), Cm(1.0), Cm(0.6), height=Cm(2.6))
+            except Exception:
+                pass
+        # Cliente principal arriba a la derecha
+        if project_cliente:
+            add_text(s, Cm(15.0), Cm(1.0), Cm(13.7), Cm(1.0),
+                     "CLIENTE", size=10, bold=True, color=BRAND_RGB,
+                     align=PP_ALIGN.RIGHT)
+            add_text(s, Cm(15.0), Cm(1.8), Cm(13.7), Cm(1.5),
+                     project_cliente[:80], size=18, bold=True,
+                     color=(0x0F, 0x17, 0x2A), align=PP_ALIGN.RIGHT)
+        # Título central
+        add_text(s, Cm(1.0), Cm(6.0), SW - Cm(2.0), Cm(1.0),
+                 "INFORME DE AVANCE Y SUPERVISIÓN",
+                 size=14, bold=True, color=(0xFF, 0xFF, 0xFF), align=PP_ALIGN.CENTER)
+        add_text(s, Cm(1.0), Cm(7.5), SW - Cm(2.0), Cm(3.0),
                  project_name,
-                 size=24, bold=True, color=(0x0F, 0x17, 0x2A), align=PP_ALIGN.CENTER)
+                 size=44, bold=True, color=(0xFF, 0xFF, 0xFF), align=PP_ALIGN.CENTER)
         if project_objeto:
-            add_text(s, Cm(1.5), Cm(7.8), SW - Cm(3.0), Cm(1.0),
+            add_text(s, Cm(2.5), Cm(11.0), SW - Cm(5.0), Cm(3.5),
                      project_objeto,
-                     size=14, italic=True, color=(0x33, 0x33, 0x33), align=PP_ALIGN.CENTER)
-        add_text(s, Cm(1.5), Cm(9.4), SW - Cm(3.0), Cm(0.8),
-                 f"Contrato: {project_contract}    ·    Constructora: {project_constructora}",
-                 size=13, color=(0x64, 0x75, 0x8B), align=PP_ALIGN.CENTER)
-        add_text(s, Cm(1.5), Cm(10.4), SW - Cm(3.0), Cm(0.8),
-                 f"Período: {fechas_label}     ·     {area_label}",
-                 size=13, color=(0x64, 0x75, 0x8B), align=PP_ALIGN.CENTER)
-        add_text(s, Cm(1.5), Cm(13.2), SW - Cm(3.0), Cm(0.6),
-                 f"Generado {_fmt_fecha_dd_mm_yyyy_hhmm(datetime.now(timezone.utc))}",
-                 size=9, color=(0x94, 0xA3, 0xB8), align=PP_ALIGN.CENTER)
+                     size=16, italic=True, color=(0xFF, 0xFF, 0xFF), align=PP_ALIGN.CENTER)
+        # Pie portada: contrato + período + área
+        add_text(s, Cm(1.0), SH - Cm(3.5), Cm(10.0), Cm(0.8),
+                 "PERÍODO", size=10, bold=True, color=(0xFF, 0xFF, 0xFF))
+        add_text(s, Cm(1.0), SH - Cm(2.8), Cm(10.0), Cm(0.8),
+                 fechas_label, size=12, color=(0xFF, 0xFF, 0xFF))
+        add_text(s, Cm(11.5), SH - Cm(3.5), Cm(8.0), Cm(0.8),
+                 "CONSTRUCTORA", size=10, bold=True, color=(0xFF, 0xFF, 0xFF),
+                 align=PP_ALIGN.CENTER)
+        add_text(s, Cm(11.5), SH - Cm(2.8), Cm(8.0), Cm(0.8),
+                 project_constructora, size=12, color=(0xFF, 0xFF, 0xFF),
+                 align=PP_ALIGN.CENTER)
+        add_text(s, SW - Cm(11.0), SH - Cm(3.5), Cm(10.0), Cm(0.8),
+                 "CONTRATO", size=10, bold=True, color=(0xFF, 0xFF, 0xFF),
+                 align=PP_ALIGN.RIGHT)
+        add_text(s, SW - Cm(11.0), SH - Cm(2.8), Cm(10.0), Cm(0.8),
+                 project_contract, size=12, color=(0xFF, 0xFF, 0xFF),
+                 align=PP_ALIGN.RIGHT)
+        add_text(s, Cm(1.0), SH - Cm(1.4), SW - Cm(2.0), Cm(0.7),
+                 f"{area_label}   ·   {_fmt_fecha_dd_mm_yyyy_hhmm(datetime.now(timezone.utc))}",
+                 size=10, italic=True, color=(0xFF, 0xFF, 0xFF),
+                 align=PP_ALIGN.CENTER)
 
         any_data = False
         for n in leaf_nodes:
@@ -4614,17 +4897,17 @@ async def export_reports_pptx(
             # === Slide separador por nodo ===
             s = prs.slides.add_slide(blank)
             add_header_footer(s)
-            add_text(s, Cm(1.5), Cm(5.0), SW - Cm(3.0), Cm(2.0),
-                     node_path, size=32, bold=True, color=(0x1E, 0x3A, 0x8A),
+            add_text(s, Cm(1.5), Cm(6.0), SW - Cm(3.0), Cm(2.5),
+                     node_path, size=36, bold=True, color=BRAND_RGB,
                      align=PP_ALIGN.CENTER)
             try:
                 coord_text = _format_measurement_for_display(node_reps[0]) or "—"
             except Exception:
                 coord_text = "—"
-            add_text(s, Cm(1.5), Cm(7.5), SW - Cm(3.0), Cm(1.0),
+            add_text(s, Cm(1.5), Cm(10.5), SW - Cm(3.0), Cm(1.0),
                      f"Coordenadas: {coord_text}",
                      size=16, color=(0x0F, 0x17, 0x2A), align=PP_ALIGN.CENTER)
-            add_text(s, Cm(1.5), Cm(9.0), SW - Cm(3.0), Cm(1.0),
+            add_text(s, Cm(1.5), Cm(12.0), SW - Cm(3.0), Cm(1.0),
                      f"Reportes en este nodo: {len(node_reps)}",
                      size=12, color=(0x64, 0x75, 0x8B), align=PP_ALIGN.CENTER)
 
@@ -4632,11 +4915,11 @@ async def export_reports_pptx(
                 slide = prs.slides.add_slide(blank)
                 add_header_footer(slide)
 
-                # Foto izquierda
+                # Foto principal con tamaño exacto 13.37 cm × 10 cm
                 photo_x = Cm(1.0)
-                photo_y = Cm(1.6)
-                photo_w = Cm(10.0)
-                photo_h = Cm(11.0)
+                photo_y = Cm(2.2)
+                photo_w = Cm(13.37)
+                photo_h = Cm(10.0)
                 img_b64 = None
                 imgs = r.get("images") or []
                 if imgs:
@@ -4648,24 +4931,24 @@ async def export_reports_pptx(
                         slide.shapes.add_picture(img_buf, photo_x, photo_y,
                                                  width=photo_w, height=photo_h)
                     except Exception:
-                        add_text(slide, photo_x, photo_y + Cm(5), photo_w, Cm(1.0),
+                        add_text(slide, photo_x, photo_y + Cm(4.5), photo_w, Cm(1.0),
                                  "(imagen no legible)", size=11,
                                  color=(0x64, 0x75, 0x8B), italic=True,
                                  align=PP_ALIGN.CENTER)
                 else:
-                    add_text(slide, photo_x, photo_y + Cm(5), photo_w, Cm(1.0),
+                    add_text(slide, photo_x, photo_y + Cm(4.5), photo_w, Cm(1.0),
                              "(sin fotografía)", size=11,
                              color=(0x64, 0x75, 0x8B), italic=True,
                              align=PP_ALIGN.CENTER)
 
-                # Contador "Foto 1 de N" debajo de la foto principal
-                if len(imgs) > 1:
-                    add_text(
-                        slide, photo_x, photo_y + photo_h + Cm(0.1), photo_w, Cm(0.4),
-                        f"Foto 1 de {len(imgs)}",
-                        size=9, italic=True, color=(0x64, 0x75, 0x8B),
-                        align=PP_ALIGN.CENTER,
-                    )
+                # Pie de foto principal
+                add_text(
+                    slide, photo_x, photo_y + photo_h + Cm(0.15), photo_w, Cm(0.5),
+                    f"Foto 1 de {len(imgs)} · 13.37 × 10 cm" if len(imgs) > 1
+                    else "13.37 × 10 cm",
+                    size=9, italic=True, color=(0x64, 0x75, 0x8B),
+                    align=PP_ALIGN.CENTER,
+                )
 
                 # Datos derecha
                 def _raw_to_str(v):
@@ -4696,8 +4979,8 @@ async def export_reports_pptx(
                 hexc = _severidad_hex(sev).lstrip("#")
                 sev_color = (int(hexc[0:2], 16), int(hexc[2:4], 16), int(hexc[4:6], 16))
 
-                data_x = Cm(11.5)
-                data_y = Cm(1.6)
+                data_x = Cm(15.0)
+                data_y = Cm(2.2)
                 data_w = SW - data_x - Cm(1.0)
 
                 # Banner de severidad arriba de la tabla de datos
@@ -4705,6 +4988,15 @@ async def export_reports_pptx(
                          f"[ {sev_label} ]", size=12, bold=True,
                          color=sev_color, align=PP_ALIGN.LEFT)
 
+                # Filas institucionales (Situación social + Actividades)
+                _act_lines = []
+                if obs_str and obs_str != "N/A":
+                    _act_lines.append(obs_str)
+                _act_lines.append(
+                    f"Métricas — Primera: {primera_str} {unidad_r} · "
+                    f"Última: {ultima_str} {unidad_r} · Avance: {avance_str}."
+                )
+                _actividades = " ".join(_act_lines)
                 rows = [
                     ("Fecha", fecha_str),
                     ("Especialista", nombre),
@@ -4713,19 +5005,15 @@ async def export_reports_pptx(
                     ("Nodo / Ubicación", node_path),
                     ("Reporte de avance",
                      f"Primera: {primera_str} {unidad_r}  |  Última: {ultima_str} {unidad_r}  |  Avance: {avance_str}"),
-                ]
-                if incidencias_str:
-                    rows.append(("Incidencias",
-                                 incidencias_str[:240] + ("…" if len(incidencias_str) > 240 else "")))
-                rows.extend([
+                    ("Situación social",
+                     incidencias_str if incidencias_str else "Sin incidencias."),
+                    ("Actividades",
+                     _actividades[:380] + ("…" if len(_actividades) > 380 else "")),
                     ("Personal", personal_str),
                     ("Equipo", equipo_str),
-                ])
-                if obs_str and obs_str != "N/A":
-                    rows.append(("Observaciones",
-                                 obs_str[:240] + ("…" if len(obs_str) > 240 else "")))
+                ]
 
-                tb = slide.shapes.add_textbox(data_x, data_y + Cm(0.8), data_w, Cm(10.5))
+                tb = slide.shapes.add_textbox(data_x, data_y + Cm(0.8), data_w, Cm(17.0))
                 tf = tb.text_frame
                 tf.word_wrap = True
                 first = True
@@ -4736,7 +5024,7 @@ async def export_reports_pptx(
                     r_lbl.text = lbl.upper()
                     r_lbl.font.size = Pt(9)
                     r_lbl.font.bold = True
-                    r_lbl.font.color.rgb = PRGBColor(0x1E, 0x3A, 0x8A)
+                    r_lbl.font.color.rgb = PRGBColor(*BRAND_RGB)
                     p_val = tf.add_paragraph()
                     p_val.alignment = PP_ALIGN.LEFT
                     r_val = p_val.add_run()
@@ -4745,15 +5033,16 @@ async def export_reports_pptx(
                     r_val.font.color.rgb = PRGBColor(0x0F, 0x17, 0x2A)
                     first = False
 
-                # === Slides de "Fotografías adicionales" (grilla 2x2) ===
+                # === Slides de "Fotografías adicionales" (2 por slide, 13.37×10) ===
                 if len(imgs) > 1:
-                    PER_PAGE = 4  # 2x2
-                    cell_w = Cm(11.0)
-                    cell_h = Cm(5.0)
-                    margin_x = Cm(1.0)
-                    margin_y_top = Cm(2.0)
-                    gap_x = Cm(0.5)
-                    gap_y = Cm(0.6)
+                    PER_PAGE = 2
+                    cell_w = Cm(13.37)
+                    cell_h = Cm(10.0)
+                    gap_x = Cm(0.6)
+                    total_w = PER_PAGE * cell_w + (PER_PAGE - 1) * gap_x
+                    margin_x = (SW - total_w) // 2
+                    # Centrado vertical entre header (1.5) y footer (0.8) ≈ área (1.8..20.2)
+                    margin_y = (SH - cell_h) // 2 + Cm(0.5)
                     extras = imgs[1:]
                     total_pages = (len(extras) + PER_PAGE - 1) // PER_PAGE
                     for chunk_idx in range(total_pages):
@@ -4761,16 +5050,15 @@ async def export_reports_pptx(
                         g_slide = prs.slides.add_slide(blank)
                         add_header_footer(g_slide)
                         add_text(
-                            g_slide, Cm(1.0), Cm(1.2), SW - Cm(2.0), Cm(0.7),
-                            f"Fotografías adicionales · {nombre} · {node_path[:60]}",
-                            size=16, bold=True, color=(0x1E, 0x3A, 0x8A),
+                            g_slide, Cm(1.0), Cm(1.8), SW - Cm(2.0), Cm(0.8),
+                            f"Fotografías adicionales · {node_path[:60]}  ·  "
+                            f"Página {chunk_idx + 1} de {total_pages}",
+                            size=16, bold=True, color=BRAND_RGB,
                             align=PP_ALIGN.LEFT,
                         )
                         for idx, b64 in enumerate(chunk):
-                            row = idx // 2
-                            col = idx % 2
-                            cx = margin_x + col * (cell_w + gap_x)
-                            cyy = margin_y_top + row * (cell_h + gap_y)
+                            cx = margin_x + idx * (cell_w + gap_x)
+                            cyy = margin_y
                             try:
                                 raw_g = base64.b64decode(_strip_b64_prefix(b64))
                                 g_slide.shapes.add_picture(
@@ -4785,8 +5073,8 @@ async def export_reports_pptx(
                                     align=PP_ALIGN.CENTER,
                                 )
                             add_text(
-                                g_slide, cx, cyy + cell_h + Cm(0.05), cell_w, Cm(0.35),
-                                f"Foto {chunk_idx * PER_PAGE + idx + 2} de {len(imgs)}",
+                                g_slide, cx, cyy + cell_h + Cm(0.15), cell_w, Cm(0.4),
+                                f"Foto {chunk_idx * PER_PAGE + idx + 2} de {len(imgs)} · 13.37 × 10 cm",
                                 size=8, italic=True, color=(0x64, 0x75, 0x8B),
                                 align=PP_ALIGN.CENTER,
                             )
@@ -4798,7 +5086,7 @@ async def export_reports_pptx(
                 add_header_footer(an_slide)
                 add_text(an_slide, Cm(1.0), Cm(1.4), SW - Cm(2.0), Cm(1.2),
                          f"Notas y noticias · {node_path}",
-                         size=22, bold=True, color=(0x1E, 0x3A, 0x8A),
+                         size=22, bold=True, color=BRAND_RGB,
                          align=PP_ALIGN.LEFT)
                 cur_y = Cm(3.0)
                 for ann in node_announ:
@@ -4808,7 +5096,7 @@ async def export_reports_pptx(
                         add_header_footer(an_slide)
                         add_text(an_slide, Cm(1.0), Cm(1.4), SW - Cm(2.0), Cm(1.2),
                                  f"Notas y noticias · {node_path} (cont.)",
-                                 size=22, bold=True, color=(0x1E, 0x3A, 0x8A),
+                                 size=22, bold=True, color=BRAND_RGB,
                                  align=PP_ALIGN.LEFT)
                         cur_y = Cm(3.0)
                     sev_a = (ann.get("jerarquia") or "informativo").lower()

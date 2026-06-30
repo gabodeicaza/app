@@ -76,6 +76,8 @@ export interface Project {
   constructora: string;
   contract_number: string;
   objeto_contrato?: string | null;
+  cliente_principal?: string | null;
+  color_tema?: string | null;
   start_date?: string | null;
   end_date?: string | null;
   description?: string | null;
@@ -311,6 +313,9 @@ export const api = {
     name: string;
     constructora: string;
     contract_number: string;
+    objeto_contrato?: string | null;
+    cliente_principal?: string | null;
+    color_tema?: string | null;
     start_date?: string | null;
     end_date?: string | null;
     description?: string | null;
