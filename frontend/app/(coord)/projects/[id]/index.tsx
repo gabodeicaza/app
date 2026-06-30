@@ -1193,7 +1193,7 @@ export default function ProjectDetailScreen() {
           style={styles.exportBackdrop}
         >
           <Pressable style={StyleSheet.absoluteFill} onPress={() => !catSaving && setCatModalOpen(false)} />
-          <View style={[styles.exportSheet, { maxHeight: '85%' }]}>
+          <View style={[styles.exportSheet, styles.sheetSurface, { maxHeight: '85%' }]}>
             <View style={styles.exportHandle} />
             <View style={styles.exportHeader}>
               <View style={styles.exportBack} />
@@ -1327,7 +1327,7 @@ export default function ProjectDetailScreen() {
             style={StyleSheet.absoluteFill}
             onPress={() => !objetoSaving && setObjetoModalOpen(false)}
           />
-          <View style={[styles.exportSheet, { maxHeight: '88%' }]}>
+          <View style={[styles.exportSheet, styles.sheetSurface, { maxHeight: '88%' }]}>
             <View style={styles.exportHandle} />
             <View style={styles.exportHeader}>
               <View style={styles.exportBack} />
@@ -1601,6 +1601,19 @@ const styles = StyleSheet.create({
   exportSheet: {
     ...StyleSheet.absoluteFillObject,
     justifyContent: 'flex-end',
+  },
+  sheetSurface: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    top: undefined,
+    backgroundColor: '#FFFFFF',
+    borderTopLeftRadius: (radius as any).xl ?? 20,
+    borderTopRightRadius: (radius as any).xl ?? 20,
+    paddingTop: 10,
+    paddingBottom: 24,
+    ...shadow.card,
   },
   exportSheetInner: {
     backgroundColor: colors.surface,
