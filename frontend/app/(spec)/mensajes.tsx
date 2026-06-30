@@ -20,9 +20,14 @@ const POLL_MS = 6000;
 type ScreenView = { kind: 'list' } | { kind: 'chat'; channel: Channel };
 
 export default function MensajesScreen() {
-  const insets = useSafeAreaInsets();
   const { user } = useAuth();
   const projectId = (user?.project_ids || [])[0] || '';
+  return <MensajesView projectId={projectId} />;
+}
+
+export function MensajesView({ projectId }: { projectId: string }) {
+  const insets = useSafeAreaInsets();
+  const { user } = useAuth();
 
   const [view, setView] = useState<ScreenView>({ kind: 'list' });
 

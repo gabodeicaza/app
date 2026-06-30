@@ -44,6 +44,13 @@ export default function CoordLayout() {
         }}
       />
       <Tabs.Screen
+        name="mensajes"
+        options={{
+          title: 'Mensajes',
+          tabBarIcon: ({ color, size }) => <Ionicons name="chatbubbles" size={size} color={color} />,
+        }}
+      />
+      <Tabs.Screen
         name="calendario"
         options={{
           title: 'Calendario',
