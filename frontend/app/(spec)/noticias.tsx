@@ -11,7 +11,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useAuth } from '@/src/auth-context';
-import { api, Announcement, Area } from '@/src/api';
+import { api, Announcement, Area, LocationNode } from '@/src/api';
 import { colors, radius, shadow, spacing } from '@/src/theme';
 
 const POLL_MS = 60000;
@@ -35,6 +35,7 @@ export default function NoticiasScreen() {
 
   const [items, setItems] = useState<Announcement[]>([]);
   const [areas, setAreas] = useState<Area[]>([]);
+  const [nodes, setNodes] = useState<LocationNode[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -61,6 +62,7 @@ export default function NoticiasScreen() {
   useEffect(() => {
     if (!projectId) return;
     api.listAreas(projectId).then(setAreas).catch(() => setAreas([]));
+    api.listNodes(projectId).then(setNodes).catch(() => setNodes([]));
   }, [projectId]);
 
   useEffect(() => {
@@ -168,6 +170,7 @@ export default function NoticiasScreen() {
         editor={editor}
         canPin={isCoord}
         areas={areas}
+        nodes={nodes}
         onClose={() => setEditor(null)}
         onSaved={() => { setEditor(null); load(true); }}
         projectId={projectId}
@@ -244,12 +247,13 @@ function AnnouncementCard({
 }
 
 function AnnouncementEditor({
-  visible, editor, canPin, areas, onClose, onSaved, projectId,
+  visible, editor, canPin, areas, nodes, onClose, onSaved, projectId,
 }: {
   visible: boolean;
   editor: EditorState;
   canPin: boolean;
   areas: Area[];
+  nodes: LocationNode[];
   onClose: () => void;
   onSaved: () => void;
   projectId: string;
@@ -260,6 +264,7 @@ function AnnouncementEditor({
   const [pinned, setPinned] = useState(false);
   const [jerarquia, setJerarquia] = useState<'urgente' | 'importante' | 'informativo' | null>(null);
   const [audiencia, setAudiencia] = useState<string | null>(null);
+  const [nodeId, setNodeId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -272,8 +277,9 @@ function AnnouncementEditor({
       const j = (editor.item.jerarquia || '').toString().toLowerCase();
       setJerarquia((['urgente', 'importante', 'informativo'].includes(j) ? j : null) as any);
       setAudiencia(editor.item.audiencia || null);
+      setNodeId((editor.item as any).node_id || null);
     } else {
-      setTitle(''); setBody(''); setPinned(false); setJerarquia(null); setAudiencia(null);
+      setTitle(''); setBody(''); setPinned(false); setJerarquia(null); setAudiencia(null); setNodeId(null);
     }
     setErr(null);
   }, [visible, editor]);
@@ -287,11 +293,14 @@ function AnnouncementEditor({
     setBusy(true);
     try {
       if (editor?.kind === 'edit') {
-        const payload: any = { title: t, body: b, jerarquia, audiencia };
+        const payload: any = { title: t, body: b, jerarquia, audiencia, node_id: nodeId };
         if (canPin) payload.pinned = pinned;
         await api.updateAnnouncement(editor.item.id, payload);
       } else {
-        await api.createAnnouncement(projectId, { title: t, body: b, pinned: canPin ? pinned : false, jerarquia, audiencia });
+        await api.createAnnouncement(projectId, {
+          title: t, body: b, pinned: canPin ? pinned : false,
+          jerarquia, audiencia, node_id: nodeId,
+        });
       }
       onSaved();
     } catch (e: any) {
@@ -393,6 +402,50 @@ function AnnouncementEditor({
                   <Switch value={pinned} onValueChange={setPinned} disabled={busy} />
                 </View>
               ) : null}
+              <Text style={styles.modalLabel}>Vincular a Nodo / Ubicación (opcional)</Text>
+              <Text style={{ fontSize: 11, color: colors.textMuted, marginTop: -4 }}>
+                Si la noticia es <Text style={{ fontWeight: '800' }}>Importante</Text> o <Text style={{ fontWeight: '800' }}>Urgente</Text>, aparecerá como nota dentro de la sección del nodo en las exportaciones.
+              </Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingVertical: 6 }}>
+                <Pressable
+                  onPress={() => setNodeId(null)}
+                  disabled={busy}
+                  style={{
+                    flexDirection: 'row', alignItems: 'center', gap: 4,
+                    paddingHorizontal: 12, paddingVertical: 8, borderRadius: 999,
+                    borderWidth: 1.5, borderColor: colors.textMuted,
+                    backgroundColor: nodeId === null ? colors.textMuted : 'transparent',
+                  }}
+                >
+                  <Ionicons name="remove-circle-outline" size={12} color={nodeId === null ? '#fff' : colors.textMuted} />
+                  <Text style={{ color: nodeId === null ? '#fff' : colors.textMuted, fontWeight: '700', fontSize: 12 }}>Sin nodo</Text>
+                </Pressable>
+                {nodes.map((nd) => {
+                  const active = nodeId === nd.id;
+                  return (
+                    <Pressable
+                      key={nd.id}
+                      onPress={() => setNodeId(nd.id)}
+                      disabled={busy}
+                      style={{
+                        flexDirection: 'row', alignItems: 'center', gap: 4,
+                        paddingHorizontal: 12, paddingVertical: 8, borderRadius: 999,
+                        borderWidth: 1.5, borderColor: colors.primary,
+                        backgroundColor: active ? colors.primary : 'transparent',
+                        maxWidth: 240,
+                      }}
+                    >
+                      <Ionicons name="git-branch-outline" size={12} color={active ? '#fff' : colors.primary} />
+                      <Text
+                        numberOfLines={1}
+                        style={{ color: active ? '#fff' : colors.primary, fontWeight: '700', fontSize: 12 }}
+                      >
+                        {nd.name}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </ScrollView>
               {err ? (
                 <View style={styles.errInline}>
                   <Ionicons name="alert-circle" size={14} color={colors.error} />

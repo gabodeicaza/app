@@ -17,15 +17,19 @@ import { MensajesView } from '../(spec)/mensajes';
 export default function CoordMensajesScreen() {
   const insets = useSafeAreaInsets();
   const [projects, setProjects] = useState<Project[]>([]);
+  const [unread, setUnread] = useState<Record<string, number>>({});
   const [selected, setSelected] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
   const load = useCallback(async () => {
     try {
-      const data = await api.listProjects();
+      const [data, counts] = await Promise.all([
+        api.listProjects(),
+        api.unreadCounts().catch(() => ({} as Record<string, number>)),
+      ]);
       setProjects(data);
-      // Auto-select si sólo hay un proyecto.
+      setUnread(counts);
       if (data.length === 1) setSelected(data[0].id);
     } catch {
       // silent
@@ -37,6 +41,13 @@ export default function CoordMensajesScreen() {
 
   useEffect(() => { load(); }, [load]);
 
+  // Marca como leídos al entrar a un proyecto y limpia el badge localmente.
+  const openProject = useCallback(async (pid: string) => {
+    setSelected(pid);
+    setUnread((prev) => ({ ...prev, [pid]: 0 }));
+    api.markProjectMessagesSeen(pid).catch(() => {});
+  }, []);
+
   // Si hay un proyecto seleccionado, mostramos la pantalla de Mensajes con un
   // header que permite volver al selector.
   if (selected) {
@@ -45,7 +56,7 @@ export default function CoordMensajesScreen() {
       <View style={{ flex: 1, backgroundColor: colors.bg }}>
         <View style={[styles.switcher, { paddingTop: insets.top + 8 }]}>
           <Pressable
-            onPress={() => setSelected(null)}
+            onPress={() => { setSelected(null); load(); }}
             hitSlop={10}
             style={styles.switcherBtn}
           >
@@ -62,6 +73,7 @@ export default function CoordMensajesScreen() {
     );
   }
 
+  const totalUnread = Object.values(unread).reduce((a, b) => a + (b || 0), 0);
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <StatusBar barStyle="light-content" />
@@ -73,8 +85,17 @@ export default function CoordMensajesScreen() {
         </View>
         <View style={{ flex: 1 }}>
           <Text style={styles.headerTitle}>Mensajes</Text>
-          <Text style={styles.headerSubtitle}>Elige un proyecto para ver sus canales</Text>
+          <Text style={styles.headerSubtitle}>
+            {totalUnread > 0
+              ? `${totalUnread} mensaje${totalUnread === 1 ? '' : 's'} sin leer · elige un proyecto`
+              : 'Elige un proyecto para ver sus canales'}
+          </Text>
         </View>
+        {totalUnread > 0 && (
+          <View style={styles.headerBadge}>
+            <Text style={styles.headerBadgeTxt}>{totalUnread > 99 ? '99+' : String(totalUnread)}</Text>
+          </View>
+        )}
       </View>
 
       <ScrollView
@@ -97,24 +118,32 @@ export default function CoordMensajesScreen() {
             <Text style={styles.emptyMsg}>Crea un proyecto desde la pantalla de Inicio para comenzar a usar mensajes.</Text>
           </View>
         ) : (
-          projects.map((p) => (
-            <Pressable
-              key={p.id}
-              onPress={() => setSelected(p.id)}
-              style={({ pressed }) => [styles.projCard, pressed && { opacity: 0.85 }]}
-            >
-              <View style={[styles.projIcon, { backgroundColor: p.color_tema || colors.primary }]}>
-                <Ionicons name="business" size={20} color="#fff" />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.projName} numberOfLines={1}>{p.name}</Text>
-                <Text style={styles.projSub} numberOfLines={1}>
-                  {p.cliente_principal || p.constructora || 'Sin cliente registrado'}
-                </Text>
-              </View>
-              <Ionicons name="chevron-forward" size={20} color={colors.textMuted} />
-            </Pressable>
-          ))
+          projects.map((p) => {
+            const count = unread[p.id] || 0;
+            return (
+              <Pressable
+                key={p.id}
+                onPress={() => openProject(p.id)}
+                style={({ pressed }) => [styles.projCard, pressed && { opacity: 0.85 }]}
+              >
+                <View style={[styles.projIcon, { backgroundColor: p.color_tema || colors.primary }]}>
+                  <Ionicons name="business" size={20} color="#fff" />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.projName} numberOfLines={1}>{p.name}</Text>
+                  <Text style={styles.projSub} numberOfLines={1}>
+                    {p.cliente_principal || p.constructora || 'Sin cliente registrado'}
+                  </Text>
+                </View>
+                {count > 0 && (
+                  <View style={styles.unreadBadge}>
+                    <Text style={styles.unreadBadgeTxt}>{count > 99 ? '99+' : String(count)}</Text>
+                  </View>
+                )}
+                <Ionicons name="chevron-forward" size={20} color={colors.textMuted} />
+              </Pressable>
+            );
+          })
         )}
       </ScrollView>
     </View>
@@ -156,6 +185,18 @@ const styles = StyleSheet.create({
   },
   projName: { fontSize: 14, fontWeight: '800', color: colors.text },
   projSub: { fontSize: 12, color: colors.textMuted, marginTop: 1 },
+  unreadBadge: {
+    minWidth: 22, height: 22, borderRadius: 11,
+    backgroundColor: '#E11D48', paddingHorizontal: 7,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  unreadBadgeTxt: { color: '#fff', fontSize: 11, fontWeight: '900' },
+  headerBadge: {
+    minWidth: 26, height: 26, borderRadius: 13,
+    backgroundColor: '#E11D48', paddingHorizontal: 8,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  headerBadgeTxt: { color: '#fff', fontSize: 12, fontWeight: '900' },
 
   switcher: {
     backgroundColor: colors.primary,

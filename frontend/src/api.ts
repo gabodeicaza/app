@@ -297,6 +297,11 @@ export const api = {
   createCoordinator: (body: { name: string; email: string; password: string }) =>
     request<User>('POST', '/admin/coordinators', body),
 
+  // Mensajes — conteo de no leídos por proyecto.
+  unreadCounts: () => request<Record<string, number>>('GET', '/messages/unread_counts'),
+  markProjectMessagesSeen: (pid: string) =>
+    request<{ ok: boolean; last_read_at: string }>('POST', `/projects/${pid}/messages/seen`, {}),
+
   // Push notifications
   registerPushToken: (token: string, platform?: string) =>
     request<{ ok: boolean; count: number }>('POST', '/users/push-token', { token, platform }),

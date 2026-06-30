@@ -3101,6 +3101,68 @@ async def delete_message(mid: str, user: dict = Depends(current_user)):
     return {"ok": True}
 
 
+# === MENSAJES NO LEÍDOS (badges en picker de proyectos) ====================
+@api.post("/projects/{pid}/messages/seen")
+async def mark_project_messages_seen(pid: str, user: dict = Depends(current_user)):
+    """Marca como leídos todos los mensajes del proyecto para el usuario actual.
+    Persiste `last_read_at = now()` en la colección `channel_reads`.
+    """
+    await ensure_project_access(user, pid)
+    now = datetime.now(timezone.utc)
+    await db.channel_reads.update_one(
+        {"user_id": user["id"], "project_id": pid},
+        {"$set": {"last_read_at": now}},
+        upsert=True,
+    )
+    return {"ok": True, "last_read_at": now.isoformat()}
+
+
+@api.get("/messages/unread_counts")
+async def messages_unread_counts(user: dict = Depends(current_user)):
+    """Devuelve `{project_id: count}` con el total de mensajes no leídos por
+    proyecto para el usuario actual. Sólo cuenta mensajes ajenos (no enviados
+    por el propio usuario).
+
+    Optimizado para tableros: una sola pasada por todos los proyectos del
+    usuario y un agregado en MongoDB por proyecto.
+    """
+    role = user.get("role")
+    # 1) Determinar la lista de proyectos accesibles para el usuario.
+    if role in (ROLE_COORD, ROLE_JEFE):
+        projects = await db.projects.find({}, {"id": 1}).to_list(length=1000)
+        pids = [p["id"] for p in projects]
+    else:
+        pids = list(user.get("project_ids") or [])
+    if not pids:
+        return {}
+    # 2) Cargar last_read_at por proyecto en bloque.
+    reads_cur = db.channel_reads.find(
+        {"user_id": user["id"], "project_id": {"$in": pids}},
+        {"project_id": 1, "last_read_at": 1, "_id": 0},
+    )
+    reads = {r["project_id"]: r.get("last_read_at") for r in await reads_cur.to_list(length=2000)}
+    # 3) Por proyecto, calcular canales accesibles y contar mensajes nuevos.
+    out: dict = {}
+    for pid in pids:
+        # Cargar canales del proyecto.
+        ch_docs = await db.channels.find({"project_id": pid}).to_list(length=200)
+        # Filtrar canales accesibles para este usuario.
+        ch_ids = [c["id"] for c in ch_docs if _can_access_channel(user, c)]
+        if not ch_ids:
+            out[pid] = 0
+            continue
+        last_read = reads.get(pid)
+        q: dict = {
+            "channel_id": {"$in": ch_ids},
+            "user_id": {"$ne": user["id"]},
+        }
+        if last_read:
+            q["created_at"] = {"$gt": last_read}
+        count = await db.messages.count_documents(q)
+        out[pid] = int(count)
+    return out
+
+
 # === EVENTS (Calendario compartido) ========================================
 class EventIn(BaseModel):
     title: str
@@ -3727,21 +3789,34 @@ def _strip_b64_prefix(s: str) -> str:
 # ============================================================================
 _DIRAC_LOGO_URL = (
     "https://customer-assets.emergentagent.com/"
-    "job_offline-report-sync/artifacts/eprp6ziy_logo%20driac.png"
+    "job_offline-report-sync/artifacts/k58zlgpr_Logo%20dirac%20.png"
 )
+_DIRAC_LOGO_LOCAL = Path(__file__).resolve().parent / "assets" / "logo_dirac.png"
 _DIRAC_LOGO_CACHE: dict = {"bytes": None, "tried": False}
 
 
 def _get_default_logo_bytes() -> Optional[bytes]:
-    """Devuelve los bytes del logo DIRAC. Sólo descarga una vez por proceso.
+    """Devuelve los bytes del logo DIRAC (logotipo institucional con triángulo
+    verde). Prioriza el archivo local en `backend/assets/logo_dirac.png` y, si
+    no existe, intenta una descarga remota como fallback.
 
-    Si la descarga falla, devuelve None y los exports renderizan sin logo.
+    Si todo falla, devuelve None y los exports renderizan sin logo.
     """
     if _DIRAC_LOGO_CACHE["bytes"] is not None:
         return _DIRAC_LOGO_CACHE["bytes"]
     if _DIRAC_LOGO_CACHE["tried"]:
         return None
     _DIRAC_LOGO_CACHE["tried"] = True
+    # 1) Archivo local — preferido por confiabilidad y por evitar dependencias de red.
+    try:
+        if _DIRAC_LOGO_LOCAL.exists():
+            data = _DIRAC_LOGO_LOCAL.read_bytes()
+            if data:
+                _DIRAC_LOGO_CACHE["bytes"] = data
+                return data
+    except Exception as e:  # pragma: no cover
+        logging.warning("No se pudo leer logo DIRAC local: %s", e)
+    # 2) Fallback remoto.
     try:
         import requests as _http
         resp = _http.get(_DIRAC_LOGO_URL, timeout=6)
@@ -4398,7 +4473,9 @@ async def _gather_export_data(
         node = nodes_by_id.get(nid)
         if not node:
             continue
-        path_ids = list(node.get("path") or [])
+        # build_node_path devuelve [root, ..., leaf] usando parent_id (path en BD
+        # puede no estar materializado).
+        path_ids = await build_node_path(node)
         if nid not in path_ids:
             path_ids.append(nid)
         announcements_by_node[nid] = await _announcements_for_node(pid, path_ids, start_dt, end_dt)
@@ -4622,41 +4699,9 @@ async def export_reports_docx(
             for r in node_reps:
                 doc.add_page_break()
 
-                # Foto centrada (la primera). Las adicionales se imprimen
-                # más abajo en una sección "Fotografías adicionales".
-                img_b64 = None
+                # Recopilar imágenes para usarlas DESPUÉS del texto.
                 imgs = r.get("images") or []
-                if imgs:
-                    img_b64 = _strip_b64_prefix(imgs[0])
-                if img_b64:
-                    try:
-                        raw = base64.b64decode(img_b64)
-                        img_buf = io.BytesIO(raw)
-                        img_p = doc.add_paragraph()
-                        img_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                        # Tamaño institucional: 13.37 cm de ancho × 10 cm de alto
-                        img_p.add_run().add_picture(img_buf, width=Cm(13.37), height=Cm(10.0))
-                        cap = doc.add_paragraph()
-                        cap.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                        cap_r = cap.add_run(
-                            f"Foto 1 de {len(imgs)} · 13.37 × 10 cm"
-                            if len(imgs) > 1 else "13.37 × 10 cm"
-                        )
-                        cap_r.italic = True
-                        cap_r.font.size = Pt(8)
-                        cap_r.font.color.rgb = MUTED_RGB
-                    except Exception:
-                        p = doc.add_paragraph()
-                        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                        rr = p.add_run("(imagen no legible)")
-                        rr.italic = True
-                        rr.font.color.rgb = RGBColor(0x64, 0x75, 0x8B)
-                else:
-                    p = doc.add_paragraph()
-                    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                    rr = p.add_run("(sin fotografía)")
-                    rr.italic = True
-                    rr.font.color.rgb = RGBColor(0x64, 0x75, 0x8B)
+                img_b64 = _strip_b64_prefix(imgs[0]) if imgs else None
 
                 # Datos
                 def _raw_to_str(v):
@@ -4733,6 +4778,37 @@ async def export_reports_docx(
                 _row("Actividades", " ".join(_actividades))
                 _row("Personal", personal_str)
                 _row("Equipo", equipo_str)
+
+                # === Foto principal — DESPUÉS del texto (institucional) ===
+                if img_b64:
+                    try:
+                        raw = base64.b64decode(img_b64)
+                        img_buf = io.BytesIO(raw)
+                        img_p = doc.add_paragraph()
+                        img_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                        # Tamaño institucional: 13.37 cm de ancho × 10 cm de alto
+                        img_p.add_run().add_picture(img_buf, width=Cm(13.37), height=Cm(10.0))
+                        cap = doc.add_paragraph()
+                        cap.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                        cap_r = cap.add_run(
+                            f"Foto 1 de {len(imgs)} · 13.37 × 10 cm"
+                            if len(imgs) > 1 else "13.37 × 10 cm"
+                        )
+                        cap_r.italic = True
+                        cap_r.font.size = Pt(8)
+                        cap_r.font.color.rgb = MUTED_RGB
+                    except Exception:
+                        p = doc.add_paragraph()
+                        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                        rr = p.add_run("(imagen no legible)")
+                        rr.italic = True
+                        rr.font.color.rgb = RGBColor(0x64, 0x75, 0x8B)
+                else:
+                    p = doc.add_paragraph()
+                    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                    rr = p.add_run("(sin fotografía)")
+                    rr.italic = True
+                    rr.font.color.rgb = RGBColor(0x64, 0x75, 0x8B)
 
                 # === Galería de fotos adicionales — 2 por página, 13.37×10 cm ===
                 extra_imgs = imgs[1:] if len(imgs) > 1 else []
