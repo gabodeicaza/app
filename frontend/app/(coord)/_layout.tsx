@@ -59,6 +59,7 @@ export default function CoordLayout() {
       />
       <Tabs.Screen name="projects/new" options={{ href: null }} />
       <Tabs.Screen name="projects/[id]" options={{ href: null }} />
+      <Tabs.Screen name="coordinators" options={{ href: null }} />
     </Tabs>
   );
 }

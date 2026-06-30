@@ -47,7 +47,7 @@ export interface User {
   id: string;
   email: string;
   name: string;
-  role: 'coordinador_general' | 'sub_coordinador' | 'especialista';
+  role: 'coordinador_general' | 'jefe_proyecto' | 'sub_coordinador' | 'especialista';
   area?: string | null;
   puesto?: string | null;
   scope_node_id?: string | null;
@@ -291,6 +291,11 @@ export const api = {
   login: (email: string, password: string) =>
     request<{ token: string; user: User }>('POST', '/auth/login', { email, password }),
   me: () => request<User>('GET', '/auth/me'),
+
+  // Admin — Coordinadores Generales (sólo accesible por coord_general)
+  listCoordinators: () => request<User[]>('GET', '/admin/coordinators'),
+  createCoordinator: (body: { name: string; email: string; password: string }) =>
+    request<User>('POST', '/admin/coordinators', body),
 
   // Push notifications
   registerPushToken: (token: string, platform?: string) =>

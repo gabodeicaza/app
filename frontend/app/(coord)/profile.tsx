@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable, Alert } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Pressable } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -50,6 +50,22 @@ export default function CoordProfile() {
           <Row icon="folder-outline" label="Proyectos accesibles" value={user?.role === 'coordinador_general' ? 'Todos (god mode)' : String(user?.project_ids?.length ?? 0)} />
         </View>
 
+        {user?.role === 'coordinador_general' && (
+          <Pressable
+            onPress={() => router.push('/(coord)/coordinators')}
+            style={({ pressed }) => [styles.actionTile, pressed && { opacity: 0.85 }]}
+          >
+            <View style={styles.actionIcon}>
+              <Ionicons name="people" size={20} color={colors.primary} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.actionTitle}>Coordinadores Generales</Text>
+              <Text style={styles.actionSub}>Crea y consulta a los Coord. Generales con gobernanza global</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={20} color={colors.textMuted} />
+          </Pressable>
+        )}
+
         <Button label="Cerrar sesión" variant="danger" onPress={onLogout} fullWidth />
       </ScrollView>
     </View>
@@ -89,4 +105,15 @@ const styles = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 6 },
   rowLabel: { fontSize: 11, color: colors.textMuted, fontWeight: '700' },
   rowValue: { fontSize: 14, color: colors.text, fontWeight: '700' },
+  actionTile: {
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    backgroundColor: colors.surface, borderRadius: radius.lg, padding: spacing.md,
+    borderWidth: 1, borderColor: colors.border,
+  },
+  actionIcon: {
+    width: 38, height: 38, borderRadius: 19, backgroundColor: colors.primaryLight,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  actionTitle: { fontSize: 14, fontWeight: '800', color: colors.text },
+  actionSub: { fontSize: 11, color: colors.textMuted, marginTop: 2 },
 });

@@ -525,6 +525,59 @@ async def bootstrap(body: BootstrapIn):
     return {"ok": True, "user": user_to_out(user), "created": True}
 
 
+# === COORDINADORES GENERALES (gestión por pares) ============================
+class CoordinatorCreateIn(BaseModel):
+    name: str
+    email: EmailStr
+    password: str
+
+
+@api.get("/admin/coordinators")
+async def list_coordinators(user: dict = Depends(require_role(ROLE_COORD))):
+    """Lista todos los Coordinadores Generales. Sólo accesible por otro
+    Coordinador General. Devuelve el directorio con email, nombre y fecha
+    de alta para auditoría."""
+    items = await db.users.find({"role": ROLE_COORD}).sort("created_at", 1).to_list(length=500)
+    return [user_to_out(u) for u in items]
+
+
+@api.post("/admin/coordinators")
+async def create_coordinator(
+    body: CoordinatorCreateIn,
+    user: dict = Depends(require_role(ROLE_COORD)),
+):
+    """Crea un nuevo Coordinador General. Sólo un Coordinador General
+    autenticado puede ejecutar esta acción. El nuevo usuario hereda los
+    mismos privilegios globales (gobierna cualquier proyecto)."""
+    name = (body.name or "").strip()
+    email = (body.email or "").strip().lower()
+    pw = (body.password or "").strip()
+    if not name:
+        raise HTTPException(400, "Nombre requerido")
+    if len(name) > 80:
+        raise HTTPException(400, "Nombre máximo 80 caracteres")
+    if not email:
+        raise HTTPException(400, "Email requerido")
+    if len(pw) < 6:
+        raise HTTPException(400, "Contraseña mínima de 6 caracteres")
+    if await db.users.find_one({"email": email}):
+        raise HTTPException(409, "Ya existe un usuario con ese email")
+    uid = str(uuid.uuid4())
+    doc = {
+        "id": uid,
+        "email": email,
+        "password": hash_pw(pw),
+        "name": name,
+        "role": ROLE_COORD,
+        "created_at": datetime.now(timezone.utc),
+        "project_ids": [],
+        "created_by": user["id"],
+    }
+    await db.users.insert_one(doc)
+    log.info(f"[admin] Coord {user['email']} created new coordinador_general {email}")
+    return user_to_out(doc)
+
+
 # === AUTH ===================================================================
 @api.post("/auth/login", response_model=Token)
 async def login(body: LoginIn):
@@ -2433,9 +2486,22 @@ async def delete_report(rid: str, user: dict = Depends(current_user)):
 @api.get("/projects/{pid}/users")
 async def list_project_users(pid: str, user: dict = Depends(current_user)):
     """Lista usuarios miembros del proyecto. Cualquier miembro puede consultarla
-    (usado para el selector de Mensajes Directos)."""
+    (usado para el selector de Mensajes Directos).
+
+    Regla asimétrica: los Especialistas NO ven a los Coordinadores Generales en
+    el directorio (no pueden iniciar chats con ellos).
+    """
     await ensure_project_access(user, pid)
-    items = await db.users.find({"project_ids": pid}).to_list(length=1000)
+    # Incluye también a los Coord Generales y Jefes de Proyecto (que tienen
+    # acceso global y pueden no estar en project_ids del documento).
+    items = await db.users.find(
+        {"$or": [
+            {"project_ids": pid},
+            {"role": {"$in": [ROLE_COORD, ROLE_JEFE]}},
+        ]}
+    ).to_list(length=1000)
+    if user.get("role") == ROLE_ESPECIALISTA:
+        items = [u for u in items if u.get("role") != ROLE_COORD]
     return [user_to_out(u) for u in items]
 
 
@@ -2443,7 +2509,14 @@ async def list_project_users(pid: str, user: dict = Depends(current_user)):
 async def list_project_members(pid: str, user: dict = Depends(current_user)):
     """Alias semántico de /users — lista miembros del proyecto."""
     await ensure_project_access(user, pid)
-    items = await db.users.find({"project_ids": pid}).to_list(length=1000)
+    items = await db.users.find(
+        {"$or": [
+            {"project_ids": pid},
+            {"role": {"$in": [ROLE_COORD, ROLE_JEFE]}},
+        ]}
+    ).to_list(length=1000)
+    if user.get("role") == ROLE_ESPECIALISTA:
+        items = [u for u in items if u.get("role") != ROLE_COORD]
     return [user_to_out(u) for u in items]
 
 
@@ -2710,13 +2783,17 @@ def _can_access_channel(user: dict, ch: dict) -> bool:
     pid = ch["project_id"]
     project_ids = user.get("project_ids") or []
     # ===== Roles gerenciales con acceso TRANSVERSAL al proyecto =====
-    # coord_general / jefe_proyecto / sub_coordinador pueden ver y participar
-    # en cualquier canal (general, por área, o directo donde sean miembros).
-    if user["role"] in (ROLE_COORD, ROLE_JEFE, ROLE_SUB):
+    # Coordinador General y Jefe de Proyecto tienen acceso GLOBAL a todos los
+    # proyectos (no dependen de project_ids). Sub-coordinador requiere
+    # pertenencia explícita al proyecto.
+    if user["role"] == ROLE_COORD or user["role"] == ROLE_JEFE:
+        if ch["type"] == "direct":
+            return user["id"] in (ch.get("member_ids") or [])
+        return True
+    if user["role"] == ROLE_SUB:
         if pid not in project_ids:
             return False
         if ch["type"] == "direct":
-            # Aún en DMs deben ser miembros explícitos del canal directo.
             return user["id"] in (ch.get("member_ids") or [])
         return True
     # ===== Especialistas =====
@@ -2730,6 +2807,41 @@ def _can_access_channel(user: dict, ch: dict) -> bool:
     if ch["type"] == "direct":
         return user["id"] in (ch.get("member_ids") or [])
     return False
+
+
+def _direct_peer_role(user_id: str, ch: dict, peer_role_cache: dict) -> Optional[str]:
+    """Helper sync — devuelve el rol del 'otro' miembro de un canal directo,
+    si ya está cacheado. Pensado para usarse dentro de funciones async donde
+    el caller hace la carga del peer."""
+    other_id = next((mid for mid in (ch.get("member_ids") or []) if mid != user_id), None)
+    return peer_role_cache.get(other_id) if other_id else None
+
+
+async def _check_direct_send_rule(sender: dict, ch: dict) -> None:
+    """Aplica la regla asimétrica de mensajería del Coordinador General:
+      - Coord General puede ENVIAR a cualquier rol.
+      - Coord General sólo puede RECIBIR de Jefe de Proyecto y Sub-coordinador.
+      - Por tanto, un Especialista NO puede enviar mensajes a un Coord General
+        en un canal directo.
+    Lanza HTTPException(403) si el envío es inválido. Sólo aplica a canales 'direct'.
+    """
+    if ch.get("type") != "direct":
+        return
+    if sender.get("role") != ROLE_ESPECIALISTA:
+        return
+    other_id = next(
+        (mid for mid in (ch.get("member_ids") or []) if mid != sender["id"]),
+        None,
+    )
+    if not other_id:
+        return
+    other = await db.users.find_one({"id": other_id}, {"role": 1})
+    if other and other.get("role") == ROLE_COORD:
+        raise HTTPException(
+            403,
+            "Los especialistas no pueden enviar mensajes al Coordinador General. "
+            "Contacta a tu Jefe de Proyecto o Sub-coordinador.",
+        )
 
 
 async def _general_channel_id(pid: str) -> str:
@@ -2818,8 +2930,19 @@ async def create_direct_channel(pid: str, body: DirectChannelIn, user: dict = De
     target = await db.users.find_one({"id": body.target_user_id})
     if not target:
         raise HTTPException(404, "Usuario no existe")
-    if pid not in (target.get("project_ids") or []):
-        raise HTTPException(404, "Ese usuario no pertenece al proyecto")
+    # Coord General y Jefe de Proyecto tienen acceso global a todos los proyectos,
+    # por lo que su pertenencia se asume sin necesidad de project_ids.
+    if target.get("role") not in (ROLE_COORD, ROLE_JEFE):
+        if pid not in (target.get("project_ids") or []):
+            raise HTTPException(404, "Ese usuario no pertenece al proyecto")
+    # Regla asimétrica: un Especialista NO puede iniciar un chat con un Coordinador
+    # General. El Coord General sí puede iniciar chats con cualquiera.
+    if user.get("role") == ROLE_ESPECIALISTA and target.get("role") == ROLE_COORD:
+        raise HTTPException(
+            403,
+            "Los especialistas no pueden iniciar chats con la Coordinación General. "
+            "Contacta a tu Jefe de Proyecto o Sub-coordinador.",
+        )
     members = sorted([user["id"], body.target_user_id])
     existing = await db.channels.find_one({
         "project_id": pid, "type": "direct", "member_ids": members,
@@ -2911,6 +3034,8 @@ async def post_channel_message(cid: str, body: MessageIn, user: dict = Depends(c
         raise HTTPException(404, "Canal no existe")
     if not _can_access_channel(user, ch):
         raise HTTPException(403, "Sin acceso a este canal")
+    # Regla asimétrica del Coordinador General (sólo aplica en directos).
+    await _check_direct_send_rule(user, ch)
     text = (body.text or "").strip()
     if not text:
         raise HTTPException(400, "Mensaje vacío")
