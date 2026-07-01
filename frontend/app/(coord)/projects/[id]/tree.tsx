@@ -1,12 +1,14 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, Alert,
-  Modal, TextInput, KeyboardAvoidingView, Platform, RefreshControl,
+  Modal, TextInput, KeyboardAvoidingView, Platform, RefreshControl, Image,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as DocumentPicker from 'expo-document-picker';
+import * as ImagePicker from 'expo-image-picker';
+import * as ImageManipulator from 'expo-image-manipulator';
 import * as Sharing from 'expo-sharing';
 import * as FileSystem from 'expo-file-system/legacy';
 import { Button } from '@/src/components/Button';
@@ -331,8 +333,10 @@ export default function TreeBuilderScreen() {
       <NodeEditorModal
         visible={!!editor}
         editor={editor}
+        pid={pid}
         onClose={() => setEditor(null)}
         onSave={onSave}
+        onCoverChanged={load}
       />
     </View>
   );
@@ -409,6 +413,12 @@ function NodeBranch({
                 </Text>
               </View>
             ) : null}
+            {(node as any).cover_image ? (
+              <View style={[styles.metaBadge, styles.coverBadge]}>
+                <Ionicons name="image" size={9} color={colors.primary} />
+                <Text style={[styles.metaBadgeText, { color: colors.primary }]}>Portada</Text>
+              </View>
+            ) : null}
             {hasChildren ? (
               <Text style={styles.childCount}>{node.children.length} hijo{node.children.length === 1 ? '' : 's'}</Text>
             ) : !isLeaf ? (
@@ -483,12 +493,14 @@ function NodeBranch({
 // =============================================================================
 
 function NodeEditorModal({
-  visible, editor, onClose, onSave,
+  visible, editor, pid, onClose, onSave, onCoverChanged,
 }: {
   visible: boolean;
   editor: EditorMode | null;
+  pid: string;
   onClose: () => void;
   onSave: (p: { name: string; is_leaf: boolean; measurement_type: MeasurementType | null; target_lat: number | null; target_lon: number | null; target_elev: number | null; meta: number | null }) => Promise<void>;
+  onCoverChanged?: () => Promise<void> | void;
 }) {
   const insets = useSafeAreaInsets();
   const [name, setName] = useState('');
@@ -501,6 +513,11 @@ function NodeEditorModal({
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
+  // Portadilla del nodo (cover_image)
+  const [coverUri, setCoverUri] = useState<string | null>(null); // data-url o URL local para preview
+  const [coverBusy, setCoverBusy] = useState(false);
+  const [coverErr, setCoverErr] = useState<string | null>(null);
+
   React.useEffect(() => {
     if (!visible || !editor) return;
     if (editor.kind === 'edit') {
@@ -512,12 +529,15 @@ function NodeEditorModal({
       setTLon(n.target_lon != null ? String(n.target_lon) : '');
       setTElev(n.target_elev != null ? String(n.target_elev) : '');
       setMetaStr(n.meta != null ? String(n.meta) : '');
+      setCoverUri(n.cover_image || null);
     } else {
       setName(''); setIsLeaf(false); setMtype(null);
       setTLat(''); setTLon(''); setTElev('');
       setMetaStr('');
+      setCoverUri(null);
     }
     setErr(null);
+    setCoverErr(null);
   }, [visible, editor]);
 
   const title = useMemo(() => {
@@ -584,6 +604,78 @@ function NodeEditorModal({
     }
   }
 
+  // === Portadilla del nodo (cover_image) ==================================
+  async function pickAndUploadCover() {
+    if (!editor || editor.kind !== 'edit') return;
+    setCoverErr(null);
+    try {
+      // Solicitar permiso (solo aplica en native; en web se ignora)
+      if (Platform.OS !== 'web') {
+        const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+        if (!perm.granted) {
+          setCoverErr('Sin permiso para acceder a la galería.');
+          return;
+        }
+      }
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: false,
+        quality: 0.85,
+        exif: false,
+      });
+      if (result.canceled || !result.assets?.[0]) return;
+      const asset = result.assets[0];
+      let uri = asset.uri;
+      let mime = asset.mimeType || 'image/jpeg';
+      let name = asset.fileName || `cover_${Date.now()}.jpg`;
+
+      // Comprimir/redimensionar (máx 1600px de ancho) para mantener el base64 razonable
+      try {
+        const manipulated = await ImageManipulator.manipulateAsync(
+          uri,
+          [{ resize: { width: 1600 } }],
+          { compress: 0.85, format: ImageManipulator.SaveFormat.JPEG },
+        );
+        uri = manipulated.uri;
+        mime = 'image/jpeg';
+        if (!/\.jpe?g$/i.test(name)) name = name.replace(/\.[^.]+$/, '') + '.jpg';
+      } catch { /* si falla el manipulador, subimos el original */ }
+
+      setCoverBusy(true);
+      const updated = await api.uploadNodeCover(pid, editor.node.id, {
+        uri, name, mimeType: mime,
+      });
+      setCoverUri(updated.cover_image || null);
+      // Reflejar el cambio en el árbol padre (recarga)
+      if (onCoverChanged) await onCoverChanged();
+    } catch (e: any) {
+      setCoverErr(e?.message || 'No se pudo subir la portada');
+    } finally {
+      setCoverBusy(false);
+    }
+  }
+
+  async function removeCover() {
+    if (!editor || editor.kind !== 'edit') return;
+    const ok = await confirm(
+      'Eliminar portada',
+      '¿Eliminar la foto de portada de este nodo? Volverá a usarse la portadilla genérica del proyecto.',
+      { confirmText: 'Eliminar', destructive: true },
+    );
+    if (!ok) return;
+    setCoverErr(null);
+    setCoverBusy(true);
+    try {
+      await api.deleteNodeCover(pid, editor.node.id);
+      setCoverUri(null);
+      if (onCoverChanged) await onCoverChanged();
+    } catch (e: any) {
+      setCoverErr(e?.message || 'No se pudo eliminar la portada');
+    } finally {
+      setCoverBusy(false);
+    }
+  }
+
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
       <View style={styles.modalBackdrop}>
@@ -633,6 +725,84 @@ function NodeEditorModal({
                   Cantidad total a alcanzar en este nodo (m, m³, piezas, etc.). Se usa para calcular el avance en el Panel de Progreso.
                 </Text>
               </View>
+
+              {/* === Portadilla del nodo (cover_image) — solo en modo edición === */}
+              {editor?.kind === 'edit' ? (
+                <View style={styles.coverSection}>
+                  <View style={styles.coverHeader}>
+                    <Ionicons name="image" size={18} color={colors.primary} />
+                    <Text style={styles.coverTitle}>Foto de portada del nodo</Text>
+                  </View>
+                  <Text style={styles.coverHelp}>
+                    Aparecerá como portadilla institucional (capítulo) en el PDF exportado, antes de todos los reportes de este nodo y sus descendientes.
+                  </Text>
+
+                  {coverUri ? (
+                    <View style={styles.coverPreviewWrap}>
+                      <Image
+                        source={{ uri: coverUri }}
+                        style={styles.coverPreview}
+                        resizeMode="cover"
+                      />
+                      {coverBusy ? (
+                        <View style={styles.coverPreviewOverlay}>
+                          <ActivityIndicator size="large" color={colors.textInverse} />
+                        </View>
+                      ) : null}
+                    </View>
+                  ) : (
+                    <View style={styles.coverEmptyWrap}>
+                      <Ionicons name="images-outline" size={36} color={colors.textMuted} />
+                      <Text style={styles.coverEmptyText}>Sin foto de portada</Text>
+                    </View>
+                  )}
+
+                  <View style={styles.coverActions}>
+                    <Pressable
+                      onPress={coverBusy ? undefined : pickAndUploadCover}
+                      style={[styles.coverBtn, styles.coverBtnPrimary, coverBusy && { opacity: 0.6 }]}
+                      disabled={coverBusy}
+                      accessibilityRole="button"
+                    >
+                      {coverBusy ? (
+                        <ActivityIndicator size="small" color={colors.textInverse} />
+                      ) : (
+                        <>
+                          <Ionicons name={coverUri ? 'refresh' : 'cloud-upload'} size={16} color={colors.textInverse} />
+                          <Text style={styles.coverBtnPrimaryText}>
+                            {coverUri ? 'Cambiar foto' : 'Subir foto'}
+                          </Text>
+                        </>
+                      )}
+                    </Pressable>
+                    {coverUri ? (
+                      <Pressable
+                        onPress={coverBusy ? undefined : removeCover}
+                        style={[styles.coverBtn, styles.coverBtnDanger, coverBusy && { opacity: 0.5 }]}
+                        disabled={coverBusy}
+                        accessibilityRole="button"
+                      >
+                        <Ionicons name="trash-outline" size={16} color={colors.error} />
+                        <Text style={styles.coverBtnDangerText}>Eliminar</Text>
+                      </Pressable>
+                    ) : null}
+                  </View>
+
+                  {coverErr ? (
+                    <View style={styles.errorBoxInline}>
+                      <Ionicons name="alert-circle" size={16} color={colors.error} />
+                      <Text style={styles.errorText}>{coverErr}</Text>
+                    </View>
+                  ) : null}
+                </View>
+              ) : (
+                <View style={styles.coverHint}>
+                  <Ionicons name="information-circle-outline" size={16} color={colors.textMuted} />
+                  <Text style={styles.coverHintText}>
+                    Podrás subir una foto de portada del nodo después de crearlo.
+                  </Text>
+                </View>
+              )}
 
               <Pressable
                 onPress={() => setIsLeaf((v) => !v)}
@@ -826,6 +996,7 @@ const styles = StyleSheet.create({
     borderRadius: 4, borderWidth: 1, borderColor: colors.border,
   },
   metaBadgeText: { fontSize: 10, fontWeight: '700', color: colors.textBody },
+  coverBadge: { backgroundColor: colors.primaryLight, borderColor: colors.primary },
 
   // Branch row
   row: {
@@ -921,4 +1092,52 @@ const styles = StyleSheet.create({
   coordLabel: { fontSize: 11, fontWeight: '700', color: colors.textBody },
   metaHelp: { fontSize: 11, color: colors.textMuted, marginTop: 6, lineHeight: 15 },
   errorBoxInline: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: colors.errorBg, padding: 10, borderRadius: radius.md },
+
+  // Cover / Portadilla del nodo
+  coverSection: {
+    borderWidth: 1, borderColor: colors.border, borderRadius: radius.md,
+    padding: 12, backgroundColor: colors.bg, gap: 10,
+  },
+  coverHeader: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  coverTitle: { fontSize: 13, fontWeight: '800', color: colors.text, letterSpacing: 0.2 },
+  coverHelp: { fontSize: 11, color: colors.textMuted, lineHeight: 15 },
+  coverPreviewWrap: {
+    width: '100%', height: 200, borderRadius: radius.md,
+    overflow: 'hidden', backgroundColor: colors.border, position: 'relative',
+    borderWidth: 1, borderColor: colors.borderStrong,
+    alignSelf: 'center',
+  },
+  coverPreview: { width: '100%', height: '100%' },
+  coverPreviewOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: 'rgba(0,0,0,0.35)',
+  },
+  coverEmptyWrap: {
+    width: '100%', height: 140, borderRadius: radius.md,
+    alignItems: 'center', justifyContent: 'center', gap: 6,
+    borderWidth: 1.5, borderColor: colors.border, borderStyle: 'dashed',
+    backgroundColor: colors.surface,
+    alignSelf: 'center',
+  },
+  coverEmptyText: { fontSize: 12, color: colors.textMuted, fontWeight: '700' },
+  coverActions: { flexDirection: 'row', gap: 8, flexWrap: 'wrap' },
+  coverBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    paddingHorizontal: 14, paddingVertical: 10, borderRadius: radius.md,
+    minHeight: 44,
+  },
+  coverBtnPrimary: { backgroundColor: colors.primary, flex: 1, justifyContent: 'center' },
+  coverBtnPrimaryText: { color: colors.textInverse, fontWeight: '800', fontSize: 13 },
+  coverBtnDanger: {
+    borderWidth: 1, borderColor: colors.error, backgroundColor: colors.errorBg,
+    justifyContent: 'center',
+  },
+  coverBtnDangerText: { color: colors.error, fontWeight: '800', fontSize: 13 },
+  coverHint: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    padding: 10, borderRadius: radius.md,
+    backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.border,
+  },
+  coverHintText: { flex: 1, fontSize: 11, color: colors.textMuted, lineHeight: 15 },
 });

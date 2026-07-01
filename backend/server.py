@@ -236,6 +236,10 @@ class LocationNodeOut(BaseModel):
     target_elev: Optional[float] = None
     meta: Optional[float] = None
     avance_actual: float = 0.0
+    # Portada institucional del nodo (foto de render/arquitectura). Se usa como
+    # fondo de la "Portadilla de Nodo" dinámica en el PDF exportado.
+    # Se almacena como data URL base64 (image/jpeg, image/png, image/webp).
+    cover_image: Optional[str] = None
     metadata: Optional[dict] = None
     path: List[str] = Field(default_factory=list)  # cadena de ids desde raíz hasta self
 
@@ -1216,6 +1220,59 @@ async def delete_node(nid: str, user: dict = Depends(require_role(ROLE_COORD))):
         {"node_id": {"$in": ids_to_delete}}, {"$set": {"node_orphan": True}}
     )
     return {"ok": True, "deleted_count": len(ids_to_delete)}
+
+
+# === PORTADILLA POR NODO (cover_image) =====================================
+# Se almacena como data URL base64 en el propio documento del nodo.
+# Usado por el motor PDF para renderizar la "Portadilla de Nodo" dinámica:
+#   fondo con color institucional + nombre del nodo (grande) + imagen incrustada.
+_NODE_COVER_MIME = {"image/jpeg", "image/jpg", "image/png", "image/webp"}
+_NODE_COVER_MAX_BYTES = 8 * 1024 * 1024  # 8 MB por portada
+
+
+@api.post("/projects/{pid}/nodes/{nid}/cover")
+async def upload_node_cover(
+    pid: str,
+    nid: str,
+    file: UploadFile = File(...),
+    user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB)),
+):
+    """Sube (o reemplaza) la portada institucional de un nodo.
+    Acepta JPG/PNG/WebP hasta 8 MB. Devuelve el nodo actualizado."""
+    node = await db.location_nodes.find_one({"id": nid, "project_id": pid})
+    if not node:
+        raise HTTPException(404, "Nodo no existe")
+    content_type = (file.content_type or "").lower()
+    if content_type and content_type not in _NODE_COVER_MIME:
+        raise HTTPException(415, f"Formato no soportado: {content_type}. Usa JPG/PNG/WebP.")
+    raw = await file.read(_NODE_COVER_MAX_BYTES + 1)
+    if len(raw) > _NODE_COVER_MAX_BYTES:
+        raise HTTPException(413, f"Imagen demasiado grande (máx {_NODE_COVER_MAX_BYTES // (1024*1024)} MB).")
+    # Serializar como data URL base64
+    import base64 as _b64
+    mime = content_type or "image/jpeg"
+    b64_str = _b64.b64encode(raw).decode("ascii")
+    data_url = f"data:{mime};base64,{b64_str}"
+    await db.location_nodes.update_one({"id": nid}, {"$set": {"cover_image": data_url}})
+    updated = await db.location_nodes.find_one({"id": nid})
+    updated.pop("_id", None)
+    return updated
+
+
+@api.delete("/projects/{pid}/nodes/{nid}/cover")
+async def delete_node_cover(
+    pid: str,
+    nid: str,
+    user: dict = Depends(require_role(ROLE_COORD, ROLE_SUB)),
+):
+    """Elimina la portada institucional del nodo (vuelve a la portadilla genérica)."""
+    node = await db.location_nodes.find_one({"id": nid, "project_id": pid})
+    if not node:
+        raise HTTPException(404, "Nodo no existe")
+    await db.location_nodes.update_one({"id": nid}, {"$set": {"cover_image": None}})
+    updated = await db.location_nodes.find_one({"id": nid})
+    updated.pop("_id", None)
+    return updated
 
 
 # === BULK UPLOAD GENÉRICO DE NODOS DESDE EXCEL/CSV =========================
@@ -4045,6 +4102,7 @@ async def export_reports_pdf(
     start_dt = data["start_dt"]
     end_dt = data["end_dt"]
     prev_reading_by_node = data["prev_reading_by_node"]
+    cover_ancestor_by_node = data.get("cover_ancestor_by_node", {})
 
     role = user["role"]
 
@@ -4219,7 +4277,7 @@ async def export_reports_pdf(
             c.drawCentredString(PW / 2, PH / 2, "No hay reportes para el período seleccionado.")
             c.showPage()
             c.save()
-            return buf.getvalue()
+            return buf.getvalue(), section_page_indices
 
         # --- CUERPO ---------------------------------------------------------
         PHOTO_W = 10.0 * cm
@@ -4249,6 +4307,83 @@ async def export_reports_pdf(
                     cy -= leading
             return cy
 
+        def draw_dynamic_cover_page(cover_name: str, cover_b64: str, page_num_val: int) -> None:
+            """Portadilla de Nodo DINÁMICA:
+              - Fondo pleno con el color institucional (BRAND)
+              - Nombre de la rama principal (grande, centrado)
+              - Imagen de portada del nodo ocupando el espacio principal
+            """
+            # Fondo pleno con color institucional
+            c.setFillColor(BRAND)
+            c.rect(0, 0, PW, PH, fill=1, stroke=0)
+
+            # Título de la rama en la parte superior
+            c.setFillColor(HexColor("#FFFFFF"))
+            c.setFont("Helvetica-Bold", 34)
+            _title = (cover_name or "SECCIÓN").upper()
+            # Reducir tamaño de fuente si el título es demasiado ancho
+            _size = 34
+            while c.stringWidth(_title, "Helvetica-Bold", _size) > PW - 3 * cm and _size > 18:
+                _size -= 2
+                c.setFont("Helvetica-Bold", _size)
+            c.drawCentredString(PW / 2, PH - 2.4 * cm, _title)
+
+            # Línea decorativa dorada/blanca
+            c.setStrokeColor(HexColor("#FFFFFF"))
+            c.setLineWidth(1.8)
+            c.line(PW / 2 - 7 * cm, PH - 3.3 * cm, PW / 2 + 7 * cm, PH - 3.3 * cm)
+
+            # Cover image incrustada — área principal (respeta aspect-ratio)
+            img_x_pad = 2.2 * cm
+            img_top = PH - 4.0 * cm
+            img_bottom = 2.4 * cm
+            img_h = img_top - img_bottom
+            img_w = PW - 2 * img_x_pad
+            img_x = img_x_pad
+            img_y = img_bottom
+            drawn = False
+            try:
+                _b64_data = _strip_b64_prefix(cover_b64) if cover_b64 else None
+                if _b64_data:
+                    raw = base64.b64decode(_b64_data)
+                    img = ImageReader(io.BytesIO(raw))
+                    # Fondo blanco para la imagen (mejora contraste)
+                    c.setFillColor(HexColor("#FFFFFF"))
+                    c.rect(img_x, img_y, img_w, img_h, fill=1, stroke=0)
+                    c.drawImage(img, img_x, img_y, width=img_w, height=img_h,
+                                preserveAspectRatio=True, anchor='c', mask='auto')
+                    # Borde blanco sutil alrededor de la imagen
+                    c.setStrokeColor(HexColor("#FFFFFF"))
+                    c.setLineWidth(2.0)
+                    c.rect(img_x, img_y, img_w, img_h, fill=0, stroke=1)
+                    drawn = True
+            except Exception:
+                drawn = False
+            if not drawn:
+                # Fallback: sólo el título + espacio central con contorno
+                c.setStrokeColor(HexColor("#FFFFFF"))
+                c.setLineWidth(1.4)
+                c.rect(img_x, img_y, img_w, img_h, fill=0, stroke=1)
+                c.setFillColor(HexColor("#FFFFFF"))
+                c.setFont("Helvetica-Oblique", 14)
+                c.drawCentredString(PW / 2, img_y + img_h / 2, "(cover_image no disponible)")
+
+            # Pie con contrato/contratista (blanco pequeño)
+            c.setFillColor(HexColor("#FFFFFF"))
+            c.setFont("Helvetica", 9)
+            c.drawCentredString(
+                PW / 2, 1.1 * cm,
+                f"Contrato {project_contract} · {project_constructora}",
+            )
+
+        # ==============================================================
+        # Loop de nodos hoja con agrupación por Portadilla dinámica
+        #   • Si el ancestro más cercano con `cover_image` cambia entre nodos,
+        #     insertamos UNA Portadilla dinámica (fondo institucional + foto).
+        #   • Si el nodo (o su árbol) no tiene cover_image, se usa la portadilla
+        #     genérica del template (se registra en `section_page_indices`).
+        # ==============================================================
+        current_cover_group_id = None
         for n in leaf_nodes:
             node_reps = reports_by_node.get(n["id"]) or []
             if not node_reps:
@@ -4260,47 +4395,64 @@ async def export_reports_pdf(
             if primera_acc is None:
                 primera_acc = 0.0
 
-            # =================================================================
-            # [P0] PORTADA SEPARADORA POR NODO
-            #   Página dedicada antes de los reportes del nodo:
-            #     - Ubicación: 24pt Bold centrado
-            #     - Coordenadas: 14pt centrado
-            #   Además, se registra el índice 0-based en `section_page_indices`
-            #   para que el motor de overlay pueda reemplazarla por la página
-            #   "Sección" (index 1) de la plantilla PDF del proyecto.
-            # =================================================================
-            section_page_indices.append(page_num - 1)
-            draw_header(page_num)
-            # Bloque visual centrado vertical
-            c.setFillColor(BRAND)
-            c.setFont("Helvetica-Bold", 24)
-            c.drawCentredString(PW / 2, PH / 2 + 1.6 * cm, node_path)
-            # Línea decorativa
-            c.setStrokeColor(BRAND)
-            c.setLineWidth(1.2)
-            c.line(PW / 2 - 6 * cm, PH / 2 + 0.8 * cm, PW / 2 + 6 * cm, PH / 2 + 0.8 * cm)
-            # Coordenadas (medición representativa del nodo: tomada del primer reporte)
-            coord_text = ""
-            try:
-                coord_text = _format_measurement_for_display(node_reps[0]) or ""
-            except Exception:
-                coord_text = ""
-            c.setFillColor(TEXT)
-            c.setFont("Helvetica", 14)
-            if coord_text:
-                c.drawCentredString(PW / 2, PH / 2 - 0.2 * cm, f"Coordenadas: {coord_text}")
+            # === Decidir portadilla ===
+            cover_meta = cover_ancestor_by_node.get(n["id"])
+            if cover_meta:
+                cover_id = cover_meta["id"]
+                if cover_id != current_cover_group_id:
+                    # Nuevo grupo con cover_image → Portadilla DINÁMICA
+                    # (NO se marca como section_page para que el overlay NO la reemplace)
+                    draw_dynamic_cover_page(
+                        cover_meta.get("name") or node_path,
+                        cover_meta.get("cover_image"),
+                        page_num,
+                    )
+                    c.showPage()
+                    page_num += 1
+                    current_cover_group_id = cover_id
+                # Si es el mismo grupo, no dibujamos nueva portadilla (agrupado)
             else:
+                # Sin cover_image en la rama → Portadilla GENÉRICA (reemplazable por
+                # la página 2 del template PDF durante la fusión de superposición).
+                # =================================================================
+                # [P0] PORTADA SEPARADORA POR NODO (fallback genérico)
+                #   Registrada en `section_page_indices` para que el motor de overlay
+                #   pueda reemplazarla por la página "Sección" (index 1) del template.
+                # =================================================================
+                section_page_indices.append(page_num - 1)
+                draw_header(page_num)
+                # Bloque visual centrado vertical
+                c.setFillColor(BRAND)
+                c.setFont("Helvetica-Bold", 24)
+                c.drawCentredString(PW / 2, PH / 2 + 1.6 * cm, node_path)
+                # Línea decorativa
+                c.setStrokeColor(BRAND)
+                c.setLineWidth(1.2)
+                c.line(PW / 2 - 6 * cm, PH / 2 + 0.8 * cm, PW / 2 + 6 * cm, PH / 2 + 0.8 * cm)
+                # Coordenadas (medición representativa del nodo: tomada del primer reporte)
+                coord_text = ""
+                try:
+                    coord_text = _format_measurement_for_display(node_reps[0]) or ""
+                except Exception:
+                    coord_text = ""
+                c.setFillColor(TEXT)
+                c.setFont("Helvetica", 14)
+                if coord_text:
+                    c.drawCentredString(PW / 2, PH / 2 - 0.2 * cm, f"Coordenadas: {coord_text}")
+                else:
+                    c.setFillColor(MUTED)
+                    c.setFont("Helvetica-Oblique", 14)
+                    c.drawCentredString(PW / 2, PH / 2 - 0.2 * cm, "Coordenadas: —")
+                # Conteo de reportes del nodo
                 c.setFillColor(MUTED)
-                c.setFont("Helvetica-Oblique", 14)
-                c.drawCentredString(PW / 2, PH / 2 - 0.2 * cm, "Coordenadas: —")
-            # Conteo de reportes del nodo
-            c.setFillColor(MUTED)
-            c.setFont("Helvetica", 11)
-            c.drawCentredString(PW / 2, PH / 2 - 1.6 * cm,
-                                f"Reportes en este nodo: {len(node_reps)}")
-            # Salto de página obligatorio para iniciar el bloque del nodo
-            c.showPage()
-            page_num += 1
+                c.setFont("Helvetica", 11)
+                c.drawCentredString(PW / 2, PH / 2 - 1.6 * cm,
+                                    f"Reportes en este nodo: {len(node_reps)}")
+                # Salto de página obligatorio para iniciar el bloque del nodo
+                c.showPage()
+                page_num += 1
+                # Reset del grupo dinámico (por si el siguiente nodo sí tiene cover)
+                current_cover_group_id = None
 
             for r in node_reps:
                 draw_header(page_num)
@@ -4758,6 +4910,27 @@ async def _gather_export_data(
         prev = await db.reports.find(pre_q).sort("created_at", -1).limit(1).to_list(length=1)
         prev_reading_by_node[nid] = _extract_numeric_reading(prev[0]) if prev else None
 
+    # --- Portadilla dinámica por nodo (cover_image) ---
+    # Para cada nodo con reportes, encontramos el ancestro más cercano (o sí
+    # mismo) que tenga `cover_image`. Se agrupa por ese ancestro para insertar
+    # UNA sola portadilla por grupo.
+    cover_ancestor_by_node: dict = {}
+    for nid in list(reports_by_node.keys()):
+        cur_node = nodes_by_id.get(nid)
+        found = None
+        while cur_node:
+            ci = cur_node.get("cover_image")
+            if ci:
+                found = {
+                    "id": cur_node["id"],
+                    "name": cur_node.get("name") or "",
+                    "cover_image": ci,
+                }
+                break
+            pid_parent = cur_node.get("parent_id")
+            cur_node = nodes_by_id.get(pid_parent) if pid_parent else None
+        cover_ancestor_by_node[nid] = found  # dict o None
+
     return {
         "proj": proj,
         "leaf_nodes": leaf_nodes,
@@ -4768,6 +4941,7 @@ async def _gather_export_data(
         "start_dt": start_dt,
         "end_dt": end_dt,
         "prev_reading_by_node": prev_reading_by_node,
+        "cover_ancestor_by_node": cover_ancestor_by_node,
         "user": user,
     }
 

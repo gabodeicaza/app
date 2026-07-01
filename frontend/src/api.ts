@@ -115,6 +115,9 @@ export interface LocationNode {
   avance_actual?: number | null;
   // Metadatos dinámicos (importación masiva Excel/CSV). Llaves arbitrarias.
   metadata?: Record<string, any> | null;
+  // Portada institucional del nodo (data URL base64). Se usa como fondo de la
+  // portadilla dinámica del PDF exportado.
+  cover_image?: string | null;
 }
 
 export interface LocationNodeTree extends LocationNode {
@@ -368,6 +371,67 @@ export const api = {
     meta?: number | null;
   }) => request<LocationNode>('PATCH', `/nodes/${nid}`, body),
   deleteNode: (nid: string) => request<{ ok: boolean; deleted_count: number }>('DELETE', `/nodes/${nid}`),
+
+  // ── Portadilla institucional del nodo (cover_image) ─────────────────────
+  // Sube una imagen JPG/PNG/WebP (máx 8MB) que se usará como fondo de la
+  // portadilla dinámica del PDF exportado. La imagen aplica al nodo y a todos
+  // sus descendientes (a menos que un descendiente tenga su propia portada).
+  uploadNodeCover: async (
+    pid: string,
+    nid: string,
+    file: { uri: string; name: string; mimeType?: string | null },
+  ): Promise<LocationNode> => {
+    const form = new FormData();
+    const isWeb = typeof window !== 'undefined' && typeof (globalThis as any).Blob !== 'undefined';
+    const fileName = file.name || 'cover.jpg';
+    const mime = file.mimeType || 'image/jpeg';
+    if (isWeb) {
+      const resBlob = await fetch(file.uri);
+      const blob = await resBlob.blob();
+      try {
+        const f = new File([blob], fileName, { type: mime });
+        form.append('file', f);
+      } catch {
+        form.append('file', blob, fileName);
+      }
+    } else {
+      let normalizedUri = file.uri;
+      const needsCopy =
+        Platform.OS === 'android'
+          ? !file.uri.startsWith('file://')
+          : file.uri.startsWith('ph://') || file.uri.startsWith('assets-library://');
+      if (needsCopy) {
+        try {
+          const safeName = fileName.replace(/[^A-Za-z0-9._-]/g, '_');
+          const dest = `${FileSystem.cacheDirectory}cover_${Date.now()}_${safeName}`;
+          await FileSystem.copyAsync({ from: file.uri, to: dest });
+          normalizedUri = dest;
+        } catch {
+          /* ignore */
+        }
+      }
+      if (Platform.OS === 'android' && normalizedUri.startsWith('/')) {
+        normalizedUri = 'file://' + normalizedUri;
+      }
+      form.append('file', { uri: normalizedUri, name: fileName, type: mime } as any);
+    }
+    const headers = await authHeader();
+    const res = await fetch(`${BASE}/projects/${pid}/nodes/${nid}/cover`, {
+      method: 'POST',
+      headers,
+      body: form as any,
+    });
+    const text = await res.text();
+    const data = text ? safeJson(text) : null;
+    if (!res.ok) {
+      const msg = (data && (data as any).detail) || `HTTP ${res.status}`;
+      throw new ApiError(res.status, typeof msg === 'string' ? msg : JSON.stringify(msg));
+    }
+    return data as LocationNode;
+  },
+
+  deleteNodeCover: (pid: string, nid: string) =>
+    request<LocationNode>('DELETE', `/projects/${pid}/nodes/${nid}/cover`),
 
   // Bulk upload de nodos desde Excel/CSV (FormData). Compatible web + native.
   bulkUploadNodes: async (
