@@ -313,7 +313,7 @@ function AnnouncementEditor({
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       <View style={styles.modalBackdrop}>
-        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1, justifyContent: 'flex-end' }}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1, justifyContent: 'flex-end' }}>
           <View style={[styles.modalCard, { paddingBottom: insets.bottom + spacing.md }]}>
             <View style={styles.modalHead}>
               <Text style={styles.modalTitle}>

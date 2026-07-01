@@ -249,7 +249,7 @@ export default function CoordAnnouncementsScreen() {
 
       <Modal visible={!!editing} animationType="slide" transparent onRequestClose={() => setEditing(null)}>
         <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
           style={styles.modalRoot}
         >
           <View style={styles.modalBackdrop} />

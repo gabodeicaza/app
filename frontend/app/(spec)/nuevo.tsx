@@ -8,7 +8,7 @@
 // - Tras éxito → modal "Modo WhatsApp" con botones Copiar y Enviar.
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ActivityIndicator, Alert, FlatList, Image, KeyboardAvoidingView, Modal, Platform,
+  ActivityIndicator, Alert, Dimensions, FlatList, Image, KeyboardAvoidingView, Modal, Platform,
   Pressable, RefreshControl, ScrollView, StatusBar, StyleSheet, Text, TextInput, View,
 } from 'react-native';
 import { router } from 'expo-router';
@@ -708,7 +708,8 @@ export default function SpecCaptureScreen() {
 
   return (
     <KeyboardAvoidingView
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 24}
       style={{ flex: 1, backgroundColor: colors.bg }}
     >
       <StatusBar barStyle="dark-content" />
@@ -1220,6 +1221,7 @@ function DynamicListSection({
               key={it.id}
               item={it}
               catalog={catalog}
+              catalogTitle={title}
               onRemove={() => onRemove(it.id)}
               onInc={(d) => onInc(it.id, d)}
               onChangeDesc={(t) => onChangeDesc(it.id, t)}
@@ -1237,7 +1239,7 @@ function DynamicListSection({
 }
 
 function DynamicItemRow({
-  item, catalog, onRemove, onInc, onChangeDesc, onChangeQty,
+  item, catalog, onRemove, onInc, onChangeDesc, onChangeQty, catalogTitle,
 }: {
   item: DynItem;
   catalog: string[];
@@ -1245,15 +1247,38 @@ function DynamicItemRow({
   onInc: (delta: number) => void;
   onChangeDesc: (t: string) => void;
   onChangeQty: (q: number) => void;
+  catalogTitle: string;
 }) {
-  const [focused, setFocused] = useState(false);
-  const suggestions = useMemo(() => {
-    const q = (item.desc || '').trim().toLowerCase();
-    if (!q) return catalog.slice(0, 60);
-    return catalog
-      .filter((s) => s.toLowerCase().includes(q) && s.toLowerCase() !== q)
-      .slice(0, 60);
-  }, [catalog, item.desc]);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [customMode, setCustomMode] = useState(false);
+  const [customDraft, setCustomDraft] = useState('');
+  const [search, setSearch] = useState('');
+  const insets = useSafeAreaInsets();
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return catalog;
+    return catalog.filter((s) => s.toLowerCase().includes(q));
+  }, [catalog, search]);
+
+  const openPicker = () => {
+    setSearch('');
+    setCustomMode(false);
+    setCustomDraft(item.desc || '');
+    setPickerOpen(true);
+  };
+
+  const pickOption = (opt: string) => {
+    onChangeDesc(opt);
+    setPickerOpen(false);
+  };
+
+  const submitCustom = () => {
+    const t = customDraft.trim();
+    if (!t) return;
+    onChangeDesc(t);
+    setPickerOpen(false);
+  };
 
   return (
     <View style={styles.dynRow}>
@@ -1274,40 +1299,170 @@ function DynamicItemRow({
           <Ionicons name="add" size={16} color={colors.text} />
         </Pressable>
       </View>
-      <View style={{ flex: 1, position: 'relative' }}>
-        <TextInput
-          style={styles.dynDescInput}
-          placeholder="Descripción (ej. Albañil)"
-          placeholderTextColor={colors.textMuted}
-          value={item.desc}
-          onChangeText={onChangeDesc}
-          onFocus={() => setFocused(true)}
-          onBlur={() => setTimeout(() => setFocused(false), 120)}
-        />
-        {focused && suggestions.length > 0 ? (
-          <ScrollView
-            style={styles.suggestionsBox}
-            nestedScrollEnabled
-            keyboardShouldPersistTaps="always"
-            showsVerticalScrollIndicator
-          >
-            {suggestions.map((s) => (
-              <Pressable
-                key={s}
-                // onPressIn evita el race-condition con setTimeout(setFocused(false),120) del onBlur del input
-                onPressIn={() => { onChangeDesc(s); setFocused(false); }}
-                style={({ pressed }) => [styles.suggestionItem, pressed && { backgroundColor: colors.primaryLight }]}
-              >
-                <Ionicons name="bookmark-outline" size={12} color={colors.primary} />
-                <Text style={styles.suggestionTxt} numberOfLines={1}>{s}</Text>
-              </Pressable>
-            ))}
-          </ScrollView>
-        ) : null}
-      </View>
+
+      {/* Selector tipo "select": muestra valor o placeholder y abre BottomSheet */}
+      <Pressable
+        onPress={openPicker}
+        style={[styles.dynDescPicker, !item.desc && styles.dynDescPickerEmpty]}
+        accessibilityRole="button"
+      >
+        <Text
+          numberOfLines={1}
+          style={[
+            styles.dynDescPickerTxt,
+            !item.desc && { color: colors.textMuted, fontWeight: '500' },
+          ]}
+        >
+          {item.desc || `Elegir ${catalogTitle.toLowerCase()}…`}
+        </Text>
+        <Ionicons name="chevron-down" size={16} color={colors.primary} />
+      </Pressable>
+
       <Pressable onPress={onRemove} style={styles.removeBtn} hitSlop={6}>
         <Ionicons name="trash-outline" size={16} color={colors.error} />
       </Pressable>
+
+      {/* BottomSheet con todo el catálogo */}
+      <Modal
+        visible={pickerOpen}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setPickerOpen(false)}
+      >
+        <Pressable
+          style={styles.pickerBackdrop}
+          onPress={() => setPickerOpen(false)}
+        />
+        <View style={[styles.pickerSheet, { paddingBottom: Math.max(insets.bottom + 12, 20) }]}>
+          <View style={styles.pickerHandle} />
+          <View style={styles.pickerHeader}>
+            <Text style={styles.pickerTitle}>Catálogo de {catalogTitle.toLowerCase()}</Text>
+            <Pressable onPress={() => setPickerOpen(false)} hitSlop={10}>
+              <Ionicons name="close" size={22} color={colors.text} />
+            </Pressable>
+          </View>
+
+          {customMode ? (
+            <View style={{ paddingHorizontal: 4 }}>
+              <Text style={styles.pickerHint}>Escribe la descripción personalizada:</Text>
+              <TextInput
+                style={styles.pickerCustomInput}
+                placeholder={`Ej. ${catalogTitle === 'Personal' ? 'Albañil' : 'Retro CAT 320'}`}
+                placeholderTextColor={colors.textMuted}
+                value={customDraft}
+                onChangeText={setCustomDraft}
+                autoFocus
+                returnKeyType="done"
+                onSubmitEditing={submitCustom}
+              />
+              <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md }}>
+                <Pressable
+                  onPress={() => setCustomMode(false)}
+                  style={[styles.pickerActionBtn, { backgroundColor: '#f1f5f9' }]}
+                >
+                  <Ionicons name="arrow-back" size={14} color={colors.text} />
+                  <Text style={[styles.pickerActionTxt, { color: colors.text }]}>Catálogo</Text>
+                </Pressable>
+                <Pressable
+                  onPress={submitCustom}
+                  disabled={!customDraft.trim()}
+                  style={[
+                    styles.pickerActionBtn,
+                    { backgroundColor: customDraft.trim() ? colors.primary : '#cbd5e1', flex: 1 },
+                  ]}
+                >
+                  <Ionicons name="checkmark" size={14} color="#fff" />
+                  <Text style={[styles.pickerActionTxt, { color: '#fff' }]}>Usar este texto</Text>
+                </Pressable>
+              </View>
+            </View>
+          ) : (
+            <>
+              {catalog.length > 6 ? (
+                <View style={styles.pickerSearchBox}>
+                  <Ionicons name="search" size={14} color={colors.textMuted} />
+                  <TextInput
+                    style={styles.pickerSearchInput}
+                    placeholder="Buscar..."
+                    placeholderTextColor={colors.textMuted}
+                    value={search}
+                    onChangeText={setSearch}
+                  />
+                  {search ? (
+                    <Pressable onPress={() => setSearch('')} hitSlop={10}>
+                      <Ionicons name="close-circle" size={16} color={colors.textMuted} />
+                    </Pressable>
+                  ) : null}
+                </View>
+              ) : null}
+
+              {catalog.length === 0 ? (
+                <View style={styles.pickerEmpty}>
+                  <Ionicons name="folder-open-outline" size={32} color={colors.textMuted} />
+                  <Text style={styles.pickerEmptyTxt}>
+                    Aún no hay {catalogTitle.toLowerCase()} en el catálogo del proyecto.
+                  </Text>
+                  <Text style={[styles.pickerEmptyTxt, { fontSize: 11, marginTop: 4 }]}>
+                    Puedes escribir uno personalizado.
+                  </Text>
+                </View>
+              ) : (
+                <ScrollView
+                  style={{ flexGrow: 1, maxHeight: Dimensions.get('window').height * 0.55 }}
+                  contentContainerStyle={{ paddingVertical: 4 }}
+                  keyboardShouldPersistTaps="handled"
+                  nestedScrollEnabled
+                  showsVerticalScrollIndicator
+                >
+                  {filtered.length === 0 ? (
+                    <Text style={[styles.pickerHint, { textAlign: 'center', paddingVertical: 16 }]}>
+                      {`Sin resultados para "${search}".`}
+                    </Text>
+                  ) : (
+                    filtered.map((opt) => {
+                      const active = item.desc === opt;
+                      return (
+                        <Pressable
+                          key={opt}
+                          onPress={() => pickOption(opt)}
+                          style={({ pressed }) => [
+                            styles.catPickerOption,
+                            active && styles.catPickerOptionActive,
+                            pressed && { opacity: 0.6 },
+                          ]}
+                        >
+                          <Ionicons
+                            name={active ? 'checkmark-circle' : 'bookmark-outline'}
+                            size={16}
+                            color={active ? colors.primary : colors.textMuted}
+                          />
+                          <Text
+                            style={[
+                              styles.catPickerOptionTxt,
+                              active && { color: colors.primary, fontWeight: '800' },
+                            ]}
+                            numberOfLines={2}
+                          >
+                            {opt}
+                          </Text>
+                        </Pressable>
+                      );
+                    })
+                  )}
+                </ScrollView>
+              )}
+
+              <Pressable
+                onPress={() => { setCustomDraft(item.desc || ''); setCustomMode(true); }}
+                style={styles.pickerCustomCta}
+              >
+                <Ionicons name="create-outline" size={14} color={colors.primary} />
+                <Text style={styles.pickerCustomCtaTxt}>Escribir uno personalizado</Text>
+              </Pressable>
+            </>
+          )}
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -1813,6 +1968,110 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10, paddingVertical: 8,
   },
   suggestionTxt: { fontSize: 13, color: colors.text, flex: 1 },
+
+  // ── Selector tipo "select" (reemplaza al TextInput libre) ────────────────
+  dynDescPicker: {
+    flex: 1,
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    paddingHorizontal: 12,
+    height: 44,
+    backgroundColor: colors.bg,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.primary,
+  },
+  dynDescPickerEmpty: {
+    borderStyle: 'dashed',
+    borderColor: colors.primary,
+    backgroundColor: colors.primaryLight,
+  },
+  dynDescPickerTxt: {
+    flex: 1,
+    fontSize: 14,
+    color: colors.text,
+    fontWeight: '700',
+  },
+
+  // ── BottomSheet del catálogo (Personal / Equipo) ─────────────────────────
+  pickerBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(15, 23, 42, 0.55)',
+  },
+  pickerSheet: {
+    backgroundColor: colors.surface,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingTop: 8,
+    paddingHorizontal: 16,
+    maxHeight: '85%',
+  },
+  pickerHandle: {
+    alignSelf: 'center',
+    width: 44,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: '#cbd5e1',
+    marginBottom: 8,
+  },
+  pickerHeader: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingVertical: 8,
+    borderBottomWidth: 1, borderBottomColor: colors.border,
+    marginBottom: 8,
+  },
+  pickerTitle: { fontSize: 16, fontWeight: '800', color: colors.text },
+  pickerHint: { fontSize: 12, color: colors.textMuted, marginBottom: 8 },
+  pickerSearchBox: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    paddingHorizontal: 12,
+    height: 40,
+    backgroundColor: colors.bg,
+    borderRadius: radius.md,
+    borderWidth: 1, borderColor: colors.border,
+    marginBottom: 8,
+  },
+  pickerSearchInput: { flex: 1, fontSize: 14, color: colors.text },
+  catPickerOption: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    paddingHorizontal: 12, paddingVertical: 14,
+    borderRadius: radius.md,
+    backgroundColor: colors.bg,
+    borderWidth: 1, borderColor: colors.border,
+    marginBottom: 6,
+    minHeight: 48,
+  },
+  catPickerOptionActive: {
+    backgroundColor: colors.primaryLight,
+    borderColor: colors.primary,
+    borderWidth: 1.5,
+  },
+  catPickerOptionTxt: { flex: 1, fontSize: 14, color: colors.text, fontWeight: '600' },
+  pickerEmpty: { alignItems: 'center', paddingVertical: 28 },
+  pickerEmptyTxt: { fontSize: 13, color: colors.textMuted, textAlign: 'center', marginTop: 8 },
+  pickerCustomCta: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    paddingVertical: 12,
+    backgroundColor: colors.primaryLight,
+    borderRadius: radius.md,
+    borderWidth: 1, borderColor: colors.primary, borderStyle: 'dashed',
+    marginTop: 4,
+  },
+  pickerCustomCtaTxt: { color: colors.primary, fontWeight: '800', fontSize: 13 },
+  pickerCustomInput: {
+    backgroundColor: colors.bg,
+    borderRadius: radius.md,
+    borderWidth: 1, borderColor: colors.primary,
+    paddingHorizontal: 12,
+    paddingVertical: Platform.OS === 'ios' ? 14 : 12,
+    fontSize: 15,
+    color: colors.text,
+  },
+  pickerActionBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    paddingHorizontal: 14, paddingVertical: 12,
+    borderRadius: radius.md,
+  },
+  pickerActionTxt: { fontWeight: '800', fontSize: 13 },
 
   photoTile: {
     width: 88, height: 88, borderRadius: radius.md, overflow: 'hidden',

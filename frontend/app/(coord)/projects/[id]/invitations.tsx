@@ -234,7 +234,7 @@ export default function InvitationsScreen() {
       {/* Wizard */}
       <Modal visible={wizardOpen} animationType="slide" transparent onRequestClose={() => setWizardOpen(false)}>
         <View style={styles.modalBackdrop}>
-          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={[styles.sheetWrapper, { height: sheetHeight }]}>
+          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={[styles.sheetWrapper, { height: sheetHeight }]}>
             <View style={[styles.modalCard, { paddingBottom: insets.bottom + spacing.md }]}>
               <View style={styles.modalHeader}>
                 <Text style={styles.modalTitle}>Nueva invitación · Paso {step + 1} de 4</Text>

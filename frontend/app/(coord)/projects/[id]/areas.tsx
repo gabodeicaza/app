@@ -134,7 +134,7 @@ export default function AreasScreen() {
 
       <Modal visible={showCreate} animationType="slide" transparent onRequestClose={() => setShowCreate(false)}>
         <View style={styles.modalBackdrop}>
-          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ width: '100%' }}>
+          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ width: '100%' }}>
             <View style={[styles.modalCard, { paddingBottom: insets.bottom + spacing.md }]}>
               <View style={styles.modalHeader}>
                 <Text style={styles.modalTitle}>Nueva área</Text>

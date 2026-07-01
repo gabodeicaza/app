@@ -51,7 +51,7 @@ export default function NewProjectScreen() {
   }
 
   return (
-    <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+    <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
       <View style={[styles.header, { paddingTop: insets.top + 4 }]}>
         <Pressable onPress={() => router.back()} hitSlop={8} style={styles.iconBtn}>
           <Ionicons name="close" size={26} color={colors.text} />

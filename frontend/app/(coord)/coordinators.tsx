@@ -105,7 +105,7 @@ export default function CoordinatorsScreen() {
 
   return (
     <KeyboardAvoidingView
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       style={[styles.flex, { paddingTop: insets.top }]}
     >
       <View style={styles.header}>

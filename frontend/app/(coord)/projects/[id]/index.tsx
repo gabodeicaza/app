@@ -1189,7 +1189,8 @@ export default function ProjectDetailScreen() {
         onRequestClose={() => !catSaving && setCatModalOpen(false)}
       >
         <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 24}
           style={styles.exportBackdrop}
         >
           <Pressable style={StyleSheet.absoluteFill} onPress={() => !catSaving && setCatModalOpen(false)} />
@@ -1320,7 +1321,8 @@ export default function ProjectDetailScreen() {
         onRequestClose={() => !objetoSaving && setObjetoModalOpen(false)}
       >
         <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 24}
           style={styles.exportBackdrop}
         >
           <Pressable
