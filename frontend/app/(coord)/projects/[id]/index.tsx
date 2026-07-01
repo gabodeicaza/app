@@ -112,6 +112,10 @@ export default function ProjectDetailScreen() {
 
   // P0 — Identidad institucional (objeto_contrato + cliente_principal + color_tema)
   const [objetoModalOpen, setObjetoModalOpen] = useState(false);
+
+  // P0 Mega-Feature: Plantillas de exportación (PDF/DOCX/PPTX)
+  const [tplModalOpen, setTplModalOpen] = useState(false);
+  const [tplBusyKind, setTplBusyKind] = useState<'pdf' | 'docx' | 'pptx' | null>(null);
   const [objetoSaving, setObjetoSaving] = useState(false);
   const [objetoDraft, setObjetoDraft] = useState('');
   const [clienteDraft, setClienteDraft] = useState('');
@@ -387,6 +391,75 @@ export default function ProjectDetailScreen() {
     }
   }
 
+  // === Plantillas de exportación (PDF/DOCX/PPTX) ============================
+  const TPL_MIMES: Record<'pdf' | 'docx' | 'pptx', string[]> = {
+    pdf: ['application/pdf', '.pdf'],
+    docx: [
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      '.docx',
+    ],
+    pptx: [
+      'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      '.pptx',
+    ],
+  };
+
+  async function onPickAndUploadTemplate(kind: 'pdf' | 'docx' | 'pptx') {
+    if (tplBusyKind) return;
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: TPL_MIMES[kind],
+        copyToCacheDirectory: true,
+        multiple: false,
+      });
+      if (result.canceled || !result.assets?.[0]) return;
+      const asset = result.assets[0];
+      const size = asset.size ?? 0;
+      const MAX = 25 * 1024 * 1024;
+      if (size && size > MAX) {
+        Alert.alert(
+          'Plantilla demasiado grande',
+          `El archivo pesa ${formatBytes(size)}. El máximo permitido es 25 MB.`,
+        );
+        return;
+      }
+      setTplBusyKind(kind);
+      const upd = await api.uploadProjectTemplate(pid, kind, {
+        uri: asset.uri,
+        name: asset.name || `template.${kind}`,
+        mimeType: asset.mimeType,
+      });
+      setProject((p) => ({ ...(p || ({} as any)), ...upd }));
+      Alert.alert(
+        'Plantilla cargada',
+        `La plantilla ${kind.toUpperCase()} se guardó y se usará como fondo al exportar.`,
+      );
+    } catch (e: any) {
+      Alert.alert('No se pudo subir la plantilla', e?.message || 'Inténtalo nuevamente.');
+    } finally {
+      setTplBusyKind(null);
+    }
+  }
+
+  async function onDeleteTemplate(kind: 'pdf' | 'docx' | 'pptx') {
+    if (tplBusyKind) return;
+    const ok = await confirm(
+      'Eliminar plantilla',
+      `¿Quitar la plantilla ${kind.toUpperCase()} del proyecto? Los reportes volverán al diseño DIRAC por defecto.`,
+      { confirmText: 'Eliminar', destructive: true },
+    );
+    if (!ok) return;
+    try {
+      setTplBusyKind(kind);
+      const upd = await api.deleteProjectTemplate(pid, kind);
+      setProject((p) => ({ ...(p || ({} as any)), ...upd }));
+    } catch (e: any) {
+      Alert.alert('No se pudo eliminar', e?.message || 'Inténtalo nuevamente.');
+    } finally {
+      setTplBusyKind(null);
+    }
+  }
+
   function addCatPersonal() {
     const t = catPersonalDraft.trim();
     if (!t) return;
@@ -630,6 +703,12 @@ export default function ProjectDetailScreen() {
               title="Catálogos (Personal y Equipo)"
               subtitle="Categorías que el especialista verá al capturar reportes"
               onPress={openCatModal}
+            />
+            <ActionTile
+              icon="document-attach-outline"
+              title="Plantillas de exportación"
+              subtitle="Fondos institucionales PDF · Word · PowerPoint"
+              onPress={() => setTplModalOpen(true)}
             />
             <ActionTile
               icon="newspaper-outline"
@@ -1431,6 +1510,129 @@ export default function ProjectDetailScreen() {
           </View>
         </KeyboardAvoidingView>
       </Modal>
+
+      {/* ===== Modal: Plantillas de exportación (PDF/DOCX/PPTX) ===== */}
+      <Modal
+        visible={tplModalOpen}
+        animationType="slide"
+        transparent
+        onRequestClose={() => !tplBusyKind && setTplModalOpen(false)}
+      >
+        <Pressable
+          style={styles.exportBackdrop}
+          onPress={() => !tplBusyKind && setTplModalOpen(false)}
+        />
+        <View style={[styles.exportSheet, styles.sheetSurface, { maxHeight: '88%' }]}>
+          <View style={styles.exportHandle} />
+          <View style={styles.exportHeader}>
+            <View style={styles.exportBack} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.exportTitle}>Plantillas de exportación</Text>
+              <Text style={styles.exportSubtitle}>
+                Sube fondos institucionales que se imprimirán como base al exportar reportes.
+              </Text>
+            </View>
+            <Pressable
+              onPress={() => !tplBusyKind && setTplModalOpen(false)}
+              hitSlop={10}
+              style={styles.exportBack}
+            >
+              <Ionicons name="close" size={22} color={colors.text} />
+            </Pressable>
+          </View>
+          <ScrollView
+            contentContainerStyle={{ paddingHorizontal: spacing.md, paddingBottom: spacing.lg, gap: spacing.md }}
+          >
+            <View style={styles.tplHelperBox}>
+              <Ionicons name="information-circle-outline" size={18} color={colors.primary} />
+              <Text style={styles.tplHelperTxt}>
+                El motor imprime datos, tablas y fotos sobre tu plantilla. Deja márgenes amplios en tu diseño. Si no subes plantilla, se usa el diseño DIRAC por defecto. Máx. 25 MB por archivo.
+              </Text>
+            </View>
+
+            {(['pdf', 'docx', 'pptx'] as const).map((kind) => {
+              const meta =
+                kind === 'pdf'
+                  ? { label: 'PDF', sub: 'Fondo para reportes horizontales (letter)', icon: 'document-text' as const, tint: '#DC2626' }
+                  : kind === 'docx'
+                  ? { label: 'Word', sub: 'Plantilla base para el documento editable', icon: 'document' as const, tint: '#1D4ED8' }
+                  : { label: 'PowerPoint', sub: 'Máster base para presentación 16:9', icon: 'easel' as const, tint: '#B45309' };
+              const hasFile = !!(project as any)?.[`template_${kind}`];
+              const busy = tplBusyKind === kind;
+              return (
+                <View key={kind} style={styles.tplCard}>
+                  <View style={styles.tplCardTop}>
+                    <View style={[styles.exportItemIcon, { backgroundColor: `${meta.tint}1A` }]}>
+                      <Ionicons name={meta.icon} size={22} color={meta.tint} />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.tplCardTitle}>{meta.label}</Text>
+                      <Text style={styles.tplCardSub}>{meta.sub}</Text>
+                      <View style={styles.tplStatusRow}>
+                        <View
+                          style={[
+                            styles.tplStatusDot,
+                            { backgroundColor: hasFile ? colors.success : colors.textMuted },
+                          ]}
+                        />
+                        <Text
+                          style={[
+                            styles.tplStatusTxt,
+                            { color: hasFile ? colors.success : colors.textMuted },
+                          ]}
+                        >
+                          {hasFile ? 'Plantilla cargada' : 'Sin plantilla (diseño DIRAC)'}
+                        </Text>
+                      </View>
+                    </View>
+                  </View>
+                  <View style={styles.tplBtnRow}>
+                    <Pressable
+                      onPress={() => onPickAndUploadTemplate(kind)}
+                      disabled={!!tplBusyKind}
+                      style={({ pressed }) => [
+                        styles.tplPrimaryBtn,
+                        { backgroundColor: meta.tint },
+                        !!tplBusyKind && { opacity: 0.55 },
+                        pressed && !tplBusyKind && { opacity: 0.85 },
+                      ]}
+                    >
+                      {busy ? (
+                        <ActivityIndicator color="#fff" size="small" />
+                      ) : (
+                        <>
+                          <Ionicons
+                            name={hasFile ? 'refresh-outline' : 'cloud-upload-outline'}
+                            size={16}
+                            color="#fff"
+                          />
+                          <Text style={styles.tplPrimaryTxt}>
+                            {hasFile ? 'Reemplazar' : 'Subir plantilla'}
+                          </Text>
+                        </>
+                      )}
+                    </Pressable>
+                    {hasFile && (
+                      <Pressable
+                        onPress={() => onDeleteTemplate(kind)}
+                        disabled={!!tplBusyKind}
+                        style={({ pressed }) => [
+                          styles.tplGhostBtn,
+                          !!tplBusyKind && { opacity: 0.55 },
+                          pressed && !tplBusyKind && { opacity: 0.85 },
+                        ]}
+                      >
+                        <Ionicons name="trash-outline" size={16} color={colors.error} />
+                        <Text style={styles.tplGhostTxt}>Eliminar</Text>
+                      </Pressable>
+                    )}
+                  </View>
+                </View>
+              );
+            })}
+          </ScrollView>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -1943,6 +2145,103 @@ const styles = StyleSheet.create({
   catSaveTxt: {
     color: '#fff',
     fontSize: 14,
+    fontWeight: '800',
+  },
+
+  // ===== Estilos: Modal de Plantillas de Exportación (P0) =====
+  tplHelperBox: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+    backgroundColor: '#EEF2FF',
+    borderWidth: 1,
+    borderColor: '#C7D2FE',
+    borderRadius: radius.md,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  tplHelperTxt: {
+    flex: 1,
+    fontSize: 12,
+    color: '#1E3A8A',
+    lineHeight: 17,
+    fontWeight: '600',
+  },
+  tplCard: {
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    padding: 12,
+    gap: 10,
+  },
+  tplCardTop: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+  },
+  tplCardTitle: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: colors.text,
+  },
+  tplCardSub: {
+    fontSize: 12,
+    color: colors.textMuted,
+    marginTop: 2,
+  },
+  tplStatusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 6,
+  },
+  tplStatusDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  tplStatusTxt: {
+    fontSize: 11,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+  },
+  tplBtnRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  tplPrimaryBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 12,
+    borderRadius: radius.md,
+    minHeight: 44,
+  },
+  tplPrimaryTxt: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  tplGhostBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.error,
+    backgroundColor: colors.surface,
+    minHeight: 44,
+  },
+  tplGhostTxt: {
+    color: colors.error,
+    fontSize: 13,
     fontWeight: '800',
   },
 });

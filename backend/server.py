@@ -194,6 +194,10 @@ class ProjectOut(BaseModel):
     contratos_list: List[str] = Field(default_factory=list)
     categorias_personal: List[str] = Field(default_factory=list)
     categorias_equipo: List[str] = Field(default_factory=list)
+    # Plantillas de exportación (rutas relativas dentro del backend). None si no hay.
+    template_pdf: Optional[str] = None
+    template_docx: Optional[str] = None
+    template_pptx: Optional[str] = None
     created_by: str
     created_at: datetime
     archived: bool = False
@@ -924,6 +928,14 @@ async def update_project(pid: str, body: ProjectPatch, user: dict = Depends(requ
         await db.projects.update_one({"id": pid}, {"$set": upd})
 
     p = await db.projects.find_one({"id": pid})
+    return _project_public(p)
+
+
+def _project_public(p: dict) -> dict:
+    """Serializa un doc de proyecto para exponer al frontend con defaults."""
+    if not p:
+        return p
+    p = dict(p)  # copia superficial para no mutar el original
     p.pop("_id", None)
     p.setdefault("reference_files", [])
     p.setdefault("contratistas_list", [])
@@ -933,6 +945,9 @@ async def update_project(pid: str, body: ProjectPatch, user: dict = Depends(requ
     p.setdefault("objeto_contrato", None)
     p.setdefault("cliente_principal", None)
     p.setdefault("color_tema", "#003366")
+    p.setdefault("template_pdf", None)
+    p.setdefault("template_docx", None)
+    p.setdefault("template_pptx", None)
     return p
 
 
@@ -960,16 +975,7 @@ async def set_project_catalogos(
     if r.matched_count == 0:
         raise HTTPException(404, "Proyecto no existe")
     p = await db.projects.find_one({"id": pid})
-    p.pop("_id", None)
-    p.setdefault("reference_files", [])
-    p.setdefault("contratistas_list", [])
-    p.setdefault("contratos_list", [])
-    p.setdefault("categorias_personal", [])
-    p.setdefault("categorias_equipo", [])
-    p.setdefault("objeto_contrato", None)
-    p.setdefault("cliente_principal", None)
-    p.setdefault("color_tema", "#003366")
-    return p
+    return _project_public(p)
 
 
 @api.delete("/projects/{pid}")
@@ -3844,6 +3850,121 @@ def _resolve_export_logo_bytes(proj_logo_b64: Optional[str]) -> Optional[bytes]:
     return _get_default_logo_bytes()
 
 
+# ─── Plantillas de exportación (custom templates) ────────────────────────────
+# El coordinador puede subir plantillas base institucionales (PDF/DOCX/PPTX).
+# El motor de exportación las utiliza como fondo/base al construir el documento.
+TEMPLATES_ROOT = Path("/app/backend/uploads/templates")
+TEMPLATES_ROOT.mkdir(parents=True, exist_ok=True)
+
+_TEMPLATE_KIND_EXT = {"pdf": ".pdf", "docx": ".docx", "pptx": ".pptx"}
+_TEMPLATE_KIND_MIME = {
+    "pdf": {"application/pdf"},
+    "docx": {
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/msword",
+    },
+    "pptx": {
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "application/vnd.ms-powerpoint",
+    },
+}
+_TEMPLATE_KIND_FIELD = {
+    "pdf": "template_pdf",
+    "docx": "template_docx",
+    "pptx": "template_pptx",
+}
+
+
+def _template_path_for(pid: str, kind: str) -> Path:
+    ext = _TEMPLATE_KIND_EXT[kind]
+    return TEMPLATES_ROOT / pid / f"template{ext}"
+
+
+def _get_project_template(project: dict, kind: str) -> Optional[str]:
+    """Devuelve ruta absoluta a la plantilla si existe físicamente en disco."""
+    field = _TEMPLATE_KIND_FIELD.get(kind)
+    if not field:
+        return None
+    rel = (project or {}).get(field)
+    if not rel:
+        return None
+    p = Path(rel) if os.path.isabs(rel) else (TEMPLATES_ROOT.parent.parent / rel)
+    return str(p) if p.exists() else None
+
+
+@api.post("/projects/{pid}/template/{kind}", response_model=ProjectOut)
+async def upload_project_template(
+    pid: str,
+    kind: str,
+    file: UploadFile = File(...),
+    user: dict = Depends(current_user),
+):
+    """Sube una plantilla PDF/DOCX/PPTX para un proyecto. Solo coordinadores/jefes."""
+    kind = (kind or "").lower()
+    if kind not in _TEMPLATE_KIND_EXT:
+        raise HTTPException(400, "kind debe ser 'pdf', 'docx' o 'pptx'")
+    if user.get("role") not in ("coordinador_general", "jefe_proyecto"):
+        raise HTTPException(403, "Solo Coordinador o Jefe de Proyecto pueden subir plantillas")
+    proj = await db.projects.find_one({"id": pid})
+    if not proj:
+        raise HTTPException(404, "Proyecto no existe")
+
+    content_type = (file.content_type or "").lower()
+    allowed = _TEMPLATE_KIND_MIME[kind]
+    if content_type and content_type not in allowed:
+        raise HTTPException(415, f"Content-Type inválido para {kind}: {content_type}")
+
+    dest_dir = TEMPLATES_ROOT / pid
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest_path = _template_path_for(pid, kind)
+
+    # Escribir en disco (streaming, sin cargar todo en memoria)
+    max_bytes = 25 * 1024 * 1024  # 25 MB duro
+    total = 0
+    tmp_path = dest_path.with_suffix(dest_path.suffix + ".tmp")
+    with open(tmp_path, "wb") as out:
+        while True:
+            chunk = await file.read(1024 * 512)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > max_bytes:
+                out.close()
+                tmp_path.unlink(missing_ok=True)
+                raise HTTPException(413, f"Plantilla demasiado grande (máx {max_bytes // (1024 * 1024)} MB)")
+            out.write(chunk)
+    tmp_path.replace(dest_path)
+
+    field = _TEMPLATE_KIND_FIELD[kind]
+    rel_path = str(dest_path)  # ruta absoluta local; se resuelve dinámicamente en lectura
+    await db.projects.update_one({"id": pid}, {"$set": {field: rel_path}})
+    updated = await db.projects.find_one({"id": pid})
+    return _project_public(updated)
+
+
+@api.delete("/projects/{pid}/template/{kind}", response_model=ProjectOut)
+async def delete_project_template(pid: str, kind: str, user: dict = Depends(current_user)):
+    """Elimina la plantilla asociada al proyecto (borra archivo físico y campo en DB)."""
+    kind = (kind or "").lower()
+    if kind not in _TEMPLATE_KIND_EXT:
+        raise HTTPException(400, "kind inválido")
+    if user.get("role") not in ("coordinador_general", "jefe_proyecto"):
+        raise HTTPException(403, "Solo Coordinador o Jefe de Proyecto")
+    proj = await db.projects.find_one({"id": pid})
+    if not proj:
+        raise HTTPException(404, "Proyecto no existe")
+    try:
+        _template_path_for(pid, kind).unlink(missing_ok=True)
+    except Exception:
+        pass
+    field = _TEMPLATE_KIND_FIELD[kind]
+    await db.projects.update_one({"id": pid}, {"$set": {field: None}})
+    updated = await db.projects.find_one({"id": pid})
+    return _project_public(updated)
+
+
+
+
 @api.get("/projects/{pid}/export/reports.pdf")
 async def export_reports_pdf(
     pid: str,
@@ -4374,12 +4495,58 @@ async def export_reports_pdf(
 
     # Render bloqueante en thread aparte → libera event loop
     pdf_bytes = await asyncio.to_thread(_build_pdf_blocking)
+
+    # ── Fusión con plantilla PDF institucional (si existe) ────────────────
+    # El PDF generado por reportlab se pinta ENCIMA de cada página de la
+    # plantilla. Si el reporte tiene más páginas que la plantilla, se repite
+    # la última página del template como fondo.
+    tpl_pdf = _get_project_template(proj, "pdf")
+    if tpl_pdf:
+        try:
+            pdf_bytes = await asyncio.to_thread(_overlay_pdf_on_template, pdf_bytes, tpl_pdf)
+        except Exception as e:
+            logger.warning("template pdf merge failed: %s", e)
+
     fname = _safe_export_filename(proj.get("name", "proyecto"), period, "pdf")
     return StreamingResponse(
         io.BytesIO(pdf_bytes),
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{fname}"'},
     )
+
+
+def _overlay_pdf_on_template(content_pdf: bytes, template_path: str) -> bytes:
+    """Superpone el PDF de contenido sobre las páginas de la plantilla.
+
+    - Cada página del contenido se pinta encima de la página correspondiente
+      del template (por índice).
+    - Si el contenido excede al template en número de páginas, se repite la
+      última página del template como fondo.
+    - Si el template excede al contenido, se ignoran las páginas sobrantes.
+    """
+    from pypdf import PdfReader, PdfWriter
+    tpl_bytes = Path(template_path).read_bytes()
+    content_reader = PdfReader(io.BytesIO(content_pdf))
+    # Reader "base" solo para contar páginas del template.
+    tpl_count = len(PdfReader(io.BytesIO(tpl_bytes)).pages)
+    if tpl_count == 0:
+        return content_pdf  # template sin páginas → devolver contenido tal cual
+    writer = PdfWriter()
+    for i, cpage in enumerate(content_reader.pages):
+        idx = min(i, tpl_count - 1)
+        # Reader fresco por página para evitar mutar referencias compartidas
+        fresh = PdfReader(io.BytesIO(tpl_bytes))
+        base = fresh.pages[idx]
+        try:
+            base.merge_page(cpage)
+        except Exception:
+            # Si algo falla, adjuntamos la página de contenido sola
+            writer.add_page(cpage)
+            continue
+        writer.add_page(base)
+    out = io.BytesIO()
+    writer.write(out)
+    return out.getvalue()
 
 
 
@@ -4579,7 +4746,16 @@ async def export_reports_docx(
             except Exception:
                 pass
 
-        doc = Document()
+        # Si el proyecto tiene una plantilla DOCX subida, la usamos como base
+        # (mantiene fondo, cabecera y estilos institucionales del template).
+        tpl_docx = _get_project_template(proj, "docx")
+        if tpl_docx:
+            try:
+                doc = Document(tpl_docx)
+            except Exception:
+                doc = Document()
+        else:
+            doc = Document()
         for section in doc.sections:
             section.left_margin = Cm(1.8)
             section.right_margin = Cm(1.8)
@@ -4959,7 +5135,14 @@ async def export_reports_pptx(
             area_label = f"Área: {area.get('name', '—')}"
 
     def _build_pptx_blocking() -> bytes:
-        prs = Presentation()
+        tpl_pptx = _get_project_template(proj, "pptx")
+        if tpl_pptx:
+            try:
+                prs = Presentation(tpl_pptx)
+            except Exception:
+                prs = Presentation()
+        else:
+            prs = Presentation()
         # A4 apaisado para que quepan 2 fotos lado a lado (13.37 × 2 + márgenes < 29.7)
         prs.slide_width = Cm(29.7)
         prs.slide_height = Cm(21.0)

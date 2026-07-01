@@ -86,6 +86,10 @@ export interface Project {
   contratos_list?: string[];
   categorias_personal?: string[];
   categorias_equipo?: string[];
+  // Rutas absolutas backend a plantillas base institucionales (null si no hay)
+  template_pdf?: string | null;
+  template_docx?: string | null;
+  template_pptx?: string | null;
   created_by: string;
   created_at: string;
   archived?: boolean;
@@ -503,6 +507,71 @@ export const api = {
   /** Elimina un archivo del proyecto por su file_id (sólo Coord/Jefe). */
   deleteProjectFile: (pid: string, fileId: string) =>
     request<{ ok: boolean; file_id: string }>('DELETE', `/projects/${pid}/files/${fileId}`),
+
+  // ── Plantillas de exportación (PDF / DOCX / PPTX) ──────────────────────
+  uploadProjectTemplate: async (
+    pid: string,
+    kind: 'pdf' | 'docx' | 'pptx',
+    file: { uri: string; name: string; mimeType?: string | null },
+  ): Promise<Project> => {
+    const form = new FormData();
+    const isWeb = typeof window !== 'undefined' && typeof (globalThis as any).Blob !== 'undefined';
+    const fileName = file.name || `template.${kind}`;
+    const mime =
+      file.mimeType ||
+      (kind === 'pdf'
+        ? 'application/pdf'
+        : kind === 'docx'
+        ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+        : 'application/vnd.openxmlformats-officedocument.presentationml.presentation');
+    if (isWeb) {
+      const resBlob = await fetch(file.uri);
+      const blob = await resBlob.blob();
+      try {
+        const f = new File([blob], fileName, { type: mime });
+        form.append('file', f);
+      } catch {
+        form.append('file', blob, fileName);
+      }
+    } else {
+      let normalizedUri = file.uri;
+      const needsCopy =
+        Platform.OS === 'android'
+          ? !file.uri.startsWith('file://')
+          : file.uri.startsWith('ph://') || file.uri.startsWith('assets-library://');
+      if (needsCopy) {
+        try {
+          const safeName = fileName.replace(/[^A-Za-z0-9._-]/g, '_');
+          const dest = `${FileSystem.cacheDirectory}upload_${Date.now()}_${safeName}`;
+          await FileSystem.copyAsync({ from: file.uri, to: dest });
+          normalizedUri = dest;
+        } catch {
+          /* ignore */
+        }
+      }
+      if (Platform.OS === 'android' && normalizedUri.startsWith('/')) {
+        normalizedUri = 'file://' + normalizedUri;
+      }
+      form.append('file', { uri: normalizedUri, name: fileName, type: mime } as any);
+    }
+    const headers = await authHeader();
+    const res = await fetch(`${BASE}/projects/${pid}/template/${kind}`, {
+      method: 'POST',
+      headers,
+      body: form as any,
+    });
+    const text = await res.text();
+    const data = text ? safeJson(text) : null;
+    if (!res.ok) {
+      const msg = (data && (data as any).detail) || `HTTP ${res.status}`;
+      throw new ApiError(res.status, typeof msg === 'string' ? msg : JSON.stringify(msg));
+    }
+    return data as Project;
+  },
+
+  deleteProjectTemplate: (pid: string, kind: 'pdf' | 'docx' | 'pptx') =>
+    request<Project>('DELETE', `/projects/${pid}/template/${kind}`),
+
 
   /** URL absoluta para descargar un archivo del proyecto (requiere Bearer token en header). */
   projectFileUrl: (pid: string, fileId: string) => `${BASE}/projects/${pid}/files/${fileId}`,
