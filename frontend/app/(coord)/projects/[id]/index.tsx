@@ -717,7 +717,7 @@ export default function ProjectDetailScreen() {
             <ActionTile
               icon="document-attach-outline"
               title="Plantillas de exportación"
-              subtitle="Fondos institucionales PDF · Word · PPTX narrativo + Mapa"
+              subtitle="PDF (recomendado) · Word · PowerPoint · Mapa"
               onPress={() => setTplModalOpen(true)}
             />
             <ActionTile
@@ -1556,19 +1556,23 @@ export default function ProjectDetailScreen() {
             <View style={styles.tplHelperBox}>
               <Ionicons name="information-circle-outline" size={18} color={colors.primary} />
               <Text style={styles.tplHelperTxt}>
-                Modo <Text style={{ fontWeight: '900' }}>narrativo por nodo (PPTX)</Text>: si tu Plantilla.pptx tiene al menos 3 slides (Portada · Mapa · Reporte de Nodo), el motor rellena los tokens {'{{TITULO}}'}, {'{{CONTRATISTA}}'}, {'{{CONTRATO}}'}, {'{{NODO}}'}, {'{{SITUACION_SOCIAL}}'}, {'{{ACTIVIDADES}}'}, {'{{FECHA}}'}, {'{{ESPECIALISTA}}'}, {'{{PERSONAL}}'}, {'{{EQUIPO}}'}, {'{{SEVERIDAD}}'} y carga fotos en shapes con nombre <Text style={{ fontWeight: '900' }}>FOTO_1 / FOTO_2</Text> (13.37 × 10 cm). Máx. 25 MB por archivo.
+                <Text style={{ fontWeight: '900' }}>Modo Superposición (PDF)</Text> — recomendado. Exporta tu plantilla PowerPoint a PDF y súbela aquí. El motor imprime el reporte SynCo sobre las páginas de tu plantilla como marca de agua institucional. Convención por número de página:{'\n'}
+                • <Text style={{ fontWeight: '900' }}>Página 1</Text> = Portada (fondo).{'\n'}
+                • <Text style={{ fontWeight: '900' }}>Página 2</Text> = Portadilla de Nodo (se inserta tal cual antes de cada nodo).{'\n'}
+                • <Text style={{ fontWeight: '900' }}>Página 3+</Text> = Base para páginas de datos (ciclada). Fotos 13.37 × 10 cm.{'\n'}
+                Máx. 25 MB por archivo.
               </Text>
             </View>
 
             {(['pdf', 'docx', 'pptx', 'map'] as const).map((kind) => {
               const meta =
                 kind === 'pdf'
-                  ? { label: 'PDF', sub: 'Fondo para reportes horizontales (letter)', icon: 'document-text' as const, tint: '#DC2626' }
+                  ? { label: 'PDF · plantilla base', sub: 'Portada + Portadilla de Nodo + Base de contenido', icon: 'document-text' as const, tint: '#DC2626' }
                   : kind === 'docx'
-                  ? { label: 'Word', sub: 'Plantilla base para el documento editable', icon: 'document' as const, tint: '#1D4ED8' }
+                  ? { label: 'Word (opcional)', sub: 'Se usa como base tal cual — sin token-relleno', icon: 'document' as const, tint: '#1D4ED8' }
                   : kind === 'pptx'
-                  ? { label: 'PowerPoint', sub: 'Plantilla narrativa · Portada + Mapa + Nodo (16:9)', icon: 'easel' as const, tint: '#B45309' }
-                  : { label: 'Mapa / Ubicación', sub: 'Imagen (JPG/PNG) que se coloca en shape "MAPA" del Slide 2', icon: 'map' as const, tint: '#059669' };
+                  ? { label: 'PowerPoint (opcional)', sub: 'Se usa como base tal cual — recomendado exportar a PDF', icon: 'easel' as const, tint: '#B45309' }
+                  : { label: 'Mapa / Ubicación', sub: 'Imagen (JPG/PNG) — usada por otros motores auxiliares', icon: 'map' as const, tint: '#059669' };
               const hasFile = !!(project as any)?.[`template_${kind}`];
               const busy = tplBusyKind === kind;
               return (

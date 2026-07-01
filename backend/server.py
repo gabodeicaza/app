@@ -4075,7 +4075,13 @@ async def export_reports_pdf(
     # ========================================================================
     # GENERACIÓN BLOQUEANTE (CPU-bound) → asyncio.to_thread
     # ========================================================================
-    def _build_pdf_blocking() -> bytes:
+    def _build_pdf_blocking() -> tuple:
+        """Genera el PDF y devuelve (bytes, section_page_indices).
+        `section_page_indices` es la lista de índices 0-based en el PDF que
+        corresponden a páginas 'Separadoras de Sección/Nodo' (una por nodo).
+        Estas páginas se reemplazan por la página 2 del template PDF durante
+        la fusión de superposición, si el usuario subió una plantilla PDF."""
+        section_page_indices: List[int] = []
         buf = io.BytesIO()
         PAGE = landscape(A4)  # 29.7 x 21 cm
         PW, PH = PAGE
@@ -4259,7 +4265,11 @@ async def export_reports_pdf(
             #   Página dedicada antes de los reportes del nodo:
             #     - Ubicación: 24pt Bold centrado
             #     - Coordenadas: 14pt centrado
+            #   Además, se registra el índice 0-based en `section_page_indices`
+            #   para que el motor de overlay pueda reemplazarla por la página
+            #   "Sección" (index 1) de la plantilla PDF del proyecto.
             # =================================================================
+            section_page_indices.append(page_num - 1)
             draw_header(page_num)
             # Bloque visual centrado vertical
             c.setFillColor(BRAND)
@@ -4536,21 +4546,26 @@ async def export_reports_pdf(
                 page_num += 1
 
         c.save()
-        return buf.getvalue()
+        return buf.getvalue(), section_page_indices
 
     # Render bloqueante en thread aparte → libera event loop
-    pdf_bytes = await asyncio.to_thread(_build_pdf_blocking)
+    pdf_bytes, section_page_indices = await asyncio.to_thread(_build_pdf_blocking)
 
     # ── Fusión con plantilla PDF institucional (si existe) ────────────────
-    # El PDF generado por reportlab se pinta ENCIMA de cada página de la
-    # plantilla. Si el reporte tiene más páginas que la plantilla, se repite
-    # la última página del template como fondo.
+    # Modo Superposición:
+    #   - Página 0 del template = fondo de la portada.
+    #   - Página 1 del template (si existe) = "Sección de Nodo": REEMPLAZA
+    #     por completo cada página separadora de nodo del reporte SynCo.
+    #   - Página 2+ del template (si existe) = base para las páginas de datos.
+    #     Si no hay página 2, se recicla la última página del template.
     tpl_pdf = _get_project_template(proj, "pdf")
     if tpl_pdf:
         try:
-            pdf_bytes = await asyncio.to_thread(_overlay_pdf_on_template, pdf_bytes, tpl_pdf)
+            pdf_bytes = await asyncio.to_thread(
+                _overlay_pdf_on_template, pdf_bytes, tpl_pdf, section_page_indices
+            )
         except Exception as e:
-            logger.warning("template pdf merge failed: %s", e)
+            log.warning("template pdf merge failed: %s", e)
 
     fname = _safe_export_filename(proj.get("name", "proyecto"), period, "pdf")
     return StreamingResponse(
@@ -4560,32 +4575,74 @@ async def export_reports_pdf(
     )
 
 
-def _overlay_pdf_on_template(content_pdf: bytes, template_path: str) -> bytes:
-    """Superpone el PDF de contenido sobre las páginas de la plantilla.
+def _overlay_pdf_on_template(
+    content_pdf: bytes,
+    template_path: str,
+    section_page_indices: Optional[List[int]] = None,
+) -> bytes:
+    """Modo Superposición: fusiona el PDF generado por SynCo sobre la plantilla PDF.
 
-    - Cada página del contenido se pinta encima de la página correspondiente
-      del template (por índice).
-    - Si el contenido excede al template en número de páginas, se repite la
-      última página del template como fondo.
-    - Si el template excede al contenido, se ignoran las páginas sobrantes.
+    Convención de páginas del template:
+      • Página 0 → 'Portada base' (fondo de la portada del reporte).
+      • Página 1 (opcional) → 'Sección de Nodo': si existe, cada página
+        separadora de nodo del reporte SynCo se REEMPLAZA íntegramente por
+        esta página del template (sin overlay), como una portadilla por nodo.
+      • Página 2..N-1 (opcional) → 'Base de contenido': fondo repetido para
+        el resto de páginas de datos del reporte. Si no hay página 2, se usa
+        la última página disponible de la plantilla.
+
+    Reglas de tolerancia:
+      • Si la plantilla tiene 1 sola página → todas las páginas del contenido
+        se pintan encima de esa única página (comportamiento heredado).
+      • Si la plantilla tiene 2 páginas → página 0 se usa para la portada,
+        página 1 se usa como separador Y como fondo del contenido.
+      • Si `section_page_indices` es None o vacío → no se aplica reemplazo
+        (compatibilidad con la ruta antigua).
     """
     from pypdf import PdfReader, PdfWriter
     tpl_bytes = Path(template_path).read_bytes()
     content_reader = PdfReader(io.BytesIO(content_pdf))
-    # Reader "base" solo para contar páginas del template.
     tpl_count = len(PdfReader(io.BytesIO(tpl_bytes)).pages)
     if tpl_count == 0:
-        return content_pdf  # template sin páginas → devolver contenido tal cual
+        return content_pdf
+
+    section_set = set(section_page_indices or [])
+    has_section_page = tpl_count >= 2
+    section_idx_in_tpl = 1 if has_section_page else 0
+    # Índice base para contenido general (páginas de datos):
+    #   • Si hay >=3 páginas: contenido empieza en índice 2 y cicla hasta la última.
+    #   • Si hay 2 páginas: contenido cae en la página 1 (misma que separador).
+    #   • Si hay 1 página: contenido cae en la página 0.
+    content_base_start = 2 if tpl_count >= 3 else (1 if tpl_count == 2 else 0)
+    content_base_last = tpl_count - 1
+
     writer = PdfWriter()
+    content_cycle_idx = 0
     for i, cpage in enumerate(content_reader.pages):
-        idx = min(i, tpl_count - 1)
-        # Reader fresco por página para evitar mutar referencias compartidas
+        # ── Página separadora de nodo: se REEMPLAZA con la página 'Sección' del template
+        if i in section_set and has_section_page:
+            fresh = PdfReader(io.BytesIO(tpl_bytes))
+            section_page = fresh.pages[section_idx_in_tpl]
+            writer.add_page(section_page)
+            continue
+
+        # ── Página normal: overlay sobre la página base correspondiente
         fresh = PdfReader(io.BytesIO(tpl_bytes))
-        base = fresh.pages[idx]
+        if i == 0:
+            # Portada del reporte → fondo = página 0 del template
+            base_idx = 0
+        else:
+            # Contenido general → cicla entre content_base_start..content_base_last
+            span = content_base_last - content_base_start + 1
+            if span <= 0:
+                base_idx = content_base_last
+            else:
+                base_idx = content_base_start + (content_cycle_idx % span)
+                content_cycle_idx += 1
+        base = fresh.pages[base_idx]
         try:
             base.merge_page(cpage)
         except Exception:
-            # Si algo falla, adjuntamos la página de contenido sola
             writer.add_page(cpage)
             continue
         writer.add_page(base)
@@ -5564,30 +5621,20 @@ async def export_reports_pptx(
 
     def _build_pptx_blocking() -> bytes:
         tpl_pptx = _get_project_template(proj, "pptx")
-        tpl_map = _get_project_template(proj, "map")
+        _ = _get_project_template(proj, "map")  # reservado: usado por otros motores auxiliares
 
         # ==============================================================
-        # MODO NARRATIVO POR NODO (template-driven)
-        # Se activa si el proyecto tiene plantilla PPTX con ≥3 slides.
-        # Slides esperados en la plantilla:
-        #   [0] Portada  · tokens del proyecto
-        #   [1] Mapa     · tokens + shape 'MAPA' para la imagen de ubicación
-        #   [2] Nodo     · template que se clona por reporte (shapes 'FOTO_1'/'FOTO_2')
-        #   [3] Galería  · template opcional para fotos extra (shapes 'FOTO_1'/'FOTO_2')
+        # MODO SUPERPOSICIÓN (por instrucción del usuario):
+        # Se abandona la manipulación de shapes/tokens en PPTX/DOCX.
+        # La fusión institucional se realiza EXCLUSIVAMENTE en PDF vía
+        # `_overlay_pdf_on_template`. Para PPTX/DOCX se usa la plantilla
+        # (si existe) como base tal cual, sin intentar rellenar tokens.
         # ==============================================================
-        if tpl_pptx:
-            try:
-                prs_n = Presentation(tpl_pptx)
-                if len(prs_n.slides) >= 3:
-                    return _build_pptx_narrative(prs_n, tpl_map)
-            except Exception as e:
-                try:
-                    log.warning(f"[pptx-narrative] fallback a diseño DIRAC: {e}")
-                except Exception:
-                    pass
+        # (Antes existía un motor _build_pptx_narrative activado con ≥3 slides.
+        #  Se desactivó porque era inestable; se favorece la fusión PDF pura.)
 
         # ==============================================================
-        # MODO DEFAULT DIRAC (fallback: sin plantilla o <3 slides)
+        # MODO DEFAULT DIRAC (o plantilla base sin token-rellenado)
         # ==============================================================
         if tpl_pptx:
             try:
