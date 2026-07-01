@@ -391,8 +391,8 @@ export default function ProjectDetailScreen() {
     }
   }
 
-  // === Plantillas de exportación (PDF/DOCX/PPTX) ============================
-  const TPL_MIMES: Record<'pdf' | 'docx' | 'pptx', string[]> = {
+  // === Plantillas de exportación (PDF/DOCX/PPTX/MAP) =========================
+  const TPL_MIMES: Record<'pdf' | 'docx' | 'pptx' | 'map', string[]> = {
     pdf: ['application/pdf', '.pdf'],
     docx: [
       'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -402,9 +402,19 @@ export default function ProjectDetailScreen() {
       'application/vnd.openxmlformats-officedocument.presentationml.presentation',
       '.pptx',
     ],
+    map: [
+      'image/jpeg',
+      'image/jpg',
+      'image/png',
+      'image/webp',
+      '.jpg',
+      '.jpeg',
+      '.png',
+      '.webp',
+    ],
   };
 
-  async function onPickAndUploadTemplate(kind: 'pdf' | 'docx' | 'pptx') {
+  async function onPickAndUploadTemplate(kind: 'pdf' | 'docx' | 'pptx' | 'map') {
     if (tplBusyKind) return;
     try {
       const result = await DocumentPicker.getDocumentAsync({
@@ -441,7 +451,7 @@ export default function ProjectDetailScreen() {
     }
   }
 
-  async function onDeleteTemplate(kind: 'pdf' | 'docx' | 'pptx') {
+  async function onDeleteTemplate(kind: 'pdf' | 'docx' | 'pptx' | 'map') {
     if (tplBusyKind) return;
     const ok = await confirm(
       'Eliminar plantilla',
@@ -707,7 +717,7 @@ export default function ProjectDetailScreen() {
             <ActionTile
               icon="document-attach-outline"
               title="Plantillas de exportación"
-              subtitle="Fondos institucionales PDF · Word · PowerPoint"
+              subtitle="Fondos institucionales PDF · Word · PPTX narrativo + Mapa"
               onPress={() => setTplModalOpen(true)}
             />
             <ActionTile
@@ -1546,17 +1556,19 @@ export default function ProjectDetailScreen() {
             <View style={styles.tplHelperBox}>
               <Ionicons name="information-circle-outline" size={18} color={colors.primary} />
               <Text style={styles.tplHelperTxt}>
-                El motor imprime datos, tablas y fotos sobre tu plantilla. Deja márgenes amplios en tu diseño. Si no subes plantilla, se usa el diseño DIRAC por defecto. Máx. 25 MB por archivo.
+                Modo <Text style={{ fontWeight: '900' }}>narrativo por nodo (PPTX)</Text>: si tu Plantilla.pptx tiene al menos 3 slides (Portada · Mapa · Reporte de Nodo), el motor rellena los tokens {'{{TITULO}}'}, {'{{CONTRATISTA}}'}, {'{{CONTRATO}}'}, {'{{NODO}}'}, {'{{SITUACION_SOCIAL}}'}, {'{{ACTIVIDADES}}'}, {'{{FECHA}}'}, {'{{ESPECIALISTA}}'}, {'{{PERSONAL}}'}, {'{{EQUIPO}}'}, {'{{SEVERIDAD}}'} y carga fotos en shapes con nombre <Text style={{ fontWeight: '900' }}>FOTO_1 / FOTO_2</Text> (13.37 × 10 cm). Máx. 25 MB por archivo.
               </Text>
             </View>
 
-            {(['pdf', 'docx', 'pptx'] as const).map((kind) => {
+            {(['pdf', 'docx', 'pptx', 'map'] as const).map((kind) => {
               const meta =
                 kind === 'pdf'
                   ? { label: 'PDF', sub: 'Fondo para reportes horizontales (letter)', icon: 'document-text' as const, tint: '#DC2626' }
                   : kind === 'docx'
                   ? { label: 'Word', sub: 'Plantilla base para el documento editable', icon: 'document' as const, tint: '#1D4ED8' }
-                  : { label: 'PowerPoint', sub: 'Máster base para presentación 16:9', icon: 'easel' as const, tint: '#B45309' };
+                  : kind === 'pptx'
+                  ? { label: 'PowerPoint', sub: 'Plantilla narrativa · Portada + Mapa + Nodo (16:9)', icon: 'easel' as const, tint: '#B45309' }
+                  : { label: 'Mapa / Ubicación', sub: 'Imagen (JPG/PNG) que se coloca en shape "MAPA" del Slide 2', icon: 'map' as const, tint: '#059669' };
               const hasFile = !!(project as any)?.[`template_${kind}`];
               const busy = tplBusyKind === kind;
               return (

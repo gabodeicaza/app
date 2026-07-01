@@ -90,6 +90,7 @@ export interface Project {
   template_pdf?: string | null;
   template_docx?: string | null;
   template_pptx?: string | null;
+  template_map?: string | null;
   created_by: string;
   created_at: string;
   archived?: boolean;
@@ -508,22 +509,24 @@ export const api = {
   deleteProjectFile: (pid: string, fileId: string) =>
     request<{ ok: boolean; file_id: string }>('DELETE', `/projects/${pid}/files/${fileId}`),
 
-  // ── Plantillas de exportación (PDF / DOCX / PPTX) ──────────────────────
+  // ── Plantillas de exportación (PDF / DOCX / PPTX / MAP) ────────────────
   uploadProjectTemplate: async (
     pid: string,
-    kind: 'pdf' | 'docx' | 'pptx',
+    kind: 'pdf' | 'docx' | 'pptx' | 'map',
     file: { uri: string; name: string; mimeType?: string | null },
   ): Promise<Project> => {
     const form = new FormData();
     const isWeb = typeof window !== 'undefined' && typeof (globalThis as any).Blob !== 'undefined';
-    const fileName = file.name || `template.${kind}`;
+    const fileName = file.name || `template.${kind === 'map' ? 'jpg' : kind}`;
     const mime =
       file.mimeType ||
       (kind === 'pdf'
         ? 'application/pdf'
         : kind === 'docx'
         ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-        : 'application/vnd.openxmlformats-officedocument.presentationml.presentation');
+        : kind === 'pptx'
+        ? 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+        : 'image/jpeg');
     if (isWeb) {
       const resBlob = await fetch(file.uri);
       const blob = await resBlob.blob();
@@ -569,7 +572,7 @@ export const api = {
     return data as Project;
   },
 
-  deleteProjectTemplate: (pid: string, kind: 'pdf' | 'docx' | 'pptx') =>
+  deleteProjectTemplate: (pid: string, kind: 'pdf' | 'docx' | 'pptx' | 'map') =>
     request<Project>('DELETE', `/projects/${pid}/template/${kind}`),
 
 
