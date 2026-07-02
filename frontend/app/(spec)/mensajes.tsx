@@ -2,7 +2,7 @@
 // Vista 1 (Lista): canales del proyecto agrupados (General → Áreas → Directos).
 // Vista 2 (Chat): mensajes del canal seleccionado con polling 6s.
 // Single-file state machine para evitar restructurar el routing del tab.
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator, Alert, AppState, AppStateStatus, FlatList,
   KeyboardAvoidingView, Modal, Platform, Pressable, RefreshControl,
@@ -322,7 +322,6 @@ function ChatView({
       }).catch((e) => Alert.alert('Error', e?.message || 'No se pudo eliminar'));
     };
     if (Platform.OS === 'web') {
-      // eslint-disable-next-line no-alert
       if (typeof window !== 'undefined' && window.confirm('¿Eliminar este mensaje?')) confirm();
     } else {
       Alert.alert('Eliminar mensaje', '¿Seguro?', [

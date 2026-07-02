@@ -1,9 +1,12 @@
-import 'react-native-gesture-handler';
 import React, { useEffect } from 'react';
 import { Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
+// Side-effect import obligatorio en Expo/RN antes de usar Gesture Handler.
+// eslint-disable-next-line import/no-duplicates
+import 'react-native-gesture-handler';
+// eslint-disable-next-line import/no-duplicates
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 
 import { useIconFonts } from '@/src/hooks/use-icon-fonts';

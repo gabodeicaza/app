@@ -9,7 +9,7 @@
 //   • Pull-to-refresh y estados vacíos amigables.
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  ActivityIndicator, Alert, FlatList, Image, Linking, Modal, Platform, Pressable, RefreshControl,
+  ActivityIndicator, Alert, FlatList, Image, Modal, Platform, Pressable, RefreshControl,
   ScrollView, StatusBar, StyleSheet, Text, TouchableOpacity, View,
 } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
@@ -51,7 +51,7 @@ const FORMAT_OPTIONS: { value: ExportFormat; label: string; sub: string; icon: k
 
 type RangeKey = 'today' | 'week' | 'month' | 'all';
 
-const RANGE_OPTIONS: Array<{ key: RangeKey; label: string }> = [
+const RANGE_OPTIONS: { key: RangeKey; label: string }[] = [
   { key: 'today', label: 'Hoy' },
   { key: 'week', label: 'Esta semana' },
   { key: 'month', label: 'Este mes' },
@@ -294,7 +294,7 @@ export default function SpecFeedScreen() {
   }
 
   const stats = feed?.stats || { total: 0, mine: 0, others: 0 };
-  const reports = feed?.reports || [];
+  const reports = useMemo(() => feed?.reports || [], [feed]);
   const filteredReports = useMemo(() => {
     if (!selectedDate) return reports;
     return reports.filter((r) => (r.created_at || '').slice(0, 10) === selectedDate);

@@ -6,7 +6,7 @@
 //   AsyncStorage (catálogo local de items previamente capturados).
 // - Fotos: Base64 en RAM (Cero Huella Local).
 // - Tras éxito → modal "Modo WhatsApp" con botones Copiar y Enviar.
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator, Alert, Dimensions, FlatList, Image, KeyboardAvoidingView, Modal, Platform,
   Pressable, RefreshControl, ScrollView, StatusBar, StyleSheet, Text, TextInput, View,
@@ -197,7 +197,7 @@ export default function SpecCaptureScreen() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [projectId, allowedLeafIds]);
+  }, [projectId, allowedLeafIds, isSubCoord]);
 
   useEffect(() => { load(); }, [load]);
 

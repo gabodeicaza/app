@@ -73,7 +73,7 @@ export default function SubCoordDashboard() {
   const [expFormat, setExpFormat] = useState<'xlsx' | 'pdf' | 'docx' | 'pptx'>('xlsx');
   const [expPeriod, setExpPeriod] = useState<'today' | 'yesterday' | 'week' | 'month'>('today');
   // P0 Mega-Feature: filtro por Área para exportación (Supervisores)
-  const [expAreas, setExpAreas] = useState<Array<{ id: string; name: string; color?: string }>>([]);
+  const [expAreas, setExpAreas] = useState<{ id: string; name: string; color?: string }[]>([]);
   const [expAreaId, setExpAreaId] = useState<string | null>(null); // null = "Todas las áreas"
 
   const loadProjects = useCallback(async () => {
@@ -312,6 +312,7 @@ export default function SubCoordDashboard() {
     }
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   async function onExport() {
     if (!pid || exporting) return;
     try {

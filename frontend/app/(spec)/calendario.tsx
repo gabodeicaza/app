@@ -1,7 +1,7 @@
 // SynCo v2.0 — Tab "Calendario" (Especialista)
 // Vista universal: usa UniversalCalendar (mismo componente para todos los roles).
 import React from 'react';
-import { StatusBar, StyleSheet, Text, View, Pressable } from 'react-native';
+import { StatusBar, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 

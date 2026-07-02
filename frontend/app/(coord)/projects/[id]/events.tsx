@@ -219,7 +219,7 @@ export default function CoordEventsScreen() {
               {tab === 'upcoming' ? 'Sin eventos programados' : 'Sin eventos pasados'}
             </Text>
             <Text style={styles.emptyMsg}>
-              Programa actividades clave del proyecto. Todos los miembros podrán verlas en su tab "Calendario".
+              Programa actividades clave del proyecto. Todos los miembros podrán verlas en su tab &ldquo;Calendario&rdquo;.
             </Text>
             {tab === 'upcoming' ? (
               <Pressable style={styles.emptyBtn} onPress={newEvent}>

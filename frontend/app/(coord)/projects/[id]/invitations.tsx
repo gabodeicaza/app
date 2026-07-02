@@ -585,7 +585,7 @@ function StepScopeMulti({
         {areas.length === 0 ? (
           <View style={styles.warnBlock}>
             <Ionicons name="warning" size={18} color={colors.warning} />
-            <Text style={styles.warnText}>No hay áreas. Crea primero al menos un área desde la pantalla "Áreas".</Text>
+            <Text style={styles.warnText}>No hay áreas. Crea primero al menos un área desde la pantalla &ldquo;Áreas&rdquo;.</Text>
           </View>
         ) : (
           <View style={styles.areaRow}>
@@ -609,7 +609,7 @@ function StepScopeMulti({
         ) : !hasAnyLeaf(tree) ? (
           <View style={styles.warnBlock}>
             <Ionicons name="warning" size={18} color={colors.warning} />
-            <Text style={styles.warnText}>Aún no hay nodos hoja. Marca algunos nodos como "hoja" en la pantalla del árbol.</Text>
+            <Text style={styles.warnText}>Aún no hay nodos hoja. Marca algunos nodos como &ldquo;hoja&rdquo; en la pantalla del árbol.</Text>
           </View>
         ) : (
           <View style={styles.treeBox}>

@@ -87,7 +87,6 @@ export default function NoticiasScreen() {
       });
     };
     if (Platform.OS === 'web') {
-      // eslint-disable-next-line no-restricted-globals, no-alert
       if (typeof window !== 'undefined' && window.confirm('¿Eliminar esta noticia? Esta acción no se puede deshacer.')) confirm();
     } else {
       Alert.alert('Eliminar noticia', '¿Seguro que deseas eliminarla?', [

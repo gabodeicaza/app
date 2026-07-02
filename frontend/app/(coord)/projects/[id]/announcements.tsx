@@ -1,6 +1,6 @@
 // SynCo v2.0 — Administración de Noticias (Coordinador General).
 // CRUD completo con fijado, editar y eliminar.
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import {
   ActivityIndicator, KeyboardAvoidingView, Modal, Platform, Pressable,
   RefreshControl, ScrollView, StyleSheet, Switch, Text, TextInput, View,

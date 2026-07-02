@@ -74,13 +74,14 @@ export default function ProjectDetailScreen() {
   const [selectedNodeFilter, setSelectedNodeFilter] = useState<string | null>(null);
   const [selectedAreaFilter, setSelectedAreaFilter] = useState<string | null>(null);
 
-  // Resumen Ejecutivo con IA
-  const [aiOpen, setAiOpen] = useState(false);
+  // Resumen Ejecutivo con IA (los getters aún no se muestran en UI; se conservan
+  // los setters para preservar la lógica de generación en un futuro modal).
+  const [, setAiOpen] = useState(false);
   const [aiBusy, setAiBusy] = useState(false);
   const [aiSummary, setAiSummary] = useState<string | null>(null);
-  const [aiError, setAiError] = useState<string | null>(null);
-  const [aiMeta, setAiMeta] = useState<{ reports_count: number; period_hours: number } | null>(null);
-  const [aiCopied, setAiCopied] = useState(false);
+  const [, setAiError] = useState<string | null>(null);
+  const [, setAiMeta] = useState<{ reports_count: number; period_hours: number } | null>(null);
+  const [, setAiCopied] = useState(false);
 
   // Tabs: Operación / Configuración
   const [activeTab, setActiveTab] = useState<'operacion' | 'configuracion'>('operacion');
@@ -91,7 +92,7 @@ export default function ProjectDetailScreen() {
   const [exportPeriod, setExportPeriod] = useState<ReportPeriod>('today');
   const [exportBusy, setExportBusy] = useState(false);
   // P0 Mega-Feature: filtro por Área para exportación
-  const [exportAreas, setExportAreas] = useState<Array<{ id: string; name: string; color?: string }>>([]);
+  const [exportAreas, setExportAreas] = useState<{ id: string; name: string; color?: string }[]>([]);
   const [exportAreaId, setExportAreaId] = useState<string | null>(null); // null = "Todas"
 
   // Preview de reporte (tap en feed)
@@ -202,6 +203,7 @@ export default function ProjectDetailScreen() {
     }
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   async function copyAiSummary() {
     if (!aiSummary) return;
     try {
@@ -1443,7 +1445,7 @@ export default function ProjectDetailScreen() {
               <View>
                 <Text style={styles.catLabel}>Cliente principal</Text>
                 <Text style={styles.catHelper}>
-                  Dependencia o entidad que contrata la obra (aparece como "CLIENTE" en la portada).
+                  Dependencia o entidad que contrata la obra (aparece como &ldquo;CLIENTE&rdquo; en la portada).
                 </Text>
                 <TextInput
                   value={clienteDraft}

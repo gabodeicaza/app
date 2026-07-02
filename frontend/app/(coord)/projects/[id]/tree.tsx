@@ -12,7 +12,7 @@ import * as ImageManipulator from 'expo-image-manipulator';
 import * as Sharing from 'expo-sharing';
 import * as FileSystem from 'expo-file-system/legacy';
 import { Button } from '@/src/components/Button';
-import { api, LocationNode, LocationNodeTree } from '@/src/api';
+import { api, LocationNodeTree } from '@/src/api';
 import { colors, radius, spacing, shadow } from '@/src/theme';
 import { MEASUREMENT_LABELS, MEASUREMENT_ICONS, MeasurementType } from '@/src/utils/roles';
 import { confirm } from '@/src/utils/confirm';

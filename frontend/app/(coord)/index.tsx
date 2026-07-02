@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, RefreshControl, Pressable, ActivityIndicator,
 } from 'react-native';

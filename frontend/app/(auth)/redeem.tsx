@@ -5,7 +5,7 @@
 import React, { useState } from 'react';
 import {
   View, Text, StyleSheet, TextInput, ScrollView, KeyboardAvoidingView, Platform,
-  ActivityIndicator, Pressable,
+  Pressable,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
