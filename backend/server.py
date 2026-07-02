@@ -5501,15 +5501,25 @@ async def export_reports_pptx(
         # (texto, imágenes) sobre copias del membrete.
         # Si no hay plantilla, se generan slides en blanco sin decoración.
         # ==============================================================
+        # tpl_cover_slide  = Slide 0 de la plantilla → PORTADA (se deja 100% intacta).
+        # tpl_master_slide = Slide 1 de la plantilla ("ACTIVIDADES GENERALES") →
+        #                    fondo/membrete UNIVERSAL clonado para Mapa, Nodos,
+        #                    Reportes, Notas, etc.
+        tpl_cover_slide = None
         tpl_master_slide = None
         if tpl_pptx:
             try:
                 prs = Presentation(tpl_pptx)
-                if len(prs.slides) > 0:
-                    tpl_master_slide = prs.slides[0]
-                    # Adopta las dimensiones EXACTAS de la plantilla
-                    # (respeta apaisado/vertical/custom del usuario).
+                _n_tpl_slides = len(prs.slides)
+                if _n_tpl_slides > 0:
+                    tpl_cover_slide = prs.slides[0]
+                if _n_tpl_slides > 1:
+                    tpl_master_slide = prs.slides[1]
                 else:
+                    # Plantilla con una sola diapositiva: se reutiliza esa misma
+                    # como membrete universal.
+                    tpl_master_slide = tpl_cover_slide
+                if _n_tpl_slides == 0:
                     prs = Presentation()
                     prs.slide_width = Cm(29.7)
                     prs.slide_height = Cm(21.0)
@@ -5582,20 +5592,16 @@ async def export_reports_pptx(
             run.font.color.rgb = PRGBColor(*color)
             return tb
 
-        # Logo institucional (proyecto o DIRAC). Una sola descarga.
-        logo_bytes = _resolve_export_logo_bytes(constructora_logo_b64)
+        # Logo institucional: eliminado — la plantilla ya trae los logos
+        # del membrete. Cualquier logo adicional programático producía
+        # "ghost images" en las esquinas del reporte.
+        # (Se conserva la resolución del blob por compatibilidad con otros
+        # motores; no se inserta ninguna imagen adicional en PPTX.)
+        logo_bytes = None  # noqa: F841
 
         def add_logo(slide, x, y, w_cm: float, h_cm: float):
-            if not logo_bytes:
-                return False
-            try:
-                slide.shapes.add_picture(
-                    io.BytesIO(logo_bytes), x, y,
-                    width=Cm(w_cm), height=Cm(h_cm),
-                )
-                return True
-            except Exception:
-                return False
+            """DEPRECATED · no-op: no se insertan logos adicionales en PPTX."""
+            return False
 
         def add_header_footer(slide):
             """DEPRECATED · no-op: el encabezado/pie institucional ahora
@@ -5604,79 +5610,27 @@ async def export_reports_pptx(
             invocaciones existentes."""
             return None
 
-        # ===== PORTADA (sobre el membrete) =============================
-        # Si hay tpl_master_slide, la primera slide de la Presentation ES
-        # el membrete → escribimos SOBRE ella directamente para preservar
-        # todo su diseño institucional. Si no hay plantilla, se crea una
-        # slide en blanco sin decoración.
-        if tpl_master_slide is not None:
-            s = tpl_master_slide
-        else:
-            s = prs.slides.add_slide(blank)
-        # Color de texto sobre membrete: usamos el color de marca del proyecto
-        # para títulos (buena legibilidad sobre membrete blanco típico). Los
-        # textos de cuerpo van en gris pizarra oscuro.
-        TEXT_TITLE = BRAND_RGB
+        # ===== PORTADA (Slide 0 de la plantilla) =======================
+        # PURGA TOTAL: la portada se deja 100 % intacta tal como el usuario
+        # la subió. NO se inyecta título, cliente, contrato, período, área
+        # ni fecha por código. Si no hay plantilla, la portada queda como
+        # una slide en blanco sin decoración (fallback).
+        if tpl_cover_slide is None and tpl_master_slide is None:
+            prs.slides.add_slide(blank)
+        # Colores conservados solo para uso en slides internas.
         TEXT_BODY = (0x0F, 0x17, 0x2A)
         TEXT_MUTED = (0x64, 0x75, 0x8B)
-        # Cliente principal arriba a la derecha (dentro del área limpia)
-        if project_cliente:
-            add_text(s, Cm(15.0), TOP_MARGIN, Cm(13.7), Cm(1.0),
-                     "CLIENTE", size=10, bold=True, color=BRAND_RGB,
-                     align=PP_ALIGN.RIGHT)
-            add_text(s, Cm(15.0), TOP_MARGIN + Cm(0.8), Cm(13.7), Cm(1.5),
-                     project_cliente[:80], size=18, bold=True,
-                     color=TEXT_BODY, align=PP_ALIGN.RIGHT)
-        # Título central
-        add_text(s, Cm(1.0), Cm(6.0), SW - Cm(2.0), Cm(1.0),
-                 "INFORME DE AVANCE Y SUPERVISIÓN",
-                 size=14, bold=True, color=BRAND_RGB, align=PP_ALIGN.CENTER)
-        add_text(s, Cm(1.0), Cm(7.5), SW - Cm(2.0), Cm(3.0),
-                 project_name,
-                 size=44, bold=True, color=BRAND_RGB, align=PP_ALIGN.CENTER)
-        if project_objeto:
-            add_text(s, Cm(2.5), Cm(11.0), SW - Cm(5.0), Cm(3.5),
-                     project_objeto,
-                     size=16, italic=True, color=TEXT_BODY, align=PP_ALIGN.CENTER)
-        # Pie portada (dentro del área limpia, ANTES del BOTTOM_MARGIN)
-        pie_y_top = SH - BOTTOM_MARGIN - Cm(2.6)
-        pie_y_bot = SH - BOTTOM_MARGIN - Cm(1.9)
-        pie_y_line = SH - BOTTOM_MARGIN - Cm(0.6)
-        add_text(s, Cm(1.0), pie_y_top, Cm(10.0), Cm(0.7),
-                 "PERÍODO", size=10, bold=True, color=BRAND_RGB)
-        add_text(s, Cm(1.0), pie_y_bot, Cm(10.0), Cm(0.7),
-                 fechas_label, size=12, color=TEXT_BODY)
-        add_text(s, Cm(11.5), pie_y_top, Cm(8.0), Cm(0.7),
-                 "CONSTRUCTORA", size=10, bold=True, color=BRAND_RGB,
-                 align=PP_ALIGN.CENTER)
-        add_text(s, Cm(11.5), pie_y_bot, Cm(8.0), Cm(0.7),
-                 project_constructora, size=12, color=TEXT_BODY,
-                 align=PP_ALIGN.CENTER)
-        add_text(s, SW - Cm(11.0), pie_y_top, Cm(10.0), Cm(0.7),
-                 "CONTRATO", size=10, bold=True, color=BRAND_RGB,
-                 align=PP_ALIGN.RIGHT)
-        add_text(s, SW - Cm(11.0), pie_y_bot, Cm(10.0), Cm(0.7),
-                 project_contract, size=12, color=TEXT_BODY,
-                 align=PP_ALIGN.RIGHT)
-        add_text(s, Cm(1.0), pie_y_line, SW - Cm(2.0), Cm(0.6),
-                 f"{area_label}   ·   {_fmt_fecha_dd_mm_yyyy_hhmm(datetime.now(timezone.utc))}",
-                 size=10, italic=True, color=TEXT_MUTED,
-                 align=PP_ALIGN.CENTER)
 
-        # ===== SLIDE MAPA (clonando el membrete) =======================
+        # ===== SLIDE MAPA (clonando el membrete, sin título programático) ====
         s_map = _clone_membrete()
-        add_text(s_map, Cm(1.0), TOP_MARGIN, SW - Cm(2.0), Cm(1.2),
-                 "MAPA DE UBICACIÓN",
-                 size=28, bold=True, color=BRAND_RGB, align=PP_ALIGN.CENTER)
         _map_tpl_path_pptx = _get_project_template(proj, "map")
         _map_drawn_pptx = False
         if _map_tpl_path_pptx:
             try:
                 _map_bytes_pptx = Path(_map_tpl_path_pptx).read_bytes()
-                # Área útil = ancho total menos márgenes; alto entre
-                # el título (~TOP_MARGIN+1.5) y el BOTTOM_MARGIN.
+                # Área útil máxima dentro del membrete.
                 _map_x = Cm(1.0)
-                _map_y = TOP_MARGIN + Cm(1.5)
+                _map_y = TOP_MARGIN
                 _map_w = SW - Cm(2.0)
                 _map_h = SH - _map_y - BOTTOM_MARGIN
                 s_map.shapes.add_picture(
@@ -5704,41 +5658,34 @@ async def export_reports_pptx(
             any_data = True
             node_path = path_cache.get(n["id"]) or n.get("name", "")
 
-            # === Slide separador por nodo (clonando el membrete) =========
+            # === Separador de nodo: SOLO la cover_image grande y centrada.
+            # PURGA TOTAL de textos (sin título, sin nombre de nodo,
+            # sin coordenadas, sin contador de reportes).
             s = _clone_membrete()
             _cov_b64_p = _strip_b64_prefix(cover_meta_pptx.get("cover_image") or "")
             if _cov_b64_p:
                 try:
-                    # Cover del nodo 13.37 × 10 cm centrado bajo TOP_MARGIN
-                    _cw = Cm(13.37)
-                    _ch = Cm(10.0)
+                    # Cover a máxima dimensión útil respetando aspect 4:3.
+                    _avail_w = SW - Cm(2.0)
+                    _avail_h = SH - TOP_MARGIN - BOTTOM_MARGIN
+                    _target_ratio = 4.0 / 3.0
+                    _w_from_h = _avail_h * _target_ratio
+                    if _w_from_h <= _avail_w:
+                        _cw = _w_from_h
+                        _ch = _avail_h
+                    else:
+                        _cw = _avail_w
+                        _ch = _avail_w / _target_ratio
                     _cx = (SW - _cw) // 2
-                    _cy = TOP_MARGIN + Cm(0.5)
+                    _cy = TOP_MARGIN + (_avail_h - _ch) // 2
                     s.shapes.add_picture(
                         io.BytesIO(base64.b64decode(_cov_b64_p)),
                         _cx, _cy, width=_cw, height=_ch,
                     )
-                    add_text(s, Cm(1.5), _cy + _ch + Cm(0.4), SW - Cm(3.0), Cm(1.5),
-                             node_path, size=28, bold=True, color=BRAND_RGB,
-                             align=PP_ALIGN.CENTER)
                 except Exception:
-                    add_text(s, Cm(1.5), TOP_MARGIN + Cm(2.5), SW - Cm(3.0), Cm(2.5),
-                             node_path, size=36, bold=True, color=BRAND_RGB,
-                             align=PP_ALIGN.CENTER)
-            else:
-                add_text(s, Cm(1.5), TOP_MARGIN + Cm(2.5), SW - Cm(3.0), Cm(2.5),
-                         node_path, size=36, bold=True, color=BRAND_RGB,
-                         align=PP_ALIGN.CENTER)
-            try:
-                coord_text = _format_measurement_for_display(node_reps[0]) or "—"
-            except Exception:
-                coord_text = "—"
-            add_text(s, Cm(1.5), SH - BOTTOM_MARGIN - Cm(1.6), SW - Cm(3.0), Cm(0.8),
-                     f"Coordenadas: {coord_text}",
-                     size=14, color=TEXT_BODY, align=PP_ALIGN.CENTER)
-            add_text(s, Cm(1.5), SH - BOTTOM_MARGIN - Cm(0.8), SW - Cm(3.0), Cm(0.7),
-                     f"Reportes en este nodo: {len(node_reps)}",
-                     size=11, color=TEXT_MUTED, align=PP_ALIGN.CENTER)
+                    # Silencio total: si la cover falla, la slide queda con
+                    # solo el membrete (sin texto de fallback).
+                    pass
 
             for r in node_reps:
                 slide = _clone_membrete()
@@ -5811,11 +5758,18 @@ async def export_reports_pptx(
                 data_x = Cm(15.0)
                 data_y = TOP_MARGIN
                 data_w = SW - data_x - Cm(1.0)
+                _sev_h = Cm(0.7)
+                _sev_gap = Cm(0.3)
 
                 # Banner de severidad arriba de la tabla de datos
-                add_text(slide, data_x, data_y, data_w, Cm(0.7),
+                add_text(slide, data_x, data_y, data_w, _sev_h,
                          f"[ {sev_label} ]", size=12, bold=True,
                          color=sev_color, align=PP_ALIGN.LEFT)
+
+                # Y-cursor: la tabla arranca INMEDIATAMENTE debajo del banner,
+                # nunca en la misma coordenada Y.
+                _table_y = data_y + _sev_h + _sev_gap
+                _table_h = SH - _table_y - BOTTOM_MARGIN
 
                 # Filas institucionales (Situación social + Actividades)
                 _act_lines = []
@@ -5842,7 +5796,7 @@ async def export_reports_pptx(
                     ("Equipo", equipo_str),
                 ]
 
-                tb = slide.shapes.add_textbox(data_x, data_y + Cm(0.8), data_w, Cm(17.0))
+                tb = slide.shapes.add_textbox(data_x, _table_y, data_w, _table_h)
                 tf = tb.text_frame
                 tf.word_wrap = True
                 first = True
@@ -5877,13 +5831,8 @@ async def export_reports_pptx(
                     for chunk_idx in range(total_pages):
                         chunk = extras[chunk_idx * PER_PAGE:(chunk_idx + 1) * PER_PAGE]
                         g_slide = _clone_membrete()
-                        add_text(
-                            g_slide, Cm(1.0), TOP_MARGIN, SW - Cm(2.0), Cm(0.8),
-                            f"Fotografías adicionales · {node_path[:60]}  ·  "
-                            f"Página {chunk_idx + 1} de {total_pages}",
-                            size=16, bold=True, color=BRAND_RGB,
-                            align=PP_ALIGN.LEFT,
-                        )
+                        # Sin título programático · el membrete institucional
+                        # ya identifica la sección.
                         for idx, b64 in enumerate(chunk):
                             cx = margin_x + idx * (cell_w + gap_x)
                             cyy = margin_y
@@ -5894,18 +5843,9 @@ async def export_reports_pptx(
                                     width=cell_w, height=cell_h,
                                 )
                             except Exception:
-                                add_text(
-                                    g_slide, cx, cyy + cell_h / 2, cell_w, Cm(0.6),
-                                    "(imagen no legible)",
-                                    size=10, italic=True, color=(0x64, 0x75, 0x8B),
-                                    align=PP_ALIGN.CENTER,
-                                )
-                            add_text(
-                                g_slide, cx, cyy + cell_h + Cm(0.15), cell_w, Cm(0.4),
-                                f"Foto {chunk_idx * PER_PAGE + idx + 2} de {len(imgs)} · 13.37 × 10 cm",
-                                size=8, italic=True, color=(0x64, 0x75, 0x8B),
-                                align=PP_ALIGN.CENTER,
-                            )
+                                # Silencio total: sin texto de fallback para
+                                # no dejar cuadros de texto vacíos.
+                                pass
 
             # === Slide(s) de Notas/Noticias vinculadas al nodo ===
             node_announ = announcements_by_node.get(n["id"]) or []
@@ -5953,6 +5893,40 @@ async def export_reports_pptx(
                      "Sin reportes en el período seleccionado.",
                      size=20, italic=True, color=(0x64, 0x75, 0x8B),
                      align=PP_ALIGN.CENTER)
+
+        # ================================================================
+        # Purga de la Slide-fuente del membrete (Slide 1 de la plantilla).
+        # Esta slide sólo existe como donante para el deep-clone; si no se
+        # remueve, aparecería como slide extra "vacía" en el PPTX exportado.
+        # La Slide 0 (portada, intocable) se conserva tal cual.
+        # ================================================================
+        if (
+            tpl_master_slide is not None
+            and tpl_cover_slide is not None
+            and tpl_master_slide is not tpl_cover_slide
+        ):
+            try:
+                _rels_ns = (
+                    '{http://schemas.openxmlformats.org/'
+                    'officeDocument/2006/relationships}id'
+                )
+                _sld_id_lst = prs.slides._sldIdLst
+                _target_id_el = None
+                for _sl_id in list(_sld_id_lst):
+                    _rid = _sl_id.get(_rels_ns)
+                    if not _rid:
+                        continue
+                    try:
+                        _related = prs.part.related_parts[_rid]
+                    except Exception:
+                        continue
+                    if _related is tpl_master_slide.part:
+                        _target_id_el = _sl_id
+                        break
+                if _target_id_el is not None:
+                    _sld_id_lst.remove(_target_id_el)
+            except Exception:
+                pass
 
         buf = io.BytesIO()
         prs.save(buf)
