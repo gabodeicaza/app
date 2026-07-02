@@ -1,29 +1,12 @@
 {
   "expo": {
-    "name": "SynCo",
-    "slug": "synco",
-    "version": "1.0.0",
-    "orientation": "portrait",
-    "icon": "./assets/images/icon.png",
-    "scheme": "synco",
-    "userInterfaceStyle": "light",
-    "newArchEnabled": true,
-    "ios": {
-      "supportsTablet": true,
-      "infoPlist": {
-        "NSCameraUsageDescription": "Capturar evidencia de obra en memoria, sin guardarla en tu dispositivo.",
-        "NSPhotoLibraryUsageDescription": "Adjuntar fotos al reporte sin guardarlas en tu dispositivo.",
-        "NSPhotoLibraryAddUsageDescription": "Guardar evidencia compartida en tu galería.",
-        "NSLocationWhenInUseUsageDescription": "Adjuntar ubicación a la evidencia fotográfica."
-      }
-    },
     "android": {
       "adaptiveIcon": {
-        "foregroundImage": "./assets/images/adaptive-icon.png",
-        "backgroundColor": "#1E40AF"
+        "backgroundColor": "#1E40AF",
+        "foregroundImage": "./assets/images/adaptive-icon.png"
       },
       "edgeToEdgeEnabled": true,
-      "usesCleartextTraffic": true,
+      "package": "app.emergent.offlinereportsyncaf47530f",
       "permissions": [
         "CAMERA",
         "READ_EXTERNAL_STORAGE",
@@ -33,22 +16,35 @@
         "RECEIVE_BOOT_COMPLETED",
         "VIBRATE",
         "POST_NOTIFICATIONS"
-      ]
+      ],
+      "usesCleartextTraffic": true
     },
-    "web": {
-      "bundler": "metro",
-      "output": "single",
-      "favicon": "./assets/images/favicon.png"
+    "experiments": {
+      "typedRoutes": true
     },
+    "icon": "./assets/images/icon.png",
+    "ios": {
+      "bundleIdentifier": "app.emergent.offlinereportsync13c7397a",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Capturar evidencia de obra en memoria, sin guardarla en tu dispositivo.",
+        "NSLocationWhenInUseUsageDescription": "Adjuntar ubicación a la evidencia fotográfica.",
+        "NSPhotoLibraryAddUsageDescription": "Guardar evidencia compartida en tu galería.",
+        "NSPhotoLibraryUsageDescription": "Adjuntar fotos al reporte sin guardarlas en tu dispositivo."
+      },
+      "supportsTablet": true
+    },
+    "name": "SynCo",
+    "newArchEnabled": true,
+    "orientation": "portrait",
     "plugins": [
       "expo-router",
       [
         "expo-splash-screen",
         {
+          "backgroundColor": "#1E40AF",
           "image": "./assets/images/splash-image.png",
           "imageWidth": 200,
-          "resizeMode": "contain",
-          "backgroundColor": "#1E40AF"
+          "resizeMode": "contain"
         }
       ],
       "expo-font",
@@ -81,8 +77,14 @@
         }
       ]
     ],
-    "experiments": {
-      "typedRoutes": true
+    "scheme": "synco",
+    "slug": "synco",
+    "userInterfaceStyle": "light",
+    "version": "1.0.0",
+    "web": {
+      "bundler": "metro",
+      "favicon": "./assets/images/favicon.png",
+      "output": "single"
     }
   }
 }

@@ -42,6 +42,64 @@ function safeJson(text: string): any {
   try { return JSON.parse(text); } catch { return null; }
 }
 
+/**
+ * Normaliza el objeto que va a `FormData.append` en React Native (Android/iOS)
+ * para evitar el bug "Network Request Failed" al enviar multipart/form-data.
+ *
+ * Problema: `expo-document-picker` y `expo-image-picker` devuelven URIs de
+ * varios esquemas (`content://`, `ph://`, `assets-library://`, ruta absoluta
+ * sin `file://`) que `fetch`/`FormData` de React Native no sabe resolver como
+ * archivo binario y provoca `Network Request Failed` al enviar.
+ *
+ * Solución (Android): copiamos la URI original al `cacheDirectory` con
+ * `expo-file-system` para materializar un `file://…` estable. En iOS también
+ * normalizamos `ph://` y `assets-library://` por seguridad.
+ *
+ * El objeto retornado incluye ESTRICTAMENTE las tres llaves requeridas por
+ * el runtime de RN: `{ uri, name, type }`.
+ */
+async function normalizeFileForFormData(
+  file: { uri: string; name?: string | null; mimeType?: string | null },
+  fallbackName: string,
+  fallbackMime: string,
+  cachePrefix: string = 'upload',
+): Promise<{ uri: string; name: string; type: string }> {
+  const rawName = (file.name && file.name.trim()) || fallbackName;
+  const safeName = rawName.replace(/[^A-Za-z0-9._-]/g, '_') || fallbackName;
+  const type = (file.mimeType && file.mimeType.trim()) || fallbackMime;
+  let uri = file.uri || '';
+
+  // ¿Necesitamos copiar la URI a un file:// del cache?
+  const needsCopy =
+    Platform.OS === 'android'
+      ? // Android: cualquier cosa que NO sea file:// (content://, ph://,
+        // /storage/..., asset://) debe materializarse para poder subirse.
+        !uri.startsWith('file://')
+      : // iOS: los picker suelen devolver file:// tras copyToCacheDirectory,
+        // pero ph:// y assets-library:// también deben materializarse.
+        uri.startsWith('ph://') || uri.startsWith('assets-library://');
+
+  if (needsCopy) {
+    try {
+      const dest = `${FileSystem.cacheDirectory}${cachePrefix}_${Date.now()}_${safeName}`;
+      await FileSystem.copyAsync({ from: uri, to: dest });
+      uri = dest;
+    } catch {
+      // Si la copia falla, seguimos con la URI original y aplicamos el fallback
+      // de prefijo file:// más abajo. Ante content:// no habrá modo de subirlo,
+      // pero el error de red que devolverá el fetch será claro para el usuario.
+    }
+  }
+
+  // Refuerzo defensivo Android: cualquier ruta absoluta que llegue sin esquema
+  // debe llevar file:// para que RN la interprete correctamente.
+  if (Platform.OS === 'android' && uri.startsWith('/')) {
+    uri = 'file://' + uri;
+  }
+
+  return { uri, name: safeName, type };
+}
+
 // ---- Types (subset for hints) ---------------------------------------------
 export interface User {
   id: string;
