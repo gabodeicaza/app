@@ -5493,41 +5493,79 @@ async def export_reports_pptx(
         tpl_pptx = _get_project_template(proj, "pptx")
 
         # ==============================================================
-        # Motor PPTX: fallback DIRAC + plantilla base (si existe).
-        # La fusión institucional se realiza EXCLUSIVAMENTE en el PDF vía
-        # `_overlay_pdf_on_template`. Para PPTX se usa la plantilla del
-        # usuario (si existe) como base tal cual, o se genera el diseño
-        # DIRAC programáticamente cuando no hay plantilla.
+        # Motor PPTX (v2): TODO fondo proviene del MEMBRETE del usuario.
+        # Si la plantilla existe, la 1ª slide es el "membrete master" y
+        # se clona para CADA nueva slide del reporte. NO se dibujan
+        # rectángulos de color hardcoded, ni bandas, ni headers, ni
+        # footers programáticos: solo se INYECTA contenido dinámico
+        # (texto, imágenes) sobre copias del membrete.
+        # Si no hay plantilla, se generan slides en blanco sin decoración.
         # ==============================================================
+        tpl_master_slide = None
         if tpl_pptx:
             try:
                 prs = Presentation(tpl_pptx)
+                if len(prs.slides) > 0:
+                    tpl_master_slide = prs.slides[0]
+                    # Adopta las dimensiones EXACTAS de la plantilla
+                    # (respeta apaisado/vertical/custom del usuario).
+                else:
+                    prs = Presentation()
+                    prs.slide_width = Cm(29.7)
+                    prs.slide_height = Cm(21.0)
             except Exception:
                 prs = Presentation()
+                prs.slide_width = Cm(29.7)
+                prs.slide_height = Cm(21.0)
         else:
             prs = Presentation()
-        # A4 apaisado para que quepan 2 fotos lado a lado (13.37 × 2 + márgenes < 29.7)
-        prs.slide_width = Cm(29.7)
-        prs.slide_height = Cm(21.0)
+            prs.slide_width = Cm(29.7)
+            prs.slide_height = Cm(21.0)
         SW, SH = prs.slide_width, prs.slide_height
+        # Margen superior seguro para no invadir logos/encabezado del membrete.
+        TOP_MARGIN = Cm(3.5)
+        BOTTOM_MARGIN = Cm(2.0)
         blank = prs.slide_layouts[6]
 
         # Imports adicionales para shape fill
-        from pptx.enum.shapes import MSO_SHAPE
-        from pptx.oxml.ns import qn as _qn
-        from lxml import etree as _ET
+        from pptx.enum.shapes import MSO_SHAPE  # noqa: F401  (kept for compat)
+        from pptx.oxml.ns import qn as _qn  # noqa: F401
+        from lxml import etree as _ET  # noqa: F401
+        from copy import deepcopy as _deepcopy
+
+        def _clone_membrete():
+            """Crea una nueva slide clonando el membrete de la plantilla.
+
+            Si `tpl_master_slide` existe, deep-copia sus shapes al nuevo slide
+            para que herede el membrete institucional. Si no, crea una slide
+            en blanco sin decoración.
+            """
+            if tpl_master_slide is None:
+                return prs.slides.add_slide(blank)
+            try:
+                new_slide = prs.slides.add_slide(tpl_master_slide.slide_layout)
+                # Purgar placeholders heredados del layout para dejar solo
+                # las shapes del membrete original.
+                for shp in list(new_slide.shapes):
+                    try:
+                        shp.element.getparent().remove(shp.element)
+                    except Exception:
+                        pass
+                # Deep-clone de cada shape del membrete master.
+                for shp in tpl_master_slide.shapes:
+                    try:
+                        new_el = _deepcopy(shp.element)
+                        new_slide.shapes._spTree.insert_element_before(new_el, 'p:extLst')
+                    except Exception:
+                        continue
+                return new_slide
+            except Exception:
+                return prs.slides.add_slide(blank)
 
         def add_bg_rect(slide, x, y, w, h, rgb_tuple):
-            """Pinta un rectángulo de fondo con color sólido (sin borde)."""
-            sh = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, x, y, w, h)
-            sh.fill.solid()
-            sh.fill.fore_color.rgb = PRGBColor(*rgb_tuple)
-            sh.line.fill.background()
-            try:
-                sh.shadow.inherit = False
-            except Exception:
-                pass
-            return sh
+            """DEPRECATED · no-op: los fondos ahora provienen exclusivamente
+            del membrete de la plantilla. Mantenida por compatibilidad."""
+            return None
 
         def add_text(slide, x, y, w, h, text, *, size=14, bold=False, color=(0x0F, 0x17, 0x2A),
                      align=PP_ALIGN.LEFT, italic=False):
@@ -5560,83 +5598,74 @@ async def export_reports_pptx(
                 return False
 
         def add_header_footer(slide):
-            """Encabezado institucional + pie. Color dinámico."""
-            # Banda superior con color_tema
-            add_bg_rect(slide, 0, 0, SW, Cm(1.5), BRAND_RGB)
-            if logo_bytes:
-                try:
-                    slide.shapes.add_picture(
-                        io.BytesIO(logo_bytes), Cm(0.6), Cm(0.25),
-                        height=Cm(1.0),
-                    )
-                except Exception:
-                    pass
-            add_text(slide, Cm(3.5), Cm(0.4), SW - Cm(4.5), Cm(0.8),
-                     f"{project_constructora}   ·   Contrato {project_contract}",
-                     size=11, bold=True, color=(0xFF, 0xFF, 0xFF))
-            # Footer institucional
-            export_stamp = _fmt_fecha_dd_mm_yyyy_hhmm(datetime.now(timezone.utc))
-            add_text(slide, Cm(1.0), SH - Cm(0.8), SW - Cm(2.0), Cm(0.5),
-                     f"{project_name}   ·   Exportado {export_stamp}",
-                     size=8, italic=True, color=(0x64, 0x75, 0x8B),
-                     align=PP_ALIGN.CENTER)
+            """DEPRECATED · no-op: el encabezado/pie institucional ahora
+            proviene exclusivamente del membrete de la plantilla clonada
+            por `_clone_membrete()`. Se mantiene para compatibilidad con
+            invocaciones existentes."""
+            return None
 
-        # ===== PORTADA INSTITUCIONAL =====
-        s = prs.slides.add_slide(blank)
-        # Fondo completo en color_tema
-        add_bg_rect(s, 0, 0, SW, SH, BRAND_RGB)
-        # Banda blanca translúcida superior con logo
-        add_bg_rect(s, 0, 0, SW, Cm(4.0), (255, 255, 255))
-        if logo_bytes:
-            try:
-                s.shapes.add_picture(io.BytesIO(logo_bytes), Cm(1.0), Cm(0.6), height=Cm(2.6))
-            except Exception:
-                pass
-        # Cliente principal arriba a la derecha
+        # ===== PORTADA (sobre el membrete) =============================
+        # Si hay tpl_master_slide, la primera slide de la Presentation ES
+        # el membrete → escribimos SOBRE ella directamente para preservar
+        # todo su diseño institucional. Si no hay plantilla, se crea una
+        # slide en blanco sin decoración.
+        if tpl_master_slide is not None:
+            s = tpl_master_slide
+        else:
+            s = prs.slides.add_slide(blank)
+        # Color de texto sobre membrete: usamos el color de marca del proyecto
+        # para títulos (buena legibilidad sobre membrete blanco típico). Los
+        # textos de cuerpo van en gris pizarra oscuro.
+        TEXT_TITLE = BRAND_RGB
+        TEXT_BODY = (0x0F, 0x17, 0x2A)
+        TEXT_MUTED = (0x64, 0x75, 0x8B)
+        # Cliente principal arriba a la derecha (dentro del área limpia)
         if project_cliente:
-            add_text(s, Cm(15.0), Cm(1.0), Cm(13.7), Cm(1.0),
+            add_text(s, Cm(15.0), TOP_MARGIN, Cm(13.7), Cm(1.0),
                      "CLIENTE", size=10, bold=True, color=BRAND_RGB,
                      align=PP_ALIGN.RIGHT)
-            add_text(s, Cm(15.0), Cm(1.8), Cm(13.7), Cm(1.5),
+            add_text(s, Cm(15.0), TOP_MARGIN + Cm(0.8), Cm(13.7), Cm(1.5),
                      project_cliente[:80], size=18, bold=True,
-                     color=(0x0F, 0x17, 0x2A), align=PP_ALIGN.RIGHT)
+                     color=TEXT_BODY, align=PP_ALIGN.RIGHT)
         # Título central
         add_text(s, Cm(1.0), Cm(6.0), SW - Cm(2.0), Cm(1.0),
                  "INFORME DE AVANCE Y SUPERVISIÓN",
-                 size=14, bold=True, color=(0xFF, 0xFF, 0xFF), align=PP_ALIGN.CENTER)
+                 size=14, bold=True, color=BRAND_RGB, align=PP_ALIGN.CENTER)
         add_text(s, Cm(1.0), Cm(7.5), SW - Cm(2.0), Cm(3.0),
                  project_name,
-                 size=44, bold=True, color=(0xFF, 0xFF, 0xFF), align=PP_ALIGN.CENTER)
+                 size=44, bold=True, color=BRAND_RGB, align=PP_ALIGN.CENTER)
         if project_objeto:
             add_text(s, Cm(2.5), Cm(11.0), SW - Cm(5.0), Cm(3.5),
                      project_objeto,
-                     size=16, italic=True, color=(0xFF, 0xFF, 0xFF), align=PP_ALIGN.CENTER)
-        # Pie portada: contrato + período + área
-        add_text(s, Cm(1.0), SH - Cm(3.5), Cm(10.0), Cm(0.8),
-                 "PERÍODO", size=10, bold=True, color=(0xFF, 0xFF, 0xFF))
-        add_text(s, Cm(1.0), SH - Cm(2.8), Cm(10.0), Cm(0.8),
-                 fechas_label, size=12, color=(0xFF, 0xFF, 0xFF))
-        add_text(s, Cm(11.5), SH - Cm(3.5), Cm(8.0), Cm(0.8),
-                 "CONSTRUCTORA", size=10, bold=True, color=(0xFF, 0xFF, 0xFF),
+                     size=16, italic=True, color=TEXT_BODY, align=PP_ALIGN.CENTER)
+        # Pie portada (dentro del área limpia, ANTES del BOTTOM_MARGIN)
+        pie_y_top = SH - BOTTOM_MARGIN - Cm(2.6)
+        pie_y_bot = SH - BOTTOM_MARGIN - Cm(1.9)
+        pie_y_line = SH - BOTTOM_MARGIN - Cm(0.6)
+        add_text(s, Cm(1.0), pie_y_top, Cm(10.0), Cm(0.7),
+                 "PERÍODO", size=10, bold=True, color=BRAND_RGB)
+        add_text(s, Cm(1.0), pie_y_bot, Cm(10.0), Cm(0.7),
+                 fechas_label, size=12, color=TEXT_BODY)
+        add_text(s, Cm(11.5), pie_y_top, Cm(8.0), Cm(0.7),
+                 "CONSTRUCTORA", size=10, bold=True, color=BRAND_RGB,
                  align=PP_ALIGN.CENTER)
-        add_text(s, Cm(11.5), SH - Cm(2.8), Cm(8.0), Cm(0.8),
-                 project_constructora, size=12, color=(0xFF, 0xFF, 0xFF),
+        add_text(s, Cm(11.5), pie_y_bot, Cm(8.0), Cm(0.7),
+                 project_constructora, size=12, color=TEXT_BODY,
                  align=PP_ALIGN.CENTER)
-        add_text(s, SW - Cm(11.0), SH - Cm(3.5), Cm(10.0), Cm(0.8),
-                 "CONTRATO", size=10, bold=True, color=(0xFF, 0xFF, 0xFF),
+        add_text(s, SW - Cm(11.0), pie_y_top, Cm(10.0), Cm(0.7),
+                 "CONTRATO", size=10, bold=True, color=BRAND_RGB,
                  align=PP_ALIGN.RIGHT)
-        add_text(s, SW - Cm(11.0), SH - Cm(2.8), Cm(10.0), Cm(0.8),
-                 project_contract, size=12, color=(0xFF, 0xFF, 0xFF),
+        add_text(s, SW - Cm(11.0), pie_y_bot, Cm(10.0), Cm(0.7),
+                 project_contract, size=12, color=TEXT_BODY,
                  align=PP_ALIGN.RIGHT)
-        add_text(s, Cm(1.0), SH - Cm(1.4), SW - Cm(2.0), Cm(0.7),
+        add_text(s, Cm(1.0), pie_y_line, SW - Cm(2.0), Cm(0.6),
                  f"{area_label}   ·   {_fmt_fecha_dd_mm_yyyy_hhmm(datetime.now(timezone.utc))}",
-                 size=10, italic=True, color=(0xFF, 0xFF, 0xFF),
+                 size=10, italic=True, color=TEXT_MUTED,
                  align=PP_ALIGN.CENTER)
 
-        # ===== SLIDE MAPA (después de la portada) ======================
-        s_map = prs.slides.add_slide(blank)
-        add_header_footer(s_map)
-        add_text(s_map, Cm(1.0), Cm(2.0), SW - Cm(2.0), Cm(1.2),
+        # ===== SLIDE MAPA (clonando el membrete) =======================
+        s_map = _clone_membrete()
+        add_text(s_map, Cm(1.0), TOP_MARGIN, SW - Cm(2.0), Cm(1.2),
                  "MAPA DE UBICACIÓN",
                  size=28, bold=True, color=BRAND_RGB, align=PP_ALIGN.CENTER)
         _map_tpl_path_pptx = _get_project_template(proj, "map")
@@ -5644,15 +5673,15 @@ async def export_reports_pptx(
         if _map_tpl_path_pptx:
             try:
                 _map_bytes_pptx = Path(_map_tpl_path_pptx).read_bytes()
-                # Área útil: ancho hasta 27 cm, alto hasta 15 cm centrado.
-                _map_w_cm = 27.0
-                _map_h_cm = 15.0
-                _map_x_cm = (29.7 - _map_w_cm) / 2
-                _map_y_cm = 3.6
+                # Área útil = ancho total menos márgenes; alto entre
+                # el título (~TOP_MARGIN+1.5) y el BOTTOM_MARGIN.
+                _map_x = Cm(1.0)
+                _map_y = TOP_MARGIN + Cm(1.5)
+                _map_w = SW - Cm(2.0)
+                _map_h = SH - _map_y - BOTTOM_MARGIN
                 s_map.shapes.add_picture(
                     io.BytesIO(_map_bytes_pptx),
-                    Cm(_map_x_cm), Cm(_map_y_cm),
-                    width=Cm(_map_w_cm), height=Cm(_map_h_cm),
+                    _map_x, _map_y, width=_map_w, height=_map_h,
                 )
                 _map_drawn_pptx = True
             except Exception:
@@ -5660,7 +5689,7 @@ async def export_reports_pptx(
         if not _map_drawn_pptx:
             add_text(s_map, Cm(1.0), SH / 2 - Cm(0.6), SW - Cm(2.0), Cm(1.2),
                      "Sube una plantilla de MAPA para el proyecto para incrustarla aquí.",
-                     size=14, italic=True, color=(0x64, 0x75, 0x8B),
+                     size=14, italic=True, color=TEXT_MUTED,
                      align=PP_ALIGN.CENTER)
 
         any_data = False
@@ -5675,17 +5704,16 @@ async def export_reports_pptx(
             any_data = True
             node_path = path_cache.get(n["id"]) or n.get("name", "")
 
-            # === Slide separador por nodo (usa cover_image como encabezado visual) ===
-            s = prs.slides.add_slide(blank)
-            add_header_footer(s)
-            # Foto de portada del nodo (o ancestro) — encabezado visual 10 × 13.37 cm centrado
+            # === Slide separador por nodo (clonando el membrete) =========
+            s = _clone_membrete()
             _cov_b64_p = _strip_b64_prefix(cover_meta_pptx.get("cover_image") or "")
             if _cov_b64_p:
                 try:
+                    # Cover del nodo 13.37 × 10 cm centrado bajo TOP_MARGIN
                     _cw = Cm(13.37)
                     _ch = Cm(10.0)
                     _cx = (SW - _cw) // 2
-                    _cy = Cm(2.2)
+                    _cy = TOP_MARGIN + Cm(0.5)
                     s.shapes.add_picture(
                         io.BytesIO(base64.b64decode(_cov_b64_p)),
                         _cx, _cy, width=_cw, height=_ch,
@@ -5694,31 +5722,30 @@ async def export_reports_pptx(
                              node_path, size=28, bold=True, color=BRAND_RGB,
                              align=PP_ALIGN.CENTER)
                 except Exception:
-                    add_text(s, Cm(1.5), Cm(6.0), SW - Cm(3.0), Cm(2.5),
+                    add_text(s, Cm(1.5), TOP_MARGIN + Cm(2.5), SW - Cm(3.0), Cm(2.5),
                              node_path, size=36, bold=True, color=BRAND_RGB,
                              align=PP_ALIGN.CENTER)
             else:
-                add_text(s, Cm(1.5), Cm(6.0), SW - Cm(3.0), Cm(2.5),
+                add_text(s, Cm(1.5), TOP_MARGIN + Cm(2.5), SW - Cm(3.0), Cm(2.5),
                          node_path, size=36, bold=True, color=BRAND_RGB,
                          align=PP_ALIGN.CENTER)
             try:
                 coord_text = _format_measurement_for_display(node_reps[0]) or "—"
             except Exception:
                 coord_text = "—"
-            add_text(s, Cm(1.5), SH - Cm(3.2), SW - Cm(3.0), Cm(0.8),
+            add_text(s, Cm(1.5), SH - BOTTOM_MARGIN - Cm(1.6), SW - Cm(3.0), Cm(0.8),
                      f"Coordenadas: {coord_text}",
-                     size=14, color=(0x0F, 0x17, 0x2A), align=PP_ALIGN.CENTER)
-            add_text(s, Cm(1.5), SH - Cm(2.2), SW - Cm(3.0), Cm(0.7),
+                     size=14, color=TEXT_BODY, align=PP_ALIGN.CENTER)
+            add_text(s, Cm(1.5), SH - BOTTOM_MARGIN - Cm(0.8), SW - Cm(3.0), Cm(0.7),
                      f"Reportes en este nodo: {len(node_reps)}",
-                     size=11, color=(0x64, 0x75, 0x8B), align=PP_ALIGN.CENTER)
+                     size=11, color=TEXT_MUTED, align=PP_ALIGN.CENTER)
 
             for r in node_reps:
-                slide = prs.slides.add_slide(blank)
-                add_header_footer(slide)
+                slide = _clone_membrete()
 
                 # Foto principal con tamaño exacto 13.37 cm × 10 cm
                 photo_x = Cm(1.0)
-                photo_y = Cm(2.2)
+                photo_y = TOP_MARGIN
                 photo_w = Cm(13.37)
                 photo_h = Cm(10.0)
                 img_b64 = None
@@ -5782,7 +5809,7 @@ async def export_reports_pptx(
                 sev_color = (int(hexc[0:2], 16), int(hexc[2:4], 16), int(hexc[4:6], 16))
 
                 data_x = Cm(15.0)
-                data_y = Cm(2.2)
+                data_y = TOP_MARGIN
                 data_w = SW - data_x - Cm(1.0)
 
                 # Banner de severidad arriba de la tabla de datos
@@ -5849,10 +5876,9 @@ async def export_reports_pptx(
                     total_pages = (len(extras) + PER_PAGE - 1) // PER_PAGE
                     for chunk_idx in range(total_pages):
                         chunk = extras[chunk_idx * PER_PAGE:(chunk_idx + 1) * PER_PAGE]
-                        g_slide = prs.slides.add_slide(blank)
-                        add_header_footer(g_slide)
+                        g_slide = _clone_membrete()
                         add_text(
-                            g_slide, Cm(1.0), Cm(1.8), SW - Cm(2.0), Cm(0.8),
+                            g_slide, Cm(1.0), TOP_MARGIN, SW - Cm(2.0), Cm(0.8),
                             f"Fotografías adicionales · {node_path[:60]}  ·  "
                             f"Página {chunk_idx + 1} de {total_pages}",
                             size=16, bold=True, color=BRAND_RGB,
@@ -5884,23 +5910,22 @@ async def export_reports_pptx(
             # === Slide(s) de Notas/Noticias vinculadas al nodo ===
             node_announ = announcements_by_node.get(n["id"]) or []
             if node_announ:
-                an_slide = prs.slides.add_slide(blank)
-                add_header_footer(an_slide)
-                add_text(an_slide, Cm(1.0), Cm(1.4), SW - Cm(2.0), Cm(1.2),
+                an_slide = _clone_membrete()
+                add_text(an_slide, Cm(1.0), TOP_MARGIN, SW - Cm(2.0), Cm(1.2),
                          f"Notas y noticias · {node_path}",
                          size=22, bold=True, color=BRAND_RGB,
                          align=PP_ALIGN.LEFT)
-                cur_y = Cm(3.0)
+                cur_y = TOP_MARGIN + Cm(1.6)
+                _notes_bottom_limit = SH - BOTTOM_MARGIN - Cm(3.0)
                 for ann in node_announ:
-                    if cur_y > Cm(12.5):
+                    if cur_y > _notes_bottom_limit:
                         # Nuevo slide si se llena el espacio
-                        an_slide = prs.slides.add_slide(blank)
-                        add_header_footer(an_slide)
-                        add_text(an_slide, Cm(1.0), Cm(1.4), SW - Cm(2.0), Cm(1.2),
+                        an_slide = _clone_membrete()
+                        add_text(an_slide, Cm(1.0), TOP_MARGIN, SW - Cm(2.0), Cm(1.2),
                                  f"Notas y noticias · {node_path} (cont.)",
                                  size=22, bold=True, color=BRAND_RGB,
                                  align=PP_ALIGN.LEFT)
-                        cur_y = Cm(3.0)
+                        cur_y = TOP_MARGIN + Cm(1.6)
                     sev_a = (ann.get("jerarquia") or "informativo").lower()
                     hexa = _severidad_hex(sev_a).lstrip("#")
                     sev_a_color = (int(hexa[0:2], 16), int(hexa[2:4], 16), int(hexa[4:6], 16))
@@ -5923,9 +5948,8 @@ async def export_reports_pptx(
                     cur_y += Cm(2.5)
 
         if not any_data:
-            s2 = prs.slides.add_slide(blank)
-            add_header_footer(s2)
-            add_text(s2, Cm(1.5), Cm(6.0), SW - Cm(3.0), Cm(2.0),
+            s2 = _clone_membrete()
+            add_text(s2, Cm(1.5), SH / 2 - Cm(1.0), SW - Cm(3.0), Cm(2.0),
                      "Sin reportes en el período seleccionado.",
                      size=20, italic=True, color=(0x64, 0x75, 0x8B),
                      align=PP_ALIGN.CENTER)
