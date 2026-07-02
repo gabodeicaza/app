@@ -453,25 +453,13 @@ export const api = {
         form.append('file', blob, fileName);
       }
     } else {
-      let normalizedUri = file.uri;
-      const needsCopy =
-        Platform.OS === 'android'
-          ? !file.uri.startsWith('file://')
-          : file.uri.startsWith('ph://') || file.uri.startsWith('assets-library://');
-      if (needsCopy) {
-        try {
-          const safeName = fileName.replace(/[^A-Za-z0-9._-]/g, '_');
-          const dest = `${FileSystem.cacheDirectory}cover_${Date.now()}_${safeName}`;
-          await FileSystem.copyAsync({ from: file.uri, to: dest });
-          normalizedUri = dest;
-        } catch {
-          /* ignore */
-        }
-      }
-      if (Platform.OS === 'android' && normalizedUri.startsWith('/')) {
-        normalizedUri = 'file://' + normalizedUri;
-      }
-      form.append('file', { uri: normalizedUri, name: fileName, type: mime } as any);
+      const normalized = await normalizeFileForFormData(
+        { uri: file.uri, name: fileName, mimeType: mime },
+        'cover.jpg',
+        'image/jpeg',
+        'cover',
+      );
+      form.append('file', normalized as any);
     }
     const headers = await authHeader();
     const res = await fetch(`${BASE}/projects/${pid}/nodes/${nid}/cover`, {
@@ -526,12 +514,16 @@ export const api = {
         form.append('file', blob, fileName);
       }
     } else {
-      // En React Native nativo, el objeto { uri, name, type } sí es soportado.
-      form.append('file', {
-        uri: file.uri,
-        name: fileName,
-        type: mime,
-      } as any);
+      // En React Native nativo, normalizamos URI (Android: content://, /storage/…
+      // sin file://; iOS: ph://, assets-library://) para evitar
+      // "Network Request Failed" en Android al enviar multipart.
+      const normalized = await normalizeFileForFormData(
+        { uri: file.uri, name: fileName, mimeType: mime },
+        'nodos.xlsx',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'bulknodes',
+      );
+      form.append('file', normalized as any);
     }
     const headers = await authHeader();
     const res = await fetch(`${BASE}/projects/${pid}/nodes/bulk-upload`, {
@@ -587,30 +579,16 @@ export const api = {
         form.append('file', blob, fileName);
       }
     } else {
-      // En Android los content://, ph://, optimized:// no son siempre legibles
-      // por fetch/FormData → se copian al cacheDirectory y se usa file:// estable.
-      // En iOS los URIs file:// e incluso ph:// suelen funcionar tras
-      // copyToCacheDirectory:true del picker, pero por seguridad normalizamos también.
-      let normalizedUri = file.uri;
-      const needsCopy =
-        Platform.OS === 'android'
-          ? !file.uri.startsWith('file://')
-          : file.uri.startsWith('ph://') || file.uri.startsWith('assets-library://');
-      if (needsCopy) {
-        try {
-          const safeName = fileName.replace(/[^A-Za-z0-9._-]/g, '_');
-          const dest = `${FileSystem.cacheDirectory}upload_${Date.now()}_${safeName}`;
-          await FileSystem.copyAsync({ from: file.uri, to: dest });
-          normalizedUri = dest;
-        } catch (copyErr) {
-          // Si la copia falla, mantenemos el URI original y dejamos que fetch lo intente.
-        }
-      }
-      // Android exige el prefijo "file://"; algunos pickers devuelven sin él.
-      if (Platform.OS === 'android' && normalizedUri.startsWith('/')) {
-        normalizedUri = 'file://' + normalizedUri;
-      }
-      form.append('file', { uri: normalizedUri, name: fileName, type: mime } as any);
+      // Android: content://, ph://, /storage/... sin file:// no son legibles
+      // por fetch/FormData → normalizeFileForFormData los copia al cache
+      // como file:// estable. iOS también materializa ph:// y assets-library://.
+      const normalized = await normalizeFileForFormData(
+        { uri: file.uri, name: fileName, mimeType: mime },
+        'archivo',
+        'application/octet-stream',
+        'upload',
+      );
+      form.append('file', normalized as any);
     }
     const headers = await authHeader();
     const res = await fetch(`${BASE}/projects/${pid}/upload-file`, {
@@ -659,25 +637,13 @@ export const api = {
         form.append('file', blob, fileName);
       }
     } else {
-      let normalizedUri = file.uri;
-      const needsCopy =
-        Platform.OS === 'android'
-          ? !file.uri.startsWith('file://')
-          : file.uri.startsWith('ph://') || file.uri.startsWith('assets-library://');
-      if (needsCopy) {
-        try {
-          const safeName = fileName.replace(/[^A-Za-z0-9._-]/g, '_');
-          const dest = `${FileSystem.cacheDirectory}upload_${Date.now()}_${safeName}`;
-          await FileSystem.copyAsync({ from: file.uri, to: dest });
-          normalizedUri = dest;
-        } catch {
-          /* ignore */
-        }
-      }
-      if (Platform.OS === 'android' && normalizedUri.startsWith('/')) {
-        normalizedUri = 'file://' + normalizedUri;
-      }
-      form.append('file', { uri: normalizedUri, name: fileName, type: mime } as any);
+      const normalized = await normalizeFileForFormData(
+        { uri: file.uri, name: fileName, mimeType: mime },
+        `template.${kind === 'map' ? 'jpg' : kind}`,
+        mime,
+        `template_${kind}`,
+      );
+      form.append('file', normalized as any);
     }
     const headers = await authHeader();
     const res = await fetch(`${BASE}/projects/${pid}/template/${kind}`, {
