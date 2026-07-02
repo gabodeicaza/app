@@ -4270,6 +4270,44 @@ async def export_reports_pdf(
         c.showPage()
         page_num += 1
 
+        # --- PÁGINA MAPA (Slide/Página 2 del template) ---------------------
+        # Se dibuja SIEMPRE una única página "Mapa" tras la portada.
+        # Si el proyecto tiene `template_map`, se incrusta centrado; el
+        # overlay posterior la fusionará sobre la página 2 del template PDF.
+        draw_header(page_num)
+        c.setFillColor(BRAND)
+        c.setFont("Helvetica-Bold", 22)
+        c.drawCentredString(PW / 2, PH - 3.4 * cm, "MAPA DE UBICACIÓN")
+        _map_tpl_path = _get_project_template(proj, "map")
+        _map_drawn = False
+        if _map_tpl_path:
+            try:
+                _map_bytes = Path(_map_tpl_path).read_bytes()
+                _map_img = ImageReader(io.BytesIO(_map_bytes))
+                # Espacio útil: entre header (y = PH - 2.0 cm) y footer (y = 1.5 cm),
+                # con margen para el título. Ancho máximo respetando 1.5 cm laterales.
+                _map_top = PH - 4.2 * cm
+                _map_bottom = 2.0 * cm
+                _map_h = _map_top - _map_bottom
+                _map_w = PW - 3.0 * cm
+                _map_x = 1.5 * cm
+                _map_y = _map_bottom
+                c.drawImage(
+                    _map_img, _map_x, _map_y,
+                    width=_map_w, height=_map_h,
+                    preserveAspectRatio=True, anchor='c', mask='auto',
+                )
+                _map_drawn = True
+            except Exception:
+                _map_drawn = False
+        if not _map_drawn:
+            c.setFillColor(MUTED)
+            c.setFont("Helvetica-Oblique", 12)
+            c.drawCentredString(PW / 2, PH / 2,
+                                "Sube una plantilla de MAPA para el proyecto para incrustarla aquí.")
+        c.showPage()
+        page_num += 1
+
         if total_reportes == 0:
             draw_header(page_num)
             c.setFillColor(MUTED)
@@ -4377,16 +4415,20 @@ async def export_reports_pdf(
             )
 
         # ==============================================================
-        # Loop de nodos hoja con agrupación por Portadilla dinámica
-        #   • Si el ancestro más cercano con `cover_image` cambia entre nodos,
-        #     insertamos UNA Portadilla dinámica (fondo institucional + foto).
-        #   • Si el nodo (o su árbol) no tiene cover_image, se usa la portadilla
-        #     genérica del template (se registra en `section_page_indices`).
+        # Loop de nodos hoja con agrupación por Portadilla dinámica.
+        # [FILTRO ESTRICTO 2b] Solo procesamos nodos cuyo árbol (nodo o
+        # ancestro) tenga cover_image. Nodos sin cover_image en toda la
+        # rama se OMITEN completamente (sin portadilla genérica).
         # ==============================================================
         current_cover_group_id = None
         for n in leaf_nodes:
             node_reps = reports_by_node.get(n["id"]) or []
             if not node_reps:
+                continue
+            # === FILTRO ESTRICTO por cover_image (con herencia) ===========
+            cover_meta = cover_ancestor_by_node.get(n["id"])
+            if not cover_meta:
+                # Nodo (y ancestros) sin cover_image → omitir por completo.
                 continue
             node_path = path_cache.get(n["id"]) or n.get("name", "")
             # Acumulado de "Primera lectura" — arranca con el último valor previo
@@ -4395,64 +4437,19 @@ async def export_reports_pdf(
             if primera_acc is None:
                 primera_acc = 0.0
 
-            # === Decidir portadilla ===
-            cover_meta = cover_ancestor_by_node.get(n["id"])
-            if cover_meta:
-                cover_id = cover_meta["id"]
-                if cover_id != current_cover_group_id:
-                    # Nuevo grupo con cover_image → Portadilla DINÁMICA
-                    # (NO se marca como section_page para que el overlay NO la reemplace)
-                    draw_dynamic_cover_page(
-                        cover_meta.get("name") or node_path,
-                        cover_meta.get("cover_image"),
-                        page_num,
-                    )
-                    c.showPage()
-                    page_num += 1
-                    current_cover_group_id = cover_id
-                # Si es el mismo grupo, no dibujamos nueva portadilla (agrupado)
-            else:
-                # Sin cover_image en la rama → Portadilla GENÉRICA (reemplazable por
-                # la página 2 del template PDF durante la fusión de superposición).
-                # =================================================================
-                # [P0] PORTADA SEPARADORA POR NODO (fallback genérico)
-                #   Registrada en `section_page_indices` para que el motor de overlay
-                #   pueda reemplazarla por la página "Sección" (index 1) del template.
-                # =================================================================
-                section_page_indices.append(page_num - 1)
-                draw_header(page_num)
-                # Bloque visual centrado vertical
-                c.setFillColor(BRAND)
-                c.setFont("Helvetica-Bold", 24)
-                c.drawCentredString(PW / 2, PH / 2 + 1.6 * cm, node_path)
-                # Línea decorativa
-                c.setStrokeColor(BRAND)
-                c.setLineWidth(1.2)
-                c.line(PW / 2 - 6 * cm, PH / 2 + 0.8 * cm, PW / 2 + 6 * cm, PH / 2 + 0.8 * cm)
-                # Coordenadas (medición representativa del nodo: tomada del primer reporte)
-                coord_text = ""
-                try:
-                    coord_text = _format_measurement_for_display(node_reps[0]) or ""
-                except Exception:
-                    coord_text = ""
-                c.setFillColor(TEXT)
-                c.setFont("Helvetica", 14)
-                if coord_text:
-                    c.drawCentredString(PW / 2, PH / 2 - 0.2 * cm, f"Coordenadas: {coord_text}")
-                else:
-                    c.setFillColor(MUTED)
-                    c.setFont("Helvetica-Oblique", 14)
-                    c.drawCentredString(PW / 2, PH / 2 - 0.2 * cm, "Coordenadas: —")
-                # Conteo de reportes del nodo
-                c.setFillColor(MUTED)
-                c.setFont("Helvetica", 11)
-                c.drawCentredString(PW / 2, PH / 2 - 1.6 * cm,
-                                    f"Reportes en este nodo: {len(node_reps)}")
-                # Salto de página obligatorio para iniciar el bloque del nodo
+            # === Portadilla DINÁMICA (con cover_image) ====================
+            cover_id = cover_meta["id"]
+            if cover_id != current_cover_group_id:
+                # Nuevo grupo con cover_image → Portadilla DINÁMICA
+                draw_dynamic_cover_page(
+                    cover_meta.get("name") or node_path,
+                    cover_meta.get("cover_image"),
+                    page_num,
+                )
                 c.showPage()
                 page_num += 1
-                # Reset del grupo dinámico (por si el siguiente nodo sí tiene cover)
-                current_cover_group_id = None
+                current_cover_group_id = cover_id
+            # Si es el mismo grupo, no dibujamos nueva portadilla (agrupado)
 
             for r in node_reps:
                 draw_header(page_num)
@@ -4464,7 +4461,8 @@ async def export_reports_pdf(
                 c.setLineWidth(0.8)
                 c.rect(photo_x, photo_y, PHOTO_W, PHOTO_H)
                 img_b64 = None
-                imgs = r.get("images") or []
+                # [FILTRO 3a] Máximo 2 fotos por reporte (1 principal + 1 extra)
+                imgs = (r.get("images") or [])[:2]
                 if imgs:
                     img_b64 = _strip_b64_prefix(imgs[0])
                 if img_b64:
@@ -4730,26 +4728,26 @@ async def export_reports_pdf(
 def _overlay_pdf_on_template(
     content_pdf: bytes,
     template_path: str,
-    section_page_indices: Optional[List[int]] = None,
+    section_page_indices: Optional[List[int]] = None,  # deprecated (no-op)
 ) -> bytes:
     """Modo Superposición: fusiona el PDF generado por SynCo sobre la plantilla PDF.
 
-    Convención de páginas del template:
-      • Página 0 → 'Portada base' (fondo de la portada del reporte).
-      • Página 1 (opcional) → 'Sección de Nodo': si existe, cada página
-        separadora de nodo del reporte SynCo se REEMPLAZA íntegramente por
-        esta página del template (sin overlay), como una portadilla por nodo.
-      • Página 2..N-1 (opcional) → 'Base de contenido': fondo repetido para
-        el resto de páginas de datos del reporte. Si no hay página 2, se usa
-        la última página disponible de la plantilla.
+    Convención de páginas del template (3 páginas base):
+      • Página 0 → 'Portada'. Se usa una única vez como fondo de la portada
+        institucional del reporte SynCo (índice 0 del contenido).
+      • Página 1 → 'Mapa'. Se usa una única vez como fondo de la página
+        MAPA del reporte SynCo (índice 1 del contenido, con el
+        `template_map` incrustado).
+      • Página 2..N-1 → 'Lienzo recurrente'. Se cicla como fondo para el
+        resto de páginas de contenido del reporte (portadillas de nodo +
+        páginas de reporte + galerías).
 
-    Reglas de tolerancia:
-      • Si la plantilla tiene 1 sola página → todas las páginas del contenido
-        se pintan encima de esa única página (comportamiento heredado).
-      • Si la plantilla tiene 2 páginas → página 0 se usa para la portada,
-        página 1 se usa como separador Y como fondo del contenido.
-      • Si `section_page_indices` es None o vacío → no se aplica reemplazo
-        (compatibilidad con la ruta antigua).
+    Reglas de tolerancia (backward-compat):
+      • Si la plantilla tiene 1 página → todas las páginas del contenido se
+        pintan sobre esa única página.
+      • Si la plantilla tiene 2 páginas → índice 0 para portada, índice 1
+        para mapa Y también como lienzo del resto.
+      • `section_page_indices` se mantiene en la firma pero es ignorado.
     """
     from pypdf import PdfReader, PdfWriter
     tpl_bytes = Path(template_path).read_bytes()
@@ -4758,33 +4756,22 @@ def _overlay_pdf_on_template(
     if tpl_count == 0:
         return content_pdf
 
-    section_set = set(section_page_indices or [])
-    has_section_page = tpl_count >= 2
-    section_idx_in_tpl = 1 if has_section_page else 0
-    # Índice base para contenido general (páginas de datos):
-    #   • Si hay >=3 páginas: contenido empieza en índice 2 y cicla hasta la última.
-    #   • Si hay 2 páginas: contenido cae en la página 1 (misma que separador).
-    #   • Si hay 1 página: contenido cae en la página 0.
+    # Índice del lienzo recurrente (páginas 2..N-1 del template)
     content_base_start = 2 if tpl_count >= 3 else (1 if tpl_count == 2 else 0)
     content_base_last = tpl_count - 1
 
     writer = PdfWriter()
     content_cycle_idx = 0
     for i, cpage in enumerate(content_reader.pages):
-        # ── Página separadora de nodo: se REEMPLAZA con la página 'Sección' del template
-        if i in section_set and has_section_page:
-            fresh = PdfReader(io.BytesIO(tpl_bytes))
-            section_page = fresh.pages[section_idx_in_tpl]
-            writer.add_page(section_page)
-            continue
-
-        # ── Página normal: overlay sobre la página base correspondiente
         fresh = PdfReader(io.BytesIO(tpl_bytes))
         if i == 0:
             # Portada del reporte → fondo = página 0 del template
             base_idx = 0
+        elif i == 1:
+            # Mapa del reporte → fondo = página 1 del template (si existe)
+            base_idx = 1 if tpl_count >= 2 else 0
         else:
-            # Contenido general → cicla entre content_base_start..content_base_last
+            # Lienzo recurrente: cicla entre content_base_start..content_base_last
             span = content_base_last - content_base_start + 1
             if span <= 0:
                 base_idx = content_base_last
@@ -4984,6 +4971,7 @@ async def export_reports_docx(
     path_cache = data["path_cache"]
     start_dt = data["start_dt"]
     end_dt = data["end_dt"]
+    cover_ancestor_by_node = data.get("cover_ancestor_by_node", {})
 
     project_name = proj.get("name", "Proyecto")
     project_contract = proj.get("contract_number") or "—"
@@ -5114,17 +5102,64 @@ async def export_reports_docx(
         info_r.font.size = Pt(11)
         info_r.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
 
+        # === PÁGINA MAPA (después de la portada) ==========================
+        doc.add_page_break()
+        map_h = doc.add_paragraph()
+        map_h.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        map_h_r = map_h.add_run("MAPA DE UBICACIÓN")
+        map_h_r.bold = True
+        map_h_r.font.size = Pt(22)
+        map_h_r.font.color.rgb = BRAND_RGB
+        _map_tpl_path_docx = _get_project_template(proj, "map")
+        if _map_tpl_path_docx:
+            try:
+                map_p = doc.add_paragraph()
+                map_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                # Ancho institucional: 18 cm (aprox. A4 útil) manteniendo
+                # aspect ratio automáticamente.
+                map_p.add_run().add_picture(
+                    io.BytesIO(Path(_map_tpl_path_docx).read_bytes()),
+                    width=Cm(18.0),
+                )
+            except Exception:
+                _mp = doc.add_paragraph()
+                _mp.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                _mp_r = _mp.add_run("(Mapa del proyecto no disponible)")
+                _mp_r.italic = True
+                _mp_r.font.color.rgb = RGBColor(0x64, 0x75, 0x8B)
+        else:
+            _mp = doc.add_paragraph()
+            _mp.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            _mp_r = _mp.add_run("Sube una plantilla de MAPA para el proyecto para incrustarla aquí.")
+            _mp_r.italic = True
+            _mp_r.font.color.rgb = RGBColor(0x64, 0x75, 0x8B)
+
         any_data = False
 
         for n in leaf_nodes:
             node_reps = reports_by_node.get(n["id"]) or []
             if not node_reps:
                 continue
+            # === FILTRO ESTRICTO 2b: solo nodos con cover_image (con herencia)
+            cover_meta_docx = cover_ancestor_by_node.get(n["id"])
+            if not cover_meta_docx:
+                continue
             any_data = True
             node_path = path_cache.get(n["id"]) or n.get("name", "")
 
-            # Separador por nodo
+            # Separador por nodo: usa la cover_image (propia o heredada) como encabezado visual
             doc.add_page_break()
+            _cov_b64 = _strip_b64_prefix(cover_meta_docx.get("cover_image") or "")
+            if _cov_b64:
+                try:
+                    _cov_p = doc.add_paragraph()
+                    _cov_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                    _cov_p.add_run().add_picture(
+                        io.BytesIO(base64.b64decode(_cov_b64)),
+                        width=Cm(13.37), height=Cm(10.0),
+                    )
+                except Exception:
+                    pass
             np = doc.add_paragraph()
             np.alignment = WD_ALIGN_PARAGRAPH.CENTER
             nr = np.add_run(node_path)
@@ -5152,7 +5187,8 @@ async def export_reports_docx(
                 doc.add_page_break()
 
                 # Recopilar imágenes para usarlas DESPUÉS del texto.
-                imgs = r.get("images") or []
+                # [FILTRO 3a] Máximo 2 fotos por reporte (1 principal + 1 extra)
+                imgs = (r.get("images") or [])[:2]
                 img_b64 = _strip_b64_prefix(imgs[0]) if imgs else None
 
                 # Datos
@@ -5398,6 +5434,7 @@ async def export_reports_pptx(
     path_cache = data["path_cache"]
     start_dt = data["start_dt"]
     end_dt = data["end_dt"]
+    cover_ancestor_by_node = data.get("cover_ancestor_by_node", {})
 
     project_name = proj.get("name", "Proyecto")
     project_contract = proj.get("contract_number") or "—"
@@ -5560,30 +5597,84 @@ async def export_reports_pptx(
                  size=10, italic=True, color=(0xFF, 0xFF, 0xFF),
                  align=PP_ALIGN.CENTER)
 
+        # ===== SLIDE MAPA (después de la portada) ======================
+        s_map = prs.slides.add_slide(blank)
+        add_header_footer(s_map)
+        add_text(s_map, Cm(1.0), Cm(2.0), SW - Cm(2.0), Cm(1.2),
+                 "MAPA DE UBICACIÓN",
+                 size=28, bold=True, color=BRAND_RGB, align=PP_ALIGN.CENTER)
+        _map_tpl_path_pptx = _get_project_template(proj, "map")
+        _map_drawn_pptx = False
+        if _map_tpl_path_pptx:
+            try:
+                _map_bytes_pptx = Path(_map_tpl_path_pptx).read_bytes()
+                # Área útil: ancho hasta 27 cm, alto hasta 15 cm centrado.
+                _map_w_cm = 27.0
+                _map_h_cm = 15.0
+                _map_x_cm = (29.7 - _map_w_cm) / 2
+                _map_y_cm = 3.6
+                s_map.shapes.add_picture(
+                    io.BytesIO(_map_bytes_pptx),
+                    Cm(_map_x_cm), Cm(_map_y_cm),
+                    width=Cm(_map_w_cm), height=Cm(_map_h_cm),
+                )
+                _map_drawn_pptx = True
+            except Exception:
+                _map_drawn_pptx = False
+        if not _map_drawn_pptx:
+            add_text(s_map, Cm(1.0), SH / 2 - Cm(0.6), SW - Cm(2.0), Cm(1.2),
+                     "Sube una plantilla de MAPA para el proyecto para incrustarla aquí.",
+                     size=14, italic=True, color=(0x64, 0x75, 0x8B),
+                     align=PP_ALIGN.CENTER)
+
         any_data = False
         for n in leaf_nodes:
             node_reps = reports_by_node.get(n["id"]) or []
             if not node_reps:
                 continue
+            # === FILTRO ESTRICTO 2b: solo nodos con cover_image (con herencia)
+            cover_meta_pptx = cover_ancestor_by_node.get(n["id"])
+            if not cover_meta_pptx:
+                continue
             any_data = True
             node_path = path_cache.get(n["id"]) or n.get("name", "")
 
-            # === Slide separador por nodo ===
+            # === Slide separador por nodo (usa cover_image como encabezado visual) ===
             s = prs.slides.add_slide(blank)
             add_header_footer(s)
-            add_text(s, Cm(1.5), Cm(6.0), SW - Cm(3.0), Cm(2.5),
-                     node_path, size=36, bold=True, color=BRAND_RGB,
-                     align=PP_ALIGN.CENTER)
+            # Foto de portada del nodo (o ancestro) — encabezado visual 10 × 13.37 cm centrado
+            _cov_b64_p = _strip_b64_prefix(cover_meta_pptx.get("cover_image") or "")
+            if _cov_b64_p:
+                try:
+                    _cw = Cm(13.37)
+                    _ch = Cm(10.0)
+                    _cx = (SW - _cw) // 2
+                    _cy = Cm(2.2)
+                    s.shapes.add_picture(
+                        io.BytesIO(base64.b64decode(_cov_b64_p)),
+                        _cx, _cy, width=_cw, height=_ch,
+                    )
+                    add_text(s, Cm(1.5), _cy + _ch + Cm(0.4), SW - Cm(3.0), Cm(1.5),
+                             node_path, size=28, bold=True, color=BRAND_RGB,
+                             align=PP_ALIGN.CENTER)
+                except Exception:
+                    add_text(s, Cm(1.5), Cm(6.0), SW - Cm(3.0), Cm(2.5),
+                             node_path, size=36, bold=True, color=BRAND_RGB,
+                             align=PP_ALIGN.CENTER)
+            else:
+                add_text(s, Cm(1.5), Cm(6.0), SW - Cm(3.0), Cm(2.5),
+                         node_path, size=36, bold=True, color=BRAND_RGB,
+                         align=PP_ALIGN.CENTER)
             try:
                 coord_text = _format_measurement_for_display(node_reps[0]) or "—"
             except Exception:
                 coord_text = "—"
-            add_text(s, Cm(1.5), Cm(10.5), SW - Cm(3.0), Cm(1.0),
+            add_text(s, Cm(1.5), SH - Cm(3.2), SW - Cm(3.0), Cm(0.8),
                      f"Coordenadas: {coord_text}",
-                     size=16, color=(0x0F, 0x17, 0x2A), align=PP_ALIGN.CENTER)
-            add_text(s, Cm(1.5), Cm(12.0), SW - Cm(3.0), Cm(1.0),
+                     size=14, color=(0x0F, 0x17, 0x2A), align=PP_ALIGN.CENTER)
+            add_text(s, Cm(1.5), SH - Cm(2.2), SW - Cm(3.0), Cm(0.7),
                      f"Reportes en este nodo: {len(node_reps)}",
-                     size=12, color=(0x64, 0x75, 0x8B), align=PP_ALIGN.CENTER)
+                     size=11, color=(0x64, 0x75, 0x8B), align=PP_ALIGN.CENTER)
 
             for r in node_reps:
                 slide = prs.slides.add_slide(blank)
@@ -5595,7 +5686,8 @@ async def export_reports_pptx(
                 photo_w = Cm(13.37)
                 photo_h = Cm(10.0)
                 img_b64 = None
-                imgs = r.get("images") or []
+                # [FILTRO 3a] Máximo 2 fotos por reporte (1 principal + 1 extra)
+                imgs = (r.get("images") or [])[:2]
                 if imgs:
                     img_b64 = _strip_b64_prefix(imgs[0])
                 if img_b64:
