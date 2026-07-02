@@ -100,6 +100,59 @@ async function normalizeFileForFormData(
   return { uri, name: safeName, type };
 }
 
+/**
+ * Ejecuta una subida multipart en React Native usando
+ * `FileSystem.uploadAsync` (NO `fetch`/`FormData`).
+ *
+ * Motivo del refactor: en Android, RN tiene un bug crónico donde `fetch` +
+ * `FormData` con URIs devueltas por `expo-document-picker` /
+ * `expo-image-picker` falla con `Network Request Failed`, incluso tras
+ * normalizar la URI a `file://`. `FileSystem.uploadAsync` con
+ * `FileSystemUploadType.MULTIPART` usa la stack nativa (OkHttp en Android,
+ * NSURLSession en iOS) y es la única forma verdaderamente estable.
+ *
+ * Devuelve el JSON parseado. Lanza `ApiError` si el status HTTP no es 2xx.
+ */
+async function nativeMultipartUpload<T>(
+  url: string,
+  fileUri: string,
+  fileName: string,
+  mime: string,
+  cachePrefix: string,
+): Promise<T> {
+  // Aseguramos que la URI sea un file:// estable dentro del sandbox.
+  const normalized = await normalizeFileForFormData(
+    { uri: fileUri, name: fileName, mimeType: mime },
+    fileName,
+    mime,
+    cachePrefix,
+  );
+
+  const authHeaders = await authHeader();
+
+  let response: FileSystem.FileSystemUploadResult;
+  try {
+    response = await FileSystem.uploadAsync(url, normalized.uri, {
+      fieldName: 'file',
+      httpMethod: 'POST',
+      uploadType: FileSystem.FileSystemUploadType.MULTIPART,
+      mimeType: normalized.type,
+      headers: authHeaders,
+      parameters: {},
+    });
+  } catch (err: any) {
+    throw new ApiError(0, err?.message || 'Network Request Failed');
+  }
+
+  const { status, body } = response;
+  const data = body ? safeJson(body) : null;
+  if (status < 200 || status >= 300) {
+    const msg = (data && (data as any).detail) || `HTTP ${status}`;
+    throw new ApiError(status, typeof msg === 'string' ? msg : JSON.stringify(msg));
+  }
+  return data as T;
+}
+
 // ---- Types (subset for hints) ---------------------------------------------
 export interface User {
   id: string;
@@ -439,30 +492,29 @@ export const api = {
     nid: string,
     file: { uri: string; name: string; mimeType?: string | null },
   ): Promise<LocationNode> => {
-    const form = new FormData();
     const isWeb = typeof window !== 'undefined' && typeof (globalThis as any).Blob !== 'undefined';
     const fileName = file.name || 'cover.jpg';
     const mime = file.mimeType || 'image/jpeg';
-    if (isWeb) {
-      const resBlob = await fetch(file.uri);
-      const blob = await resBlob.blob();
-      try {
-        const f = new File([blob], fileName, { type: mime });
-        form.append('file', f);
-      } catch {
-        form.append('file', blob, fileName);
-      }
-    } else {
-      const normalized = await normalizeFileForFormData(
-        { uri: file.uri, name: fileName, mimeType: mime },
-        'cover.jpg',
-        'image/jpeg',
-        'cover',
-      );
-      form.append('file', normalized as any);
+    const url = `${BASE}/projects/${pid}/nodes/${nid}/cover`;
+
+    // React Native (Android/iOS): usamos FileSystem.uploadAsync (multipart nativo)
+    // para evitar el bug crónico "Network Request Failed" de fetch+FormData en Android.
+    if (!isWeb) {
+      return nativeMultipartUpload<LocationNode>(url, file.uri, fileName, mime, 'cover');
+    }
+
+    // Web: mantenemos FormData con File/Blob (uploadAsync no existe en web).
+    const form = new FormData();
+    const resBlob = await fetch(file.uri);
+    const blob = await resBlob.blob();
+    try {
+      const f = new File([blob], fileName, { type: mime });
+      form.append('file', f);
+    } catch {
+      form.append('file', blob, fileName);
     }
     const headers = await authHeader();
-    const res = await fetch(`${BASE}/projects/${pid}/nodes/${nid}/cover`, {
+    const res = await fetch(url, {
       method: 'POST',
       headers,
       body: form as any,
@@ -479,7 +531,8 @@ export const api = {
   deleteNodeCover: (pid: string, nid: string) =>
     request<LocationNode>('DELETE', `/projects/${pid}/nodes/${nid}/cover`),
 
-  // Bulk upload de nodos desde Excel/CSV (FormData). Compatible web + native.
+  // Bulk upload de nodos desde Excel/CSV. En nativo usa FileSystem.uploadAsync
+  // (multipart nativo estable); en web usa FormData.
   bulkUploadNodes: async (
     pid: string,
     file: { uri: string; name: string; mimeType?: string | null },
@@ -493,7 +546,6 @@ export const api = {
     parent_column: string | null;
     metadata_columns: string[];
   }> => {
-    const form = new FormData();
     const isWeb = typeof window !== 'undefined' && typeof (globalThis as any).Blob !== 'undefined';
     const fileName = file.name || 'nodos.xlsx';
     const mime =
@@ -501,34 +553,26 @@ export const api = {
       (fileName.toLowerCase().endsWith('.csv')
         ? 'text/csv'
         : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    if (isWeb) {
-      // En web, DocumentPicker devuelve un blob: URL o data URL. Hay que materializar el Blob.
-      const resBlob = await fetch(file.uri);
-      const blob = await resBlob.blob();
-      // Re-envolver con el filename correcto.
-      try {
-        const f = new File([blob], fileName, { type: mime });
-        form.append('file', f);
-      } catch {
-        // Algunos navegadores antiguos no soportan File constructor.
-        form.append('file', blob, fileName);
-      }
-    } else {
-      // En React Native nativo, normalizamos URI (Android: content://, /storage/…
-      // sin file://; iOS: ph://, assets-library://) para evitar
-      // "Network Request Failed" en Android al enviar multipart.
-      const normalized = await normalizeFileForFormData(
-        { uri: file.uri, name: fileName, mimeType: mime },
-        'nodos.xlsx',
-        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-        'bulknodes',
-      );
-      form.append('file', normalized as any);
+    const url = `${BASE}/projects/${pid}/nodes/bulk-upload`;
+
+    if (!isWeb) {
+      return nativeMultipartUpload<any>(url, file.uri, fileName, mime, 'bulknodes');
+    }
+
+    // Web: DocumentPicker devuelve blob: URL o data URL → materializamos.
+    const form = new FormData();
+    const resBlob = await fetch(file.uri);
+    const blob = await resBlob.blob();
+    try {
+      const f = new File([blob], fileName, { type: mime });
+      form.append('file', f);
+    } catch {
+      form.append('file', blob, fileName);
     }
     const headers = await authHeader();
-    const res = await fetch(`${BASE}/projects/${pid}/nodes/bulk-upload`, {
+    const res = await fetch(url, {
       method: 'POST',
-      headers, // No establecer Content-Type, fetch añade boundary automático.
+      headers, // sin Content-Type: fetch añade boundary automático.
       body: form as any,
     });
     const text = await res.text();
@@ -565,35 +609,28 @@ export const api = {
     };
     file?: ReferenceFile;
   }> => {
-    const form = new FormData();
     const isWeb = typeof window !== 'undefined' && typeof (globalThis as any).Blob !== 'undefined';
     const fileName = file.name || 'archivo';
     const mime = file.mimeType || 'application/octet-stream';
-    if (isWeb) {
-      const resBlob = await fetch(file.uri);
-      const blob = await resBlob.blob();
-      try {
-        const f = new File([blob], fileName, { type: mime });
-        form.append('file', f);
-      } catch {
-        form.append('file', blob, fileName);
-      }
-    } else {
-      // Android: content://, ph://, /storage/... sin file:// no son legibles
-      // por fetch/FormData → normalizeFileForFormData los copia al cache
-      // como file:// estable. iOS también materializa ph:// y assets-library://.
-      const normalized = await normalizeFileForFormData(
-        { uri: file.uri, name: fileName, mimeType: mime },
-        'archivo',
-        'application/octet-stream',
-        'upload',
-      );
-      form.append('file', normalized as any);
+    const url = `${BASE}/projects/${pid}/upload-file`;
+
+    if (!isWeb) {
+      return nativeMultipartUpload<any>(url, file.uri, fileName, mime, 'upload');
+    }
+
+    const form = new FormData();
+    const resBlob = await fetch(file.uri);
+    const blob = await resBlob.blob();
+    try {
+      const f = new File([blob], fileName, { type: mime });
+      form.append('file', f);
+    } catch {
+      form.append('file', blob, fileName);
     }
     const headers = await authHeader();
-    const res = await fetch(`${BASE}/projects/${pid}/upload-file`, {
+    const res = await fetch(url, {
       method: 'POST',
-      headers, // sin Content-Type: fetch añade boundary multipart.
+      headers,
       body: form as any,
     });
     const text = await res.text();
@@ -615,7 +652,6 @@ export const api = {
     kind: 'pdf' | 'docx' | 'pptx' | 'map',
     file: { uri: string; name: string; mimeType?: string | null },
   ): Promise<Project> => {
-    const form = new FormData();
     const isWeb = typeof window !== 'undefined' && typeof (globalThis as any).Blob !== 'undefined';
     const fileName = file.name || `template.${kind === 'map' ? 'jpg' : kind}`;
     const mime =
@@ -627,26 +663,23 @@ export const api = {
         : kind === 'pptx'
         ? 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
         : 'image/jpeg');
-    if (isWeb) {
-      const resBlob = await fetch(file.uri);
-      const blob = await resBlob.blob();
-      try {
-        const f = new File([blob], fileName, { type: mime });
-        form.append('file', f);
-      } catch {
-        form.append('file', blob, fileName);
-      }
-    } else {
-      const normalized = await normalizeFileForFormData(
-        { uri: file.uri, name: fileName, mimeType: mime },
-        `template.${kind === 'map' ? 'jpg' : kind}`,
-        mime,
-        `template_${kind}`,
-      );
-      form.append('file', normalized as any);
+    const url = `${BASE}/projects/${pid}/template/${kind}`;
+
+    if (!isWeb) {
+      return nativeMultipartUpload<Project>(url, file.uri, fileName, mime, `template_${kind}`);
+    }
+
+    const form = new FormData();
+    const resBlob = await fetch(file.uri);
+    const blob = await resBlob.blob();
+    try {
+      const f = new File([blob], fileName, { type: mime });
+      form.append('file', f);
+    } catch {
+      form.append('file', blob, fileName);
     }
     const headers = await authHeader();
-    const res = await fetch(`${BASE}/projects/${pid}/template/${kind}`, {
+    const res = await fetch(url, {
       method: 'POST',
       headers,
       body: form as any,
