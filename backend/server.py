@@ -4131,6 +4131,35 @@ async def export_reports_pdf(
     fechas_label = f"{_fmt_fecha_dd_mm_yyyy(start_dt)} a {_fmt_fecha_dd_mm_yyyy(end_dt)}"
 
     # ========================================================================
+    # DIMENSIONES DINÁMICAS DEL CANVAS
+    # Si el proyecto tiene plantilla PDF, adoptamos EXACTAMENTE las
+    # dimensiones (width × height en puntos) de su primera página. Esto
+    # garantiza que el overlay posterior sea pixel-perfect independientemente
+    # de si la plantilla es apaisada, vertical, tabloide o formato custom.
+    # Si no hay plantilla → fallback a landscape(A4).
+    # ========================================================================
+    tpl_pdf_path = _get_project_template(proj, "pdf")
+    tpl_page_w: Optional[float] = None
+    tpl_page_h: Optional[float] = None
+    if tpl_pdf_path:
+        try:
+            from pypdf import PdfReader as _PdfReaderProbe
+            _probe = _PdfReaderProbe(io.BytesIO(Path(tpl_pdf_path).read_bytes()))
+            if _probe.pages:
+                _mb = _probe.pages[0].mediabox
+                tpl_page_w = float(_mb.width)
+                tpl_page_h = float(_mb.height)
+                log.info(
+                    "[pdf] canvas dinámico adoptado desde plantilla: "
+                    "%.1f x %.1f pts (%.2f x %.2f cm)",
+                    tpl_page_w, tpl_page_h,
+                    tpl_page_w / cm, tpl_page_h / cm,
+                )
+        except Exception as _e:
+            log.warning("[pdf] no se pudo leer dimensiones de plantilla PDF: %s", _e)
+            tpl_page_w = tpl_page_h = None
+
+    # ========================================================================
     # GENERACIÓN BLOQUEANTE (CPU-bound) → asyncio.to_thread
     # ========================================================================
     def _build_pdf_blocking() -> tuple:
@@ -4141,7 +4170,12 @@ async def export_reports_pdf(
         la fusión de superposición, si el usuario subió una plantilla PDF."""
         section_page_indices: List[int] = []
         buf = io.BytesIO()
-        PAGE = landscape(A4)  # 29.7 x 21 cm
+        # Adopta las dimensiones exactas de la plantilla si existe;
+        # caso contrario usa landscape(A4) = 29.7 × 21 cm.
+        if tpl_page_w and tpl_page_h and tpl_page_w > 0 and tpl_page_h > 0:
+            PAGE = (tpl_page_w, tpl_page_h)
+        else:
+            PAGE = landscape(A4)
         PW, PH = PAGE
         c = _canvas.Canvas(buf, pagesize=PAGE)
 
@@ -4708,7 +4742,9 @@ async def export_reports_pdf(
     #     por completo cada página separadora de nodo del reporte SynCo.
     #   - Página 2+ del template (si existe) = base para las páginas de datos.
     #     Si no hay página 2, se recicla la última página del template.
-    tpl_pdf = _get_project_template(proj, "pdf")
+    # Nota: `tpl_pdf_path` ya fue calculado arriba para dimensionar el canvas
+    # dinámicamente, por lo que aquí lo reutilizamos sin releer el disco.
+    tpl_pdf = tpl_pdf_path
     if tpl_pdf:
         try:
             pdf_bytes = await asyncio.to_thread(
