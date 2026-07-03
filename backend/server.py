@@ -5388,26 +5388,62 @@ async def export_reports_pptx(
         def _clone_membrete():
             """Crea una nueva slide clonando el membrete de la plantilla.
 
-            Si `tpl_master_slide` existe, deep-copia sus shapes al nuevo slide
-            para que herede el membrete institucional. Si no, crea una slide
-            en blanco sin decoración.
+            Deep-copia los shapes del membrete master reparando las
+            relaciones (`r:embed`, `r:link`) de imágenes para que apunten
+            a rIds válidos dentro de la nueva slide. Esto ERRADICA las
+            "X rojas" (ghost images) que aparecían cuando el XML clonado
+            referenciaba rIds inexistentes en la slide destino.
             """
             if tpl_master_slide is None:
                 return prs.slides.add_slide(blank)
             try:
+                from pptx.oxml.ns import qn as _qn
+                _IMG_REL = (
+                    "http://schemas.openxmlformats.org/"
+                    "officeDocument/2006/relationships/image"
+                )
+                _EMBED = _qn("r:embed")
+                _LINK = _qn("r:link")
                 new_slide = prs.slides.add_slide(tpl_master_slide.slide_layout)
-                # Purgar placeholders heredados del layout para dejar solo
-                # las shapes del membrete original.
+                # Purgar placeholders heredados del layout: la nueva slide
+                # solo debe contener las shapes reales del membrete master.
                 for shp in list(new_slide.shapes):
                     try:
                         shp.element.getparent().remove(shp.element)
                     except Exception:
                         pass
-                # Deep-clone de cada shape del membrete master.
+                # Deep-clone shape por shape, reparando refs de imagen.
                 for shp in tpl_master_slide.shapes:
                     try:
                         new_el = _deepcopy(shp.element)
-                        new_slide.shapes._spTree.insert_element_before(new_el, 'p:extLst')
+                        _skip_shape = False
+                        # Recorrer cualquier <a:blip> (relleno tipo imagen o
+                        # picture normal) y re-relacionar la imagen en la
+                        # nueva slide.
+                        for blip in new_el.iter(_qn("a:blip")):
+                            for _attr in (_EMBED, _LINK):
+                                old_rid = blip.get(_attr)
+                                if not old_rid:
+                                    continue
+                                try:
+                                    image_part = tpl_master_slide.part.related_part(
+                                        old_rid
+                                    )
+                                    new_rid = new_slide.part.relate_to(
+                                        image_part, _IMG_REL
+                                    )
+                                    blip.set(_attr, new_rid)
+                                except Exception:
+                                    # Ghost: no se pudo resolver la imagen →
+                                    # descartar el shape entero para NO dejar
+                                    # la "X roja" en la nueva slide.
+                                    _skip_shape = True
+                                    break
+                            if _skip_shape:
+                                break
+                        if _skip_shape:
+                            continue
+                        new_slide.shapes._spTree.insert_element_before(new_el, "p:extLst")
                     except Exception:
                         continue
                 return new_slide
@@ -5503,7 +5539,7 @@ async def export_reports_pptx(
             # === Separador de nodo: cover_image grande + TÍTULO del nodo.
             # Sin adornos: solo la imagen y el path institucional del nodo.
             s = _clone_membrete()
-            _title_h = Cm(1.4)
+            _title_h = Cm(1.8)
             _title_gap = Cm(0.5)
             _cov_b64_p = _strip_b64_prefix(cover_meta_pptx.get("cover_image") or "")
             _cw = Cm(0)
@@ -5531,7 +5567,8 @@ async def export_reports_pptx(
                     )
                 except Exception:
                     _ch = Cm(0)
-            # Título del nodo debajo de la cover (o centrado si no hay cover).
+            # Título del nodo debajo de la cover, centrado horizontalmente.
+            # Tipografía institucional: negritas 28pt, azul oscuro / negro.
             _title_y = (
                 _cy + _ch + _title_gap
                 if _ch and _ch > Cm(0)
@@ -5540,7 +5577,7 @@ async def export_reports_pptx(
             add_text(
                 s, Cm(1.0), _title_y, SW - Cm(2.0), _title_h,
                 node_path,
-                size=24, bold=True, color=BRAND_RGB, align=PP_ALIGN.CENTER,
+                size=28, bold=True, color=TEXT_BODY, align=PP_ALIGN.CENTER,
             )
 
             for r in node_reps:
@@ -5751,38 +5788,17 @@ async def export_reports_pptx(
                      align=PP_ALIGN.CENTER)
 
         # ================================================================
-        # Purga de la Slide-fuente del membrete (Slide 1 de la plantilla).
-        # Esta slide sólo existe como donante para el deep-clone; si no se
-        # remueve, aparecería como slide extra "vacía" en el PPTX exportado.
-        # La Slide 0 (portada, intocable) se conserva tal cual.
+        # Eliminar la diapositiva de membrete original (índice 1) para que
+        # no quede vacía en el PPTX final. Snippet exacto pedido por el
+        # usuario · borra la relación de la Presentation-part y purga la
+        # entrada del sldIdLst.
         # ================================================================
-        if (
-            tpl_master_slide is not None
-            and tpl_cover_slide is not None
-            and tpl_master_slide is not tpl_cover_slide
-        ):
-            try:
-                _rels_ns = (
-                    '{http://schemas.openxmlformats.org/'
-                    'officeDocument/2006/relationships}id'
-                )
-                _sld_id_lst = prs.slides._sldIdLst
-                _target_id_el = None
-                for _sl_id in list(_sld_id_lst):
-                    _rid = _sl_id.get(_rels_ns)
-                    if not _rid:
-                        continue
-                    try:
-                        _related = prs.part.related_parts[_rid]
-                    except Exception:
-                        continue
-                    if _related is tpl_master_slide.part:
-                        _target_id_el = _sl_id
-                        break
-                if _target_id_el is not None:
-                    _sld_id_lst.remove(_target_id_el)
-            except Exception:
-                pass
+        try:
+            rId = prs.slides._sldIdLst[1].rId
+            prs.part.drop_rel(rId)
+            del prs.slides._sldIdLst[1]
+        except Exception:
+            pass
 
         buf = io.BytesIO()
         prs.save(buf)
