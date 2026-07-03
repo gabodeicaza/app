@@ -4185,147 +4185,57 @@ async def export_reports_pdf(
         TEXT = HexColor("#0F172A")
         WHITE = HexColor("#FFFFFF")
 
-        # Bytes del logo institucional: prioriza el del proyecto, fallback DIRAC.
-        # Cargamos UNA SOLA VEZ para todo el PDF.
-        logo_bytes = _resolve_export_logo_bytes(constructora_logo_b64)
-        logo_reader = None
-        if logo_bytes:
-            try:
-                logo_reader = ImageReader(io.BytesIO(logo_bytes))
-            except Exception:
-                logo_reader = None
+        # Logos institucionales: purgados. La plantilla PDF (páginas 0 y 1)
+        # YA los trae impresos en su fondo. Cualquier logo programático
+        # generaba "ghost images" (X rojas) al fusionar con la plantilla.
+        logo_bytes = None  # noqa: F841
+        logo_reader = None  # noqa: F841
 
         def _draw_logo(x, y, max_w, max_h):
-            """Dibuja el logo institucional (constructora o DIRAC) en (x, y)."""
-            if logo_reader is None:
-                return False
-            try:
-                c.drawImage(logo_reader, x, y, width=max_w, height=max_h,
-                            preserveAspectRatio=True, mask='auto')
-                return True
-            except Exception:
-                return False
+            """DEPRECATED · no-op: la plantilla PDF trae los logos incrustados."""
+            return False
 
         def draw_header(page_num: int):
-            # Logo institucional (constructora) en esquina superior izquierda
-            _draw_logo(1.2 * cm, PH - 2.0 * cm, 3.5 * cm, 1.4 * cm)
-            c.setFillColor(BRAND)
-            c.setFont("Helvetica-Bold", 11)
-            c.drawString(5.2 * cm, PH - 1.2 * cm, project_name)
-            c.setFillColor(MUTED)
-            c.setFont("Helvetica", 8)
-            c.drawString(5.2 * cm, PH - 1.6 * cm,
-                         f"{project_constructora}  ·  Contrato {project_contract}  ·  Exportado {_fmt_fecha_dd_mm_yyyy_hhmm(datetime.now(timezone.utc))}")
-            c.setStrokeColor(BORDER)
-            c.setLineWidth(0.5)
-            c.line(1.2 * cm, PH - 2.0 * cm, PW - 1.2 * cm, PH - 2.0 * cm)
-            c.setFillColor(MUTED)
-            c.setFont("Helvetica", 7)
-            c.drawRightString(PW - 1.2 * cm, 0.8 * cm, f"Página {page_num}")
+            """DEPRECATED · no-op.
+
+            La plantilla PDF (página 2 = membrete "ACTIVIDADES GENERALES")
+            ya trae logos, banda superior y demás elementos institucionales.
+            Cualquier decoración programática se solapaba con el membrete y
+            dejaba "ghost images". Se conserva la firma por compatibilidad.
+            """
+            return
+
+        # Márgenes protegidos para no invadir el membrete del template PDF.
+        # TOP_MARGIN_PDF reserva la banda superior donde el template imprime
+        # logos y encabezado. BOTTOM_MARGIN_PDF reserva la banda inferior.
+        TOP_MARGIN_PDF = 4.0 * cm
+        BOTTOM_MARGIN_PDF = 2.0 * cm
+        total_reportes = sum(len(v) for v in reports_by_node.values())
 
         # --- PORTADA INSTITUCIONAL ----------------------------------------
-        # Fondo completo en color_tema del proyecto. Bloque superior con logo
-        # y cliente_principal, bloque central con título y objeto del contrato
-        # en letras blancas, y pie con período/responsable.
+        # PURGA TOTAL: la portada se deja 100 % vacía. El overlay
+        # `_overlay_pdf_on_template` fusiona esta página vacía con la
+        # página 0 del template PDF (la portada institucional del usuario),
+        # que ya contiene todo el diseño, logos y textos. NO se inyecta
+        # nada por código para respetar la plantilla al 100 %.
         page_num = 1
-        c.setFillColor(BRAND)
-        c.rect(0, 0, PW, PH, stroke=0, fill=1)
-        # Banda blanca translúcida en la parte superior para el logo
-        c.setFillColor(WHITE)
-        c.setFillAlpha(0.92)
-        c.rect(0, PH - 4.5 * cm, PW, 4.5 * cm, stroke=0, fill=1)
-        c.setFillAlpha(1.0)
-        _draw_logo(1.5 * cm, PH - 4.0 * cm, 5.0 * cm, 3.0 * cm)
-        # Cliente principal arriba a la derecha
-        if project_cliente:
-            c.setFillColor(BRAND)
-            c.setFont("Helvetica-Bold", 11)
-            c.drawRightString(PW - 1.5 * cm, PH - 2.0 * cm, "CLIENTE")
-            c.setFillColor(TEXT)
-            c.setFont("Helvetica-Bold", 16)
-            c.drawRightString(PW - 1.5 * cm, PH - 2.8 * cm, project_cliente[:60])
-        # Título principal
-        c.setFillColor(WHITE)
-        c.setFont("Helvetica-Bold", 12)
-        c.drawCentredString(PW / 2, PH - 7.5 * cm, "INFORME DE AVANCE Y SUPERVISIÓN")
-        c.setFont("Helvetica-Bold", 32)
-        # Nombre del proyecto (wrap si es largo)
-        proj_words = project_name.split()
-        proj_l1, proj_l2 = "", ""
-        for w in proj_words:
-            if c.stringWidth((proj_l1 + " " + w).strip(), "Helvetica-Bold", 32) < (PW - 4 * cm):
-                proj_l1 = (proj_l1 + " " + w).strip()
-            else:
-                proj_l2 = (proj_l2 + " " + w).strip()
-        c.drawCentredString(PW / 2, PH - 9.5 * cm, proj_l1)
-        if proj_l2:
-            c.drawCentredString(PW / 2, PH - 10.8 * cm, proj_l2[:80])
-        # Objeto del contrato — texto blanco grande
-        if project_objeto:
-            c.setFillColor(WHITE)
-            c.setFont("Helvetica-Oblique", 14)
-            # wrap en hasta 3 líneas
-            obj_words = project_objeto.split()
-            lines = [""]
-            for w in obj_words:
-                tentative = (lines[-1] + " " + w).strip()
-                if c.stringWidth(tentative, "Helvetica-Oblique", 14) < (PW - 6 * cm):
-                    lines[-1] = tentative
-                else:
-                    if len(lines) >= 3:
-                        break
-                    lines.append(w)
-            base_y = PH - 13.0 * cm
-            for i, ln in enumerate(lines[:3]):
-                c.drawCentredString(PW / 2, base_y - i * 0.7 * cm, ln)
-        # Pie de la portada: período, responsable, contrato
-        c.setFillColor(WHITE)
-        c.setFillAlpha(0.3)
-        c.rect(0, 2.2 * cm, PW, 0.05 * cm, stroke=0, fill=1)
-        c.setFillAlpha(1.0)
-        c.setFillColor(WHITE)
-        c.setFont("Helvetica-Bold", 11)
-        c.drawString(1.5 * cm, 4.2 * cm, "PERÍODO")
-        c.setFont("Helvetica", 12)
-        c.drawString(1.5 * cm, 3.5 * cm, fechas_label)
-        c.setFont("Helvetica-Bold", 11)
-        c.drawString(11 * cm, 4.2 * cm, role_label.upper())
-        c.setFont("Helvetica", 12)
-        c.drawString(11 * cm, 3.5 * cm, user_name)
-        c.setFont("Helvetica-Bold", 11)
-        c.drawRightString(PW - 1.5 * cm, 4.2 * cm, "CONTRATO")
-        c.setFont("Helvetica", 12)
-        c.drawRightString(PW - 1.5 * cm, 3.5 * cm, project_contract)
-        # Total reportes (línea inferior)
-        total_reportes = sum(len(v) for v in reports_by_node.values())
-        c.setFont("Helvetica-Oblique", 10)
-        c.drawCentredString(PW / 2, 1.4 * cm,
-                            f"{area_label} · {total_reportes} reporte(s) incluido(s)")
         c.showPage()
         page_num += 1
 
-        # --- PÁGINA MAPA (Slide/Página 2 del template) ---------------------
-        # Se dibuja SIEMPRE una única página "Mapa" tras la portada.
-        # Si el proyecto tiene `template_map`, se incrusta centrado; el
-        # overlay posterior la fusionará sobre la página 2 del template PDF.
-        draw_header(page_num)
-        c.setFillColor(BRAND)
-        c.setFont("Helvetica-Bold", 22)
-        c.drawCentredString(PW / 2, PH - 3.4 * cm, "MAPA DE UBICACIÓN")
+        # --- PÁGINA MAPA (fondo = página 1 del template PDF) --------------
+        # Sin título programático · el membrete institucional del template
+        # ya identifica la sección "MAPA / ACTIVIDADES GENERALES".
         _map_tpl_path = _get_project_template(proj, "map")
         _map_drawn = False
         if _map_tpl_path:
             try:
                 _map_bytes = Path(_map_tpl_path).read_bytes()
                 _map_img = ImageReader(io.BytesIO(_map_bytes))
-                # Espacio útil: entre header (y = PH - 2.0 cm) y footer (y = 1.5 cm),
-                # con margen para el título. Ancho máximo respetando 1.5 cm laterales.
-                _map_top = PH - 4.2 * cm
-                _map_bottom = 2.0 * cm
-                _map_h = _map_top - _map_bottom
-                _map_w = PW - 3.0 * cm
+                # Área útil dentro de los márgenes del membrete.
                 _map_x = 1.5 * cm
-                _map_y = _map_bottom
+                _map_y = BOTTOM_MARGIN_PDF
+                _map_h = PH - TOP_MARGIN_PDF - BOTTOM_MARGIN_PDF
+                _map_w = PW - 3.0 * cm
                 c.drawImage(
                     _map_img, _map_x, _map_y,
                     width=_map_w, height=_map_h,
@@ -4343,7 +4253,6 @@ async def export_reports_pdf(
         page_num += 1
 
         if total_reportes == 0:
-            draw_header(page_num)
             c.setFillColor(MUTED)
             c.setFont("Helvetica-Oblique", 14)
             c.drawCentredString(PW / 2, PH / 2, "No hay reportes para el período seleccionado.")
@@ -4380,73 +4289,54 @@ async def export_reports_pdf(
             return cy
 
         def draw_dynamic_cover_page(cover_name: str, cover_b64: str, page_num_val: int) -> None:
-            """Portadilla de Nodo DINÁMICA:
-              - Fondo pleno con el color institucional (BRAND)
-              - Nombre de la rama principal (grande, centrado)
-              - Imagen de portada del nodo ocupando el espacio principal
+            """Portadilla de Nodo — LIMPIA sobre el membrete del template PDF.
+
+            Contenido inyectado (SOLO esto, sin fondos ni bordes ni logos):
+              1) `cover_image` del nodo (grande, centrada, aspect-ratio
+                 preservado, dentro del área útil del membrete).
+              2) Título del nodo (path institucional) debajo de la cover.
+            El fondo y el membrete institucional los aporta la plantilla
+            PDF durante la fusión posterior.
             """
-            # Fondo pleno con color institucional
-            c.setFillColor(BRAND)
-            c.rect(0, 0, PW, PH, fill=1, stroke=0)
-
-            # Título de la rama en la parte superior
-            c.setFillColor(HexColor("#FFFFFF"))
-            c.setFont("Helvetica-Bold", 34)
-            _title = (cover_name or "SECCIÓN").upper()
-            # Reducir tamaño de fuente si el título es demasiado ancho
-            _size = 34
-            while c.stringWidth(_title, "Helvetica-Bold", _size) > PW - 3 * cm and _size > 18:
-                _size -= 2
-                c.setFont("Helvetica-Bold", _size)
-            c.drawCentredString(PW / 2, PH - 2.4 * cm, _title)
-
-            # Línea decorativa dorada/blanca
-            c.setStrokeColor(HexColor("#FFFFFF"))
-            c.setLineWidth(1.8)
-            c.line(PW / 2 - 7 * cm, PH - 3.3 * cm, PW / 2 + 7 * cm, PH - 3.3 * cm)
-
-            # Cover image incrustada — área principal (respeta aspect-ratio)
-            img_x_pad = 2.2 * cm
-            img_top = PH - 4.0 * cm
-            img_bottom = 2.4 * cm
-            img_h = img_top - img_bottom
-            img_w = PW - 2 * img_x_pad
-            img_x = img_x_pad
-            img_y = img_bottom
+            title_h = 1.2 * cm
+            title_gap = 0.4 * cm
+            avail_top = PH - TOP_MARGIN_PDF
+            avail_bot = BOTTOM_MARGIN_PDF
+            avail_h = avail_top - avail_bot - title_h - title_gap
+            avail_w = PW - 3.0 * cm
+            # Cover a máxima dimensión útil respetando aspect-ratio 4:3.
+            target_ratio = 4.0 / 3.0
+            w_from_h = avail_h * target_ratio
+            if w_from_h <= avail_w:
+                img_w = w_from_h
+                img_h = avail_h
+            else:
+                img_w = avail_w
+                img_h = avail_w / target_ratio
+            img_x = (PW - img_w) / 2
+            img_y = avail_bot + title_h + title_gap + (avail_h - img_h) / 2
             drawn = False
             try:
                 _b64_data = _strip_b64_prefix(cover_b64) if cover_b64 else None
                 if _b64_data:
                     raw = base64.b64decode(_b64_data)
                     img = ImageReader(io.BytesIO(raw))
-                    # Fondo blanco para la imagen (mejora contraste)
-                    c.setFillColor(HexColor("#FFFFFF"))
-                    c.rect(img_x, img_y, img_w, img_h, fill=1, stroke=0)
-                    c.drawImage(img, img_x, img_y, width=img_w, height=img_h,
-                                preserveAspectRatio=True, anchor='c', mask='auto')
-                    # Borde blanco sutil alrededor de la imagen
-                    c.setStrokeColor(HexColor("#FFFFFF"))
-                    c.setLineWidth(2.0)
-                    c.rect(img_x, img_y, img_w, img_h, fill=0, stroke=1)
+                    c.drawImage(
+                        img, img_x, img_y, width=img_w, height=img_h,
+                        preserveAspectRatio=True, anchor='c', mask='auto',
+                    )
                     drawn = True
             except Exception:
                 drawn = False
-            if not drawn:
-                # Fallback: sólo el título + espacio central con contorno
-                c.setStrokeColor(HexColor("#FFFFFF"))
-                c.setLineWidth(1.4)
-                c.rect(img_x, img_y, img_w, img_h, fill=0, stroke=1)
-                c.setFillColor(HexColor("#FFFFFF"))
-                c.setFont("Helvetica-Oblique", 14)
-                c.drawCentredString(PW / 2, img_y + img_h / 2, "(cover_image no disponible)")
-
-            # Pie con contrato/contratista (blanco pequeño)
-            c.setFillColor(HexColor("#FFFFFF"))
-            c.setFont("Helvetica", 9)
-            c.drawCentredString(
-                PW / 2, 1.1 * cm,
-                f"Contrato {project_contract} · {project_constructora}",
-            )
+            # Título del nodo (path institucional) debajo de la cover.
+            _title = (cover_name or "SECCIÓN").upper()
+            _size = 18
+            while c.stringWidth(_title, "Helvetica-Bold", _size) > PW - 3 * cm and _size > 10:
+                _size -= 1
+            c.setFillColor(BRAND)
+            c.setFont("Helvetica-Bold", _size)
+            title_y = img_y - title_gap - title_h / 2 if drawn else avail_bot + avail_h / 2
+            c.drawCentredString(PW / 2, title_y, _title)
 
         # ==============================================================
         # Loop de nodos hoja con agrupación por Portadilla dinámica.
@@ -4486,14 +4376,9 @@ async def export_reports_pdf(
             # Si es el mismo grupo, no dibujamos nueva portadilla (agrupado)
 
             for r in node_reps:
-                draw_header(page_num)
-
-                # === Foto centrada 10 x 13.37 cm =========================
+                # === Foto centrada 10 x 13.37 cm — respetando membrete ====
                 photo_x = (PW - PHOTO_W) / 2
-                photo_y = PH - 2.3 * cm - PHOTO_H
-                c.setStrokeColor(BORDER)
-                c.setLineWidth(0.8)
-                c.rect(photo_x, photo_y, PHOTO_W, PHOTO_H)
+                photo_y = PH - TOP_MARGIN_PDF - PHOTO_H
                 img_b64 = None
                 # [FILTRO 3a] Máximo 2 fotos por reporte (1 principal + 1 extra)
                 imgs = (r.get("images") or [])[:2]
@@ -4506,28 +4391,14 @@ async def export_reports_pdf(
                         c.drawImage(img, photo_x, photo_y, width=PHOTO_W, height=PHOTO_H,
                                     preserveAspectRatio=True, mask='auto')
                     except Exception:
-                        c.setFillColor(MUTED)
-                        c.setFont("Helvetica-Oblique", 10)
-                        c.drawCentredString(PW / 2, photo_y + PHOTO_H / 2, "(imagen no legible)")
-                else:
-                    c.setFillColor(MUTED)
-                    c.setFont("Helvetica-Oblique", 10)
-                    c.drawCentredString(PW / 2, photo_y + PHOTO_H / 2, "(sin fotografía)")
-
-                # === Contador "Foto 1 de N" si hay múltiples imágenes ======
-                if len(imgs) > 1:
-                    c.setFillColor(MUTED)
-                    c.setFont("Helvetica-Oblique", 8)
-                    c.drawCentredString(
-                        photo_x + PHOTO_W / 2,
-                        photo_y - 0.35 * cm,
-                        f"Foto 1 de {len(imgs)}",
-                    )
+                        # Silencio total: no se dibuja placeholder para evitar
+                        # cuadros de texto huérfanos.
+                        pass
 
                 # === Bloque de datos a la derecha de la foto ==============
                 data_x = photo_x + PHOTO_W + 0.8 * cm
                 data_w = PW - data_x - 1.2 * cm
-                cy = PH - 2.6 * cm
+                cy = PH - TOP_MARGIN_PDF - 0.3 * cm
 
                 # [P0 FIX] Lectura DIRECTA desde la BD — sin lógica condicional
                 # por measurement_type. Se eliminó la regla hardcodeada que
@@ -4592,22 +4463,19 @@ async def export_reports_pdf(
                 field("Personal", personal_str)
                 field("Equipo", equipo_str)
 
-                # Banner de severidad (semáforo) en esquina inferior derecha
+                # Banner de severidad (semáforo) en esquina inferior derecha,
+                # dentro del área útil y por encima del BOTTOM_MARGIN_PDF.
                 sev = (r.get("severidad") or "informativo").lower()
                 sev_hex = _severidad_hex(sev)
+                _sev_y = BOTTOM_MARGIN_PDF + 0.4 * cm
                 c.setFillColor(HexColor(sev_hex))
-                c.roundRect(PW - 4.5 * cm, photo_y - 0.2 * cm - 0.6 * cm, 3.3 * cm, 0.7 * cm,
+                c.roundRect(PW - 4.5 * cm, _sev_y, 3.3 * cm, 0.7 * cm,
                             radius=4, stroke=0, fill=1)
                 c.setFillColor(HexColor("#FFFFFF"))
                 c.setFont("Helvetica-Bold", 10)
                 c.drawCentredString(PW - 4.5 * cm + 1.65 * cm,
-                                    photo_y - 0.2 * cm - 0.2 * cm,
+                                    _sev_y + 0.22 * cm,
                                     _severidad_label(sev).upper())
-
-                # Pie del reporte
-                c.setFillColor(MUTED)
-                c.setFont("Helvetica-Oblique", 8)
-                c.drawString(photo_x, photo_y - 0.5 * cm, f"Capturado por: {nombre}")
 
                 c.showPage()
                 page_num += 1
@@ -4625,38 +4493,19 @@ async def export_reports_pdf(
                     n_extras = len(extra_imgs)
                     for chunk_start in range(0, n_extras, PER_PAGE):
                         chunk = extra_imgs[chunk_start:chunk_start + PER_PAGE]
-                        draw_header(page_num)
-                        # Encabezado de la galería
-                        c.setFillColor(BRAND)
-                        c.setFont("Helvetica-Bold", 14)
-                        c.drawString(
-                            1.5 * cm, PH - 3.0 * cm,
-                            f"Fotografías adicionales · {node_path[:60]}",
-                        )
-                        c.setStrokeColor(BORDER)
-                        c.setLineWidth(0.8)
-                        c.line(1.5 * cm, PH - 3.2 * cm, PW - 1.5 * cm, PH - 3.2 * cm)
-                        c.setFillColor(MUTED)
-                        c.setFont("Helvetica-Oblique", 9)
-                        c.drawString(
-                            1.5 * cm, PH - 3.7 * cm,
-                            f"Reporte de {fecha_str} · Página {chunk_start // PER_PAGE + 1} de "
-                            f"{(n_extras + PER_PAGE - 1) // PER_PAGE}",
-                        )
+                        # Sin encabezado ni títulos programáticos: el membrete
+                        # del template PDF (página 1) ya identifica la sección.
                         # Cálculo de posiciones: ambas fotos centradas verticalmente
                         # 2 fotos lado a lado: ancho total = 2*13.37 + gap
                         gap_x = 0.5 * cm
                         total_w = PER_PAGE * GAL_W + (PER_PAGE - 1) * gap_x
                         x0 = (PW - total_w) / 2
-                        # Centrar verticalmente bajo el header
-                        avail_top = PH - 4.0 * cm
-                        avail_bot = 1.5 * cm
+                        # Centrado vertical dentro del área útil (respeta el membrete).
+                        avail_top = PH - TOP_MARGIN_PDF
+                        avail_bot = BOTTOM_MARGIN_PDF
                         y_img = (avail_top + avail_bot - GAL_H) / 2
                         for idx, b64 in enumerate(chunk):
                             cx = x0 + idx * (GAL_W + gap_x)
-                            c.setStrokeColor(BORDER)
-                            c.setLineWidth(0.8)
-                            c.rect(cx, y_img, GAL_W, GAL_H, stroke=1, fill=0)
                             try:
                                 raw_g = base64.b64decode(_strip_b64_prefix(b64))
                                 imgg = ImageReader(io.BytesIO(raw_g))
@@ -4665,17 +4514,8 @@ async def export_reports_pdf(
                                     preserveAspectRatio=True, mask='auto',
                                 )
                             except Exception:
-                                c.setFillColor(MUTED)
-                                c.setFont("Helvetica-Oblique", 10)
-                                c.drawCentredString(cx + GAL_W / 2, y_img + GAL_H / 2,
-                                                    "(imagen no legible)")
-                            # Pie de foto
-                            c.setFillColor(MUTED)
-                            c.setFont("Helvetica", 8)
-                            c.drawCentredString(
-                                cx + GAL_W / 2, y_img - 0.4 * cm,
-                                f"Foto {chunk_start + idx + 2} de {len(imgs)} · 13.37 × 10 cm",
-                            )
+                                # Silencio total: sin placeholder textual.
+                                pass
                         c.showPage()
                         page_num += 1
 
@@ -4685,22 +4525,24 @@ async def export_reports_pdf(
             # =================================================================
             node_announ = announcements_by_node.get(n["id"]) or []
             if node_announ:
-                draw_header(page_num)
+                # Sin encabezado con logo · el membrete del template ya
+                # identifica la sección.
                 c.setFillColor(BRAND)
                 c.setFont("Helvetica-Bold", 16)
-                c.drawString(1.5 * cm, PH - 3.0 * cm, f"Notas y noticias · {node_path}")
+                c.drawString(1.5 * cm, PH - TOP_MARGIN_PDF - 0.2 * cm,
+                             f"Notas y noticias · {node_path}")
                 c.setStrokeColor(BRAND)
                 c.setLineWidth(0.8)
-                c.line(1.5 * cm, PH - 3.2 * cm, PW - 1.5 * cm, PH - 3.2 * cm)
-                cy = PH - 3.9 * cm
+                c.line(1.5 * cm, PH - TOP_MARGIN_PDF - 0.5 * cm,
+                       PW - 1.5 * cm, PH - TOP_MARGIN_PDF - 0.5 * cm)
+                cy = PH - TOP_MARGIN_PDF - 1.2 * cm
                 for ann in node_announ:
                     sev = (ann.get("jerarquia") or "informativo").lower()
                     sev_color = HexColor(_severidad_hex(sev))
-                    if cy < 2.5 * cm:
+                    if cy < BOTTOM_MARGIN_PDF + 1.0 * cm:
                         c.showPage()
                         page_num += 1
-                        draw_header(page_num)
-                        cy = PH - 3.0 * cm
+                        cy = PH - TOP_MARGIN_PDF - 0.3 * cm
                     # Etiqueta de severidad
                     c.setFillColor(sev_color)
                     c.roundRect(1.5 * cm, cy - 0.45 * cm, 2.8 * cm, 0.55 * cm,
@@ -5658,16 +5500,21 @@ async def export_reports_pptx(
             any_data = True
             node_path = path_cache.get(n["id"]) or n.get("name", "")
 
-            # === Separador de nodo: SOLO la cover_image grande y centrada.
-            # PURGA TOTAL de textos (sin título, sin nombre de nodo,
-            # sin coordenadas, sin contador de reportes).
+            # === Separador de nodo: cover_image grande + TÍTULO del nodo.
+            # Sin adornos: solo la imagen y el path institucional del nodo.
             s = _clone_membrete()
+            _title_h = Cm(1.4)
+            _title_gap = Cm(0.5)
             _cov_b64_p = _strip_b64_prefix(cover_meta_pptx.get("cover_image") or "")
+            _cw = Cm(0)
+            _ch = Cm(0)
+            _cy = TOP_MARGIN
             if _cov_b64_p:
                 try:
-                    # Cover a máxima dimensión útil respetando aspect 4:3.
+                    # Cover a máxima dimensión útil respetando aspect 4:3,
+                    # reservando abajo espacio para el título del nodo.
                     _avail_w = SW - Cm(2.0)
-                    _avail_h = SH - TOP_MARGIN - BOTTOM_MARGIN
+                    _avail_h = SH - TOP_MARGIN - BOTTOM_MARGIN - _title_h - _title_gap
                     _target_ratio = 4.0 / 3.0
                     _w_from_h = _avail_h * _target_ratio
                     if _w_from_h <= _avail_w:
@@ -5683,9 +5530,18 @@ async def export_reports_pptx(
                         _cx, _cy, width=_cw, height=_ch,
                     )
                 except Exception:
-                    # Silencio total: si la cover falla, la slide queda con
-                    # solo el membrete (sin texto de fallback).
-                    pass
+                    _ch = Cm(0)
+            # Título del nodo debajo de la cover (o centrado si no hay cover).
+            _title_y = (
+                _cy + _ch + _title_gap
+                if _ch and _ch > Cm(0)
+                else TOP_MARGIN + (SH - TOP_MARGIN - BOTTOM_MARGIN) // 2 - _title_h // 2
+            )
+            add_text(
+                s, Cm(1.0), _title_y, SW - Cm(2.0), _title_h,
+                node_path,
+                size=24, bold=True, color=BRAND_RGB, align=PP_ALIGN.CENTER,
+            )
 
             for r in node_reps:
                 slide = _clone_membrete()
