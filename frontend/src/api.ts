@@ -203,6 +203,7 @@ export interface Project {
   template_docx?: string | null;
   template_pptx?: string | null;
   template_map?: string | null;
+  general_data_images?: string[];
   created_by: string;
   created_at: string;
   archived?: boolean;
@@ -697,6 +698,21 @@ export const api = {
 
   deleteProjectTemplate: (pid: string, kind: 'pdf' | 'docx' | 'pptx' | 'map') =>
     request<Project>('DELETE', `/projects/${pid}/template/${kind}`),
+
+  // ==========================================================================
+  // Datos Generales (ex-Mapa) — array de imágenes base64 por proyecto.
+  // Se emiten como slides/páginas dedicadas al inicio de PPTX/PDF.
+  // ==========================================================================
+  addGeneralDataImage: (pid: string, imageDataUrl: string) =>
+    request<Project>('POST', `/projects/${pid}/general-data-images`, {
+      body: { image: imageDataUrl },
+    }),
+  replaceGeneralDataImages: (pid: string, images: string[]) =>
+    request<Project>('PUT', `/projects/${pid}/general-data-images`, {
+      body: { images },
+    }),
+  deleteGeneralDataImage: (pid: string, index: number) =>
+    request<Project>('DELETE', `/projects/${pid}/general-data-images/${index}`),
 
 
   /** URL absoluta para descargar un archivo del proyecto (requiere Bearer token en header). */

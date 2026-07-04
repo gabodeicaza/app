@@ -5,6 +5,7 @@ import {
 } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import * as DocumentPicker from 'expo-document-picker';
+import * as ImagePicker from 'expo-image-picker';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -117,6 +118,7 @@ export default function ProjectDetailScreen() {
   // P0 Mega-Feature: Plantillas de exportación (PDF/DOCX/PPTX)
   const [tplModalOpen, setTplModalOpen] = useState(false);
   const [tplBusyKind, setTplBusyKind] = useState<'pdf' | 'docx' | 'pptx' | null>(null);
+  const [gdModalOpen, setGdModalOpen] = useState(false);
   const [objetoSaving, setObjetoSaving] = useState(false);
   const [objetoDraft, setObjetoDraft] = useState('');
   const [clienteDraft, setClienteDraft] = useState('');
@@ -476,6 +478,78 @@ export default function ProjectDetailScreen() {
     }
   }
 
+  // ==========================================================================
+  // Datos Generales (ex-Mapa) — múltiples imágenes por proyecto que se
+  // emiten como slides/páginas dedicadas al inicio de las exportaciones.
+  // ==========================================================================
+  const [gdBusy, setGdBusy] = useState<'add' | number | null>(null);
+  const gdImages: string[] = (project as any)?.general_data_images || [];
+
+  async function onAddGeneralDataImages() {
+    if (gdBusy) return;
+    try {
+      let perm = await ImagePicker.getMediaLibraryPermissionsAsync();
+      if (perm.status !== 'granted') {
+        if (!perm.canAskAgain) {
+          const openIt = await confirm(
+            'Permiso requerido',
+            'Necesitamos acceso a tu galería para subir imágenes de Datos Generales.',
+            { confirmText: 'Abrir ajustes' },
+          );
+          if (openIt) Linking.openSettings();
+          return;
+        }
+        perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+        if (perm.status !== 'granted') return;
+      }
+      const res = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        quality: 0.85,
+        base64: true,
+        exif: false,
+        allowsMultipleSelection: Platform.OS !== 'ios',
+      });
+      if (res.canceled) return;
+      const assets = res.assets || [];
+      if (!assets.length) return;
+      setGdBusy('add');
+      let last: any = project;
+      for (const a of assets) {
+        if (!a.base64) continue;
+        const mime = a.mimeType || 'image/jpeg';
+        const dataUrl = `data:${mime};base64,${a.base64}`;
+        last = await api.addGeneralDataImage(pid, dataUrl);
+      }
+      if (last) setProject((p) => ({ ...(p || ({} as any)), ...last }));
+    } catch (e: any) {
+      Alert.alert(
+        'No se pudo subir la imagen',
+        e?.message || 'Verifica que el archivo pese menos de 5 MB e inténtalo nuevamente.',
+      );
+    } finally {
+      setGdBusy(null);
+    }
+  }
+
+  async function onDeleteGeneralDataImage(idx: number) {
+    if (gdBusy !== null) return;
+    const ok = await confirm(
+      'Eliminar imagen',
+      '¿Quitar esta imagen de Datos Generales? El reporte dejará de incluirla.',
+      { confirmText: 'Eliminar', destructive: true },
+    );
+    if (!ok) return;
+    try {
+      setGdBusy(idx);
+      const upd = await api.deleteGeneralDataImage(pid, idx);
+      setProject((p) => ({ ...(p || ({} as any)), ...upd }));
+    } catch (e: any) {
+      Alert.alert('No se pudo eliminar', e?.message || 'Inténtalo nuevamente.');
+    } finally {
+      setGdBusy(null);
+    }
+  }
+
   function addCatPersonal() {
     const t = catPersonalDraft.trim();
     if (!t) return;
@@ -725,6 +799,16 @@ export default function ProjectDetailScreen() {
               title="Plantillas de exportación"
               subtitle="PDF (recomendado) · Word · PowerPoint · Mapa"
               onPress={() => setTplModalOpen(true)}
+            />
+            <ActionTile
+              icon="images-outline"
+              title="Datos Generales"
+              subtitle={
+                gdImages.length > 0
+                  ? `${gdImages.length} imagen${gdImages.length === 1 ? '' : 'es'} · presupuesto, programa, planos…`
+                  : 'Sube imágenes (presupuesto, programa, planos, mapa…) que se incluirán al inicio del PDF/PPTX'
+              }
+              onPress={() => setGdModalOpen(true)}
             />
             <ActionTile
               icon="newspaper-outline"
@@ -1554,6 +1638,115 @@ export default function ProjectDetailScreen() {
             </ScrollView>
           </View>
         </KeyboardAvoidingView>
+      </Modal>
+
+      {/* ===== Modal: Datos Generales (imágenes múltiples) ===== */}
+      <Modal
+        visible={gdModalOpen}
+        animationType="slide"
+        transparent
+        onRequestClose={() => gdBusy === null && setGdModalOpen(false)}
+      >
+        <Pressable
+          style={styles.exportBackdrop}
+          onPress={() => gdBusy === null && setGdModalOpen(false)}
+        />
+        <View style={[styles.exportSheet, styles.sheetSurface, { maxHeight: '88%' }]}>
+          <View style={styles.exportHandle} />
+          <View style={styles.exportHeader}>
+            <Pressable
+              style={styles.exportBack}
+              onPress={() => gdBusy === null && setGdModalOpen(false)}
+              hitSlop={10}
+            >
+              <Ionicons name="chevron-down" size={22} color={colors.text} />
+            </Pressable>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.exportTitle}>Datos Generales</Text>
+              <Text style={styles.exportSubtitle}>
+                Sube imágenes (presupuesto, programa, planos, mapa…) que se emitirán como slides/páginas dedicadas al inicio del PDF/PPTX.
+              </Text>
+            </View>
+          </View>
+          <ScrollView
+            style={{ marginTop: 12 }}
+            contentContainerStyle={{ paddingBottom: 24 }}
+            keyboardShouldPersistTaps="handled"
+          >
+            <Pressable
+              onPress={onAddGeneralDataImages}
+              disabled={gdBusy !== null}
+              style={({ pressed }) => ({
+                marginHorizontal: 20,
+                marginBottom: 16,
+                paddingVertical: 14,
+                borderRadius: radius.md,
+                backgroundColor: gdBusy === 'add' ? '#94A3B8' : colors.brand,
+                alignItems: 'center',
+                justifyContent: 'center',
+                flexDirection: 'row',
+                gap: 8,
+                opacity: pressed ? 0.9 : 1,
+              })}
+            >
+              {gdBusy === 'add' ? (
+                <ActivityIndicator size="small" color="#fff" />
+              ) : (
+                <Ionicons name="add-circle" size={22} color="#fff" />
+              )}
+              <Text style={{ color: '#fff', fontWeight: '700', fontSize: 15 }}>
+                {gdBusy === 'add' ? 'Subiendo…' : 'Agregar imagen(es)'}
+              </Text>
+            </Pressable>
+            {gdImages.length === 0 ? (
+              <View style={{ paddingHorizontal: 24, paddingVertical: 30, alignItems: 'center' }}>
+                <Ionicons name="images-outline" size={48} color={colors.textMuted} />
+                <Text style={{ color: colors.textMuted, textAlign: 'center', marginTop: 10 }}>
+                  Aún no has subido imágenes.
+                </Text>
+                <Text style={{ color: colors.textMuted, textAlign: 'center', marginTop: 4, fontSize: 12 }}>
+                  Máximo 5 MB por imagen · hasta 30 imágenes por proyecto.
+                </Text>
+              </View>
+            ) : (
+              <View style={{ paddingHorizontal: 16, flexDirection: 'row', flexWrap: 'wrap', gap: 12 }}>
+                {gdImages.map((src, idx) => (
+                  <View
+                    key={idx}
+                    style={{
+                      width: '48%',
+                      backgroundColor: colors.surface,
+                      borderRadius: radius.md,
+                      borderWidth: 1,
+                      borderColor: colors.border,
+                      overflow: 'hidden',
+                    }}
+                  >
+                    <Image
+                      source={{ uri: src }}
+                      style={{ width: '100%', aspectRatio: 16 / 10, backgroundColor: '#F1F5F9' }}
+                      resizeMode="cover"
+                    />
+                    <View style={{ padding: 8, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <Text style={{ color: colors.textMuted, fontSize: 12 }}>#{idx + 1}</Text>
+                      <Pressable
+                        onPress={() => onDeleteGeneralDataImage(idx)}
+                        disabled={gdBusy !== null}
+                        hitSlop={8}
+                      >
+                        {gdBusy === idx ? (
+                          <ActivityIndicator size="small" color="#EF4444" />
+                        ) : (
+                          <Ionicons name="trash-outline" size={18} color="#EF4444" />
+                        )}
+                      </Pressable>
+                    </View>
+                  </View>
+                ))}
+              </View>
+            )}
+          </ScrollView>
+        </View>
       </Modal>
 
       {/* ===== Modal: Plantillas de exportación (PDF/DOCX/PPTX) ===== */}

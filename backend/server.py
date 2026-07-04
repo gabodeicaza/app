@@ -202,6 +202,10 @@ class ProjectOut(BaseModel):
     template_docx: Optional[str] = None
     template_pptx: Optional[str] = None
     template_map: Optional[str] = None
+    # Sección "Datos Generales" (ex-Mapa): array de imágenes base64 que se
+    # renderizan como slides/páginas dedicadas al inicio de las exportaciones
+    # (presupuesto, programa, planos, etc.). Reemplaza al single `template_map`.
+    general_data_images: List[str] = Field(default_factory=list)
     created_by: str
     created_at: datetime
     archived: bool = False
@@ -885,6 +889,7 @@ async def get_project(pid: str, user: dict = Depends(current_user)):
     p.setdefault("cliente_principal", None)
     p.setdefault("color_tema", "#003366")
     p.setdefault("report_text_color", "#0F172A")
+    p.setdefault("general_data_images", [])
     return p
 
 
@@ -958,6 +963,7 @@ def _project_public(p: dict) -> dict:
     p.setdefault("cliente_principal", None)
     p.setdefault("color_tema", "#003366")
     p.setdefault("report_text_color", "#0F172A")
+    p.setdefault("general_data_images", [])
     p.setdefault("template_pdf", None)
     p.setdefault("template_docx", None)
     p.setdefault("template_pptx", None)
@@ -3946,6 +3952,34 @@ def _strip_b64_prefix(s: str) -> str:
 
 
 # ============================================================================
+# Regla de negocio: los reportes de "Sub supervisores" se agrupan bajo la
+# disciplina "Obra Civil" en las exportaciones ejecutivas. Cualquier variante
+# ortográfica (con/sin espacio, tildes, plural, mayúsculas) cae en la regla.
+# ============================================================================
+def _normalize_area_name(area_name: Optional[str]) -> str:
+    raw = (area_name or "").strip()
+    if not raw:
+        return "SIN ÁREA"
+    _lower = raw.lower()
+    # Normalizar tildes y colapsar espacios/guiones
+    import unicodedata as _ud
+    _flat = "".join(
+        ch for ch in _ud.normalize("NFD", _lower) if _ud.category(ch) != "Mn"
+    )
+    _flat = _flat.replace("-", " ").replace("_", " ")
+    _flat = " ".join(_flat.split())  # colapsa espacios múltiples
+    # Cubre: "sub supervisor", "sub supervisores", "subsupervisor",
+    # "subsupervisores", "sub-supervisor", etc.
+    if _flat in ("sub supervisor", "sub supervisores",
+                 "subsupervisor", "subsupervisores"):
+        return "OBRA CIVIL"
+    if _flat.startswith("sub supervisor") or _flat.startswith("subsupervisor"):
+        return "OBRA CIVIL"
+    return raw
+
+
+
+# ============================================================================
 # Logo institucional por defecto (DIRAC) — cache en memoria.
 # Si el proyecto NO tiene `constructora_logo` configurado, las exportaciones
 # usan el logo DIRAC para que la cabecera/portada nunca quede vacía.
@@ -4163,6 +4197,104 @@ async def delete_project_template(pid: str, kind: str, user: dict = Depends(curr
     return _project_public(updated)
 
 
+# ============================================================================
+# DATOS GENERALES (ex-Mapa) — múltiples imágenes por proyecto.
+# El campo `general_data_images` guarda un array de strings base64 (data URLs).
+# Se renderizan como slides/páginas dedicadas al inicio de las exportaciones
+# PPTX/PDF (presupuesto, programa, planos, mapa, etc.).
+# ============================================================================
+_GENERAL_DATA_MAX = 30           # tope de imágenes por proyecto
+_GENERAL_DATA_MAX_BYTES = 5_000_000  # ~5 MB decoded por imagen
+
+
+class GeneralDataImageIn(BaseModel):
+    image: str  # data URL base64 (data:image/jpeg;base64,...)
+
+
+class GeneralDataReplaceIn(BaseModel):
+    images: List[str]  # reemplazo completo del array
+
+
+@api.post("/projects/{pid}/general-data-images", response_model=ProjectOut)
+async def add_general_data_image(
+    pid: str,
+    body: GeneralDataImageIn,
+    user: dict = Depends(current_user),
+):
+    """Agrega UNA imagen a la sección Datos Generales del proyecto.
+    Para múltiples imágenes, el frontend hace N POSTs (o usa PUT de reemplazo)."""
+    if user.get("role") not in ("coordinador_general", "jefe_proyecto"):
+        raise HTTPException(403, "Solo Coordinador o Jefe de Proyecto")
+    proj = await db.projects.find_one({"id": pid})
+    if not proj:
+        raise HTTPException(404, "Proyecto no existe")
+    b64 = (body.image or "").strip()
+    if not b64.startswith("data:image/"):
+        raise HTTPException(400, "Formato inválido: se espera data URL base64 de imagen")
+    # Validación de tamaño (aprox por len del base64)
+    try:
+        payload = b64.split(",", 1)[1] if "," in b64 else b64
+        approx_bytes = (len(payload) * 3) // 4
+        if approx_bytes > _GENERAL_DATA_MAX_BYTES:
+            raise HTTPException(413, f"Imagen demasiado grande (máx {_GENERAL_DATA_MAX_BYTES // 1_000_000} MB)")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(400, "Base64 inválido")
+    current = (proj.get("general_data_images") or [])
+    if len(current) >= _GENERAL_DATA_MAX:
+        raise HTTPException(400, f"Máximo {_GENERAL_DATA_MAX} imágenes por proyecto")
+    current = current + [b64]
+    await db.projects.update_one({"id": pid}, {"$set": {"general_data_images": current}})
+    updated = await db.projects.find_one({"id": pid})
+    return _project_public(updated)
+
+
+@api.put("/projects/{pid}/general-data-images", response_model=ProjectOut)
+async def replace_general_data_images(
+    pid: str,
+    body: GeneralDataReplaceIn,
+    user: dict = Depends(current_user),
+):
+    """Reemplaza el array completo de imágenes de Datos Generales.
+    Útil para reordenar o eliminar múltiples en batch desde el frontend."""
+    if user.get("role") not in ("coordinador_general", "jefe_proyecto"):
+        raise HTTPException(403, "Solo Coordinador o Jefe de Proyecto")
+    proj = await db.projects.find_one({"id": pid})
+    if not proj:
+        raise HTTPException(404, "Proyecto no existe")
+    imgs = body.images or []
+    if len(imgs) > _GENERAL_DATA_MAX:
+        raise HTTPException(400, f"Máximo {_GENERAL_DATA_MAX} imágenes por proyecto")
+    for im in imgs:
+        if not isinstance(im, str) or not im.startswith("data:image/"):
+            raise HTTPException(400, "Cada imagen debe ser data URL base64 (data:image/...)")
+    await db.projects.update_one({"id": pid}, {"$set": {"general_data_images": imgs}})
+    updated = await db.projects.find_one({"id": pid})
+    return _project_public(updated)
+
+
+@api.delete("/projects/{pid}/general-data-images/{index}", response_model=ProjectOut)
+async def delete_general_data_image(
+    pid: str,
+    index: int,
+    user: dict = Depends(current_user),
+):
+    """Elimina la imagen `index` (0-based) del array de Datos Generales."""
+    if user.get("role") not in ("coordinador_general", "jefe_proyecto"):
+        raise HTTPException(403, "Solo Coordinador o Jefe de Proyecto")
+    proj = await db.projects.find_one({"id": pid})
+    if not proj:
+        raise HTTPException(404, "Proyecto no existe")
+    imgs = list(proj.get("general_data_images") or [])
+    if index < 0 or index >= len(imgs):
+        raise HTTPException(404, "Índice fuera de rango")
+    imgs.pop(index)
+    await db.projects.update_one({"id": pid}, {"$set": {"general_data_images": imgs}})
+    updated = await db.projects.find_one({"id": pid})
+    return _project_public(updated)
+
+
 
 
 @api.get("/projects/{pid}/export/reports.pdf")
@@ -4364,35 +4496,56 @@ async def export_reports_pdf(
         c.showPage()
         page_num += 1
 
-        # --- PÁGINA MAPA (fondo = página 1 del template PDF) --------------
-        # Sin título programático · el membrete institucional del template
-        # ya identifica la sección "MAPA / ACTIVIDADES GENERALES".
-        _map_tpl_path = _get_project_template(proj, "map")
-        _map_drawn = False
-        if _map_tpl_path:
+        # --- PÁGINAS DE DATOS GENERALES (ex-Mapa: array de imágenes) -----
+        # Cada imagen del array `general_data_images` genera UNA página
+        # dedicada usando el mismo membrete institucional (página 1+ del
+        # template). Retro-compat: si el array está vacío pero existe el
+        # legacy `template_map`, se emite ese archivo como única página.
+        _gd_images: List[str] = list(proj.get("general_data_images") or [])
+        _legacy_map_path = _get_project_template(proj, "map") if not _gd_images else None
+
+        def _draw_gd_image(img_bytes: bytes) -> bool:
             try:
-                _map_bytes = Path(_map_tpl_path).read_bytes()
-                _map_img = ImageReader(io.BytesIO(_map_bytes))
-                # Área útil dentro de los márgenes del membrete.
+                _img = ImageReader(io.BytesIO(img_bytes))
                 _map_x = 1.5 * cm
                 _map_y = BOTTOM_MARGIN_PDF
                 _map_h = PH - TOP_MARGIN_PDF - BOTTOM_MARGIN_PDF
                 _map_w = PW - 3.0 * cm
                 c.drawImage(
-                    _map_img, _map_x, _map_y,
+                    _img, _map_x, _map_y,
                     width=_map_w, height=_map_h,
                     preserveAspectRatio=True, anchor='c', mask='auto',
                 )
-                _map_drawn = True
+                return True
             except Exception:
-                _map_drawn = False
-        if not _map_drawn:
+                return False
+
+        if _gd_images:
+            _gd_page_count = len(_gd_images)
+            for _b64 in _gd_images:
+                try:
+                    raw = base64.b64decode(_strip_b64_prefix(_b64))
+                except Exception:
+                    raw = b""
+                _draw_gd_image(raw)
+                c.showPage()
+                page_num += 1
+        elif _legacy_map_path:
+            _gd_page_count = 1
+            try:
+                _draw_gd_image(Path(_legacy_map_path).read_bytes())
+            except Exception:
+                pass
+            c.showPage()
+            page_num += 1
+        else:
+            _gd_page_count = 1
             c.setFillColor(MUTED)
             c.setFont("Helvetica-Oblique", 12)
             c.drawCentredString(PW / 2, PH / 2,
-                                "Sube una plantilla de MAPA para el proyecto para incrustarla aquí.")
-        c.showPage()
-        page_num += 1
+                                "Sube imágenes de Datos Generales para el proyecto (presupuesto, programa, planos, mapa…).")
+            c.showPage()
+            page_num += 1
 
         if total_reportes == 0:
             c.setFillColor(MUTED)
@@ -4400,7 +4553,7 @@ async def export_reports_pdf(
             c.drawCentredString(PW / 2, PH / 2, "No hay reportes para el período seleccionado.")
             c.showPage()
             c.save()
-            return buf.getvalue(), section_page_indices, []
+            return buf.getvalue(), section_page_indices, [], _gd_page_count
 
         # =====================================================================
         # LAYOUT EJECUTIVO (P0 REFACTOR 2026-07):
@@ -4417,9 +4570,9 @@ async def export_reports_pdf(
         EXEC_PHOTO_W = 13.37 * cm
         EXEC_PHOTO_H = 10.0 * cm
         EXEC_GAP_X   = 0.6 * cm       # separación horizontal entre fotos
-        EXEC_CAPTION_H = 3.2 * cm     # alto del cuadro de observaciones
-        EXEC_CAPTION_LEADING = 12
-        EXEC_CAPTION_SIZE = 9.5
+        EXEC_CAPTION_H = 3.8 * cm     # alto del cuadro de observaciones (más aire)
+        EXEC_CAPTION_LEADING = 17
+        EXEC_CAPTION_SIZE = 14
         CAPTION_COLOR = HexColor(report_text_color)
 
         def _wrap_lines(txt: str, max_w: float, font: str, size: float, max_lines: int):
@@ -4507,13 +4660,19 @@ async def export_reports_pdf(
             c.drawCentredString(PW / 2, title_y, _title)
 
         def draw_area_cover_page(area_name: str) -> None:
-            title = (area_name or "SIN ÁREA").upper()
-            size = 44
+            """Portadilla de Área — SÓLO el nombre del área centrado en blanco
+            sobre el fondo magenta de la portada. Se coloca en la MISMA
+            coordenada Y que usa el título "REPORTE X" en la portada principal
+            (PH * 0.32 + 1.6cm) para preservar coherencia visual con la
+            jerarquía institucional."""
+            title = _normalize_area_name(area_name or "SIN ÁREA").upper()
+            size = 34  # mismo tamaño que "REPORTE X" en la portada
             while c.stringWidth(title, "Helvetica-Bold", size) > PW - 3.0 * cm and size > 18:
                 size -= 2
             c.setFillColor(WHITE)
             c.setFont("Helvetica-Bold", size)
-            c.drawCentredString(PW / 2, PH / 2 - size / 3, title)
+            _y = PH * 0.32 + 1.6 * cm
+            c.drawCentredString(PW / 2, _y, title)
 
         def draw_photo_with_caption(x: float, y_photo: float,
                                     b64_img: Optional[str],
@@ -4585,17 +4744,23 @@ async def export_reports_pdf(
                 current_cover_group_id = cover_id
 
             # === Sub-agrupación por Área dentro del nodo =====================
+            # Bucket key = nombre normalizado del área (colapsa "Sub
+            # supervisores" en "OBRA CIVIL" y estabiliza tildes/plurales).
+            def _bucket_key_for_report(_r: dict) -> str:
+                _aid = _r.get("area_id")
+                if not _aid:
+                    return "SIN ÁREA"
+                _a = areas_by_id.get(_aid) or {}
+                return _normalize_area_name(_a.get("name"))
+
             reports_by_area: Dict[str, list] = {}
             for r in node_reps:
-                aid = r.get("area_id") or "__no_area__"
-                reports_by_area.setdefault(aid, []).append(r)
+                _bk = _bucket_key_for_report(r)
+                reports_by_area.setdefault(_bk, []).append(r)
 
             # Orden estable de áreas (alfabético por nombre)
-            def _area_name(aid: str) -> str:
-                if aid == "__no_area__":
-                    return "SIN ÁREA"
-                a = areas_by_id.get(aid) or {}
-                return (a.get("name") or "SIN ÁREA")
+            def _area_name(bk: str) -> str:
+                return bk or "SIN ÁREA"
             ordered_area_ids = sorted(reports_by_area.keys(), key=lambda a: _area_name(a))
 
             for aid in ordered_area_ids:
@@ -4615,7 +4780,7 @@ async def export_reports_pdf(
                 # reporte al que pertenece).
                 photo_items: List[tuple] = []
                 for r in area_reps:
-                    imgs = (r.get("images") or [])[:2]  # máx 2 fotos por reporte
+                    imgs = (r.get("images") or [])  # TODAS las fotos del reporte
                     obs = (r.get("observaciones") or r.get("notes") or "").strip()
                     if not obs:
                         obs = (r.get("incidencias") or "").strip() or "—"
@@ -4646,10 +4811,10 @@ async def export_reports_pdf(
                     page_num += 1
 
         c.save()
-        return buf.getvalue(), section_page_indices, area_page_indices
+        return buf.getvalue(), section_page_indices, area_page_indices, _gd_page_count
 
     # Render bloqueante en thread aparte → libera event loop
-    pdf_bytes, section_page_indices, area_page_indices = await asyncio.to_thread(_build_pdf_blocking)
+    pdf_bytes, section_page_indices, area_page_indices, gd_page_count = await asyncio.to_thread(_build_pdf_blocking)
 
     # ── Fusión con plantilla PDF institucional (si existe) ────────────────
     # Modo Superposición:
@@ -4665,7 +4830,7 @@ async def export_reports_pdf(
         try:
             pdf_bytes = await asyncio.to_thread(
                 _overlay_pdf_on_template, pdf_bytes, tpl_pdf,
-                section_page_indices, area_page_indices,
+                section_page_indices, area_page_indices, gd_page_count,
             )
         except Exception as e:
             log.warning("template pdf merge failed: %s", e)
@@ -4683,6 +4848,7 @@ def _overlay_pdf_on_template(
     template_path: str,
     section_page_indices: Optional[List[int]] = None,  # deprecated (no-op)
     cover_bg_page_indices: Optional[List[int]] = None,  # portadillas de Área
+    general_data_page_count: int = 1,  # nº de páginas de Datos Generales
 ) -> bytes:
     """Modo Superposición: fusiona el PDF generado por SynCo sobre la plantilla PDF.
 
@@ -4717,17 +4883,17 @@ def _overlay_pdf_on_template(
     writer = PdfWriter()
     content_cycle_idx = 0
     _area_cover_set = set(cover_bg_page_indices or [])
+    _gd_count = max(1, int(general_data_page_count or 1))
     for i, cpage in enumerate(content_reader.pages):
         fresh = PdfReader(io.BytesIO(tpl_bytes))
         if i == 0:
             # Portada del reporte → fondo = página 0 del template
             base_idx = 0
-        elif i == 1:
-            # Mapa del reporte → fondo = página 1 del template (si existe)
+        elif 1 <= i <= _gd_count:
+            # Datos Generales (ex-Mapa) → fondo = página 1 del template
             base_idx = 1 if tpl_count >= 2 else 0
         elif i in _area_cover_set:
-            # Portadilla de Área → fondo = página 0 del template (portada
-            # institucional magenta) para mantener la jerarquía visual.
+            # Portadilla de Área → fondo = página 0 del template (magenta)
             base_idx = 0
         else:
             # Lienzo recurrente: cicla entre content_base_start..content_base_last
@@ -5595,88 +5761,87 @@ async def export_reports_pptx(
         TEXT_MUTED = (0x64, 0x75, 0x8B)
 
         # ===== PORTADA PRINCIPAL (Slide 0 de la plantilla) =============
-        # Se inyecta contenido ejecutivo alineado a la IZQUIERDA:
-        #   · Título "REPORTE DIARIO/SEMANAL/MENSUAL"
-        #   · Rango de fechas
-        #   · Nombre del proyecto
-        # Color de texto blanco/parametrizable (Default: blanco), negritas,
-        # tamaños grandes. Si no hay plantilla, se crea slide en blanco.
-        if tpl_cover_slide is not None:
-            _cx_left = Cm(1.5)
-            _cy_top = Cm(6.0)
-            _cw_full = SW - Cm(3.0)
-            add_text(
-                tpl_cover_slide, _cx_left, _cy_top, _cw_full, Cm(3.0),
-                report_title, size=54, bold=True,
-                color=COVER_TEXT_COLOR, align=PP_ALIGN.LEFT,
-            )
-            add_text(
-                tpl_cover_slide, _cx_left, _cy_top + Cm(3.2), _cw_full, Cm(1.2),
-                fechas_label, size=22, bold=True,
-                color=COVER_TEXT_COLOR, align=PP_ALIGN.LEFT,
-            )
-            add_text(
-                tpl_cover_slide, _cx_left, _cy_top + Cm(4.6), _cw_full, Cm(2.0),
-                project_name, size=28, bold=True,
-                color=COVER_TEXT_COLOR, align=PP_ALIGN.LEFT,
-            )
-        elif tpl_master_slide is None:
+        # NOTA IMPORTANTE: los textos de la portada se inyectan AL FINAL
+        # del render (después de todas las clonaciones de portadillas de
+        # Área), para evitar que dichas portadillas hereden estos textos
+        # al clonarse desde `tpl_cover_slide`. Aquí solo garantizamos que
+        # existe la portada; los textos van al cierre del builder.
+        if tpl_cover_slide is None and tpl_master_slide is None:
             # Sin plantilla: portada en blanco.
             prs.slides.add_slide(blank)
 
-        # ===== SLIDE MAPA (clonando el membrete, sin título programático) ====
-        s_map = _clone_membrete()
-        _map_tpl_path_pptx = _get_project_template(proj, "map")
-        _map_drawn_pptx = False
-        if _map_tpl_path_pptx:
+        # ===== SLIDES DATOS GENERALES (ex-Mapa: array de imágenes) =========
+        # Cada imagen en `general_data_images` produce UNA slide dedicada
+        # sobre el membrete institucional. Retro-compat: si el array está
+        # vacío pero existe `template_map` (legacy), se emite ese archivo
+        # como única slide. Si nada, slide con mensaje guía.
+        _gd_images_p: List[str] = list(proj.get("general_data_images") or [])
+        _legacy_map_pptx = _get_project_template(proj, "map") if not _gd_images_p else None
+
+        def _emit_gd_slide_from_bytes(img_bytes: bytes) -> None:
+            _sl = _clone_membrete()
             try:
-                _map_bytes_pptx = Path(_map_tpl_path_pptx).read_bytes()
                 _map_x = Cm(1.0)
                 _map_y = TOP_MARGIN
                 _map_w = SW - Cm(2.0)
                 _map_h = SH - _map_y - BOTTOM_MARGIN
-                s_map.shapes.add_picture(
-                    io.BytesIO(_map_bytes_pptx),
+                _sl.shapes.add_picture(
+                    io.BytesIO(img_bytes),
                     _map_x, _map_y, width=_map_w, height=_map_h,
                 )
-                _map_drawn_pptx = True
             except Exception:
-                _map_drawn_pptx = False
-        if not _map_drawn_pptx:
-            add_text(s_map, Cm(1.0), SH / 2 - Cm(0.6), SW - Cm(2.0), Cm(1.2),
-                     "Sube una plantilla de MAPA para el proyecto para incrustarla aquí.",
+                pass
+
+        if _gd_images_p:
+            for _b64 in _gd_images_p:
+                try:
+                    raw = base64.b64decode(_strip_b64_prefix(_b64))
+                    _emit_gd_slide_from_bytes(raw)
+                except Exception:
+                    _emit_gd_slide_from_bytes(b"")
+        elif _legacy_map_pptx:
+            try:
+                _emit_gd_slide_from_bytes(Path(_legacy_map_pptx).read_bytes())
+            except Exception:
+                _emit_gd_slide_from_bytes(b"")
+        else:
+            _empty = _clone_membrete()
+            add_text(_empty, Cm(1.0), SH / 2 - Cm(0.6), SW - Cm(2.0), Cm(1.2),
+                     "Sube imágenes de Datos Generales para el proyecto (presupuesto, programa, planos, mapa…).",
                      size=14, italic=True, color=TEXT_MUTED,
                      align=PP_ALIGN.CENTER)
 
         # ================================================================
-        # Helper: emite una slide ejecutiva con hasta 2 reportes (foto + pie).
+        # Helper: emite una slide ejecutiva con hasta 2 FOTOS (foto + pie).
         # Cada foto es apaisada 13.37 × 10 cm; debajo va un cuadro de texto
-        # con la descripción/observación del reporte (máx 4 líneas).
+        # con la descripción/observación del reporte al que pertenece
+        # (máx 4 líneas). Un reporte con 4 fotos genera 2 slides.
         # ================================================================
         PHOTO_W = Cm(13.37)
         PHOTO_H = Cm(10.0)
         GAP_X = Cm(0.6)
-        CAPTION_H = Cm(3.6)  # ≈ 4 líneas @ Pt(11)
+        CAPTION_H = Cm(3.8)  # holgura para caption a 14pt (≈ 4 líneas)
         CAPTION_GAP = Cm(0.25)
+        CAPTION_FONT_PT = 14
 
-        def _pair_slide(reports_pair):
-            """Emite una slide con hasta 2 reportes (foto + pie de texto)."""
+        def _pair_slide(photo_pair):
+            """Emite una slide con hasta 2 fotos (foto + pie de texto).
+            `photo_pair` es una lista de tuplas (b64_img|None, caption_str)."""
             slide = _clone_membrete()
             total_w = 2 * PHOTO_W + GAP_X
             x0 = (SW - total_w) // 2
-            # Bloque foto+pie centrado verticalmente dentro del área útil.
             avail_top = TOP_MARGIN
             avail_h = SH - TOP_MARGIN - BOTTOM_MARGIN
             block_h = PHOTO_H + CAPTION_GAP + CAPTION_H
             y_photo = avail_top + (avail_h - block_h) // 2
-            for idx, r in enumerate(reports_pair):
-                if r is None:
+            for idx, item in enumerate(photo_pair):
+                if item is None:
                     continue
+                b64_img, caption = item
                 cx = x0 + idx * (PHOTO_W + GAP_X)
-                imgs = (r.get("images") or [])[:1]
-                if imgs:
+                if b64_img:
                     try:
-                        raw = base64.b64decode(_strip_b64_prefix(imgs[0]))
+                        raw = base64.b64decode(_strip_b64_prefix(b64_img))
                         slide.shapes.add_picture(
                             io.BytesIO(raw), cx, y_photo,
                             width=PHOTO_W, height=PHOTO_H,
@@ -5684,16 +5849,13 @@ async def export_reports_pptx(
                     except Exception:
                         pass
                 # Pie de foto: descripción/observación del reporte
-                caption = (
-                    r.get("observaciones") or r.get("notes") or ""
-                ).strip() or "—"
-                # Máximo ~4 líneas: truncar a 320 chars.
-                if len(caption) > 320:
-                    caption = caption[:317] + "…"
+                caption_txt = (caption or "").strip() or "—"
+                if len(caption_txt) > 320:
+                    caption_txt = caption_txt[:317] + "…"
                 add_text(
                     slide, cx, y_photo + PHOTO_H + CAPTION_GAP,
                     PHOTO_W, CAPTION_H,
-                    caption, size=11, bold=False,
+                    caption_txt, size=CAPTION_FONT_PT, bold=False,
                     color=PHOTO_CAPTION_COLOR, align=PP_ALIGN.LEFT,
                 )
             return slide
@@ -5748,41 +5910,79 @@ async def export_reports_pptx(
                 size=28, bold=True, color=NODE_TITLE_COLOR, align=PP_ALIGN.CENTER,
             )
 
-            # === Sub-bucle por Área/Disciplina =============================
+            # === Sub-bucle por Área/Disciplina (bucket normalizado) ========
+            # "Sub supervisores" → "OBRA CIVIL". Áreas con tildes/plurales
+            # se colapsan al mismo bucket.
             reps_by_area: dict = {}
             for r in node_reps:
-                aid = r.get("area_id") or "__sin_area__"
-                reps_by_area.setdefault(aid, []).append(r)
-            # Orden estable por nombre de área (los sin área al final).
-            _sorted_area_ids = sorted(
-                reps_by_area.keys(),
-                key=lambda a: (
-                    1 if a == "__sin_area__" else 0,
-                    (areas_by_id.get(a, {}).get("name") or "").lower(),
-                ),
-            )
-            for aid in _sorted_area_ids:
-                area_reps = reps_by_area[aid]
-                area_name = (
-                    areas_by_id.get(aid, {}).get("name")
-                    if aid != "__sin_area__" else "Sin Área"
-                ) or "Sin Área"
+                _aid_r = r.get("area_id")
+                if not _aid_r:
+                    _bk = "SIN ÁREA"
+                else:
+                    _bk = _normalize_area_name(
+                        (areas_by_id.get(_aid_r) or {}).get("name")
+                    )
+                reps_by_area.setdefault(_bk, []).append(r)
+            _sorted_area_ids = sorted(reps_by_area.keys(), key=lambda a: a.lower())
+            for bkey in _sorted_area_ids:
+                area_reps = reps_by_area[bkey]
+                area_name = bkey  # ya normalizado
 
                 # --- Portadilla de Área (clon del fondo de la portada) ----
+                # Título posicionado en la MISMA Y que "REPORTE X" en la
+                # portada principal, para preservar consistencia visual.
                 a_slide = _clone_cover_bg()
+                _area_y = SH * 0.32  # equivalente a PH*0.32 en el PDF
                 add_text(
-                    a_slide, Cm(1.5), SH / 2 - Cm(2.0), SW - Cm(3.0), Cm(4.0),
+                    a_slide, Cm(1.5), _area_y, SW - Cm(3.0), Cm(4.0),
                     area_name.upper(),
-                    size=60, bold=True,
+                    size=44, bold=True,
                     color=AREA_TEXT_COLOR, align=PP_ALIGN.CENTER,
                 )
 
-                # --- Slides ejecutivas de reportes (2 por slide) ----------
-                for i in range(0, len(area_reps), 2):
-                    pair = area_reps[i:i + 2]
+                # --- Slides ejecutivas: 2 FOTOS por slide -----------------
+                # Iteramos TODAS las fotos de cada reporte (no solo la
+                # primera). Un reporte con 4 fotos → 2 slides.
+                photo_items: list = []
+                for _r in area_reps:
+                    _imgs = _r.get("images") or []
+                    _obs = (
+                        _r.get("observaciones") or _r.get("notes") or ""
+                    ).strip() or (_r.get("incidencias") or "").strip() or "—"
+                    if not _imgs:
+                        photo_items.append((None, _obs))
+                    for _b64 in _imgs:
+                        photo_items.append((_b64, _obs))
+                for i in range(0, len(photo_items), 2):
+                    pair = photo_items[i:i + 2]
                     if len(pair) < 2:
                         pair.append(None)
                     _pair_slide(pair)
+
+        # ==============================================================
+        # TEXTOS DE PORTADA PRINCIPAL — se inyectan al FINAL para que las
+        # clonaciones previas de `tpl_cover_slide` (portadillas de Área) no
+        # arrastren estos textos como fondo residual.
+        # ==============================================================
+        if tpl_cover_slide is not None:
+            _cx_left = Cm(1.5)
+            _cy_top = Cm(6.0)
+            _cw_full = SW - Cm(3.0)
+            add_text(
+                tpl_cover_slide, _cx_left, _cy_top, _cw_full, Cm(3.0),
+                report_title, size=54, bold=True,
+                color=COVER_TEXT_COLOR, align=PP_ALIGN.LEFT,
+            )
+            add_text(
+                tpl_cover_slide, _cx_left, _cy_top + Cm(3.2), _cw_full, Cm(1.2),
+                fechas_label, size=22, bold=True,
+                color=COVER_TEXT_COLOR, align=PP_ALIGN.LEFT,
+            )
+            add_text(
+                tpl_cover_slide, _cx_left, _cy_top + Cm(4.6), _cw_full, Cm(2.0),
+                project_name, size=28, bold=True,
+                color=COVER_TEXT_COLOR, align=PP_ALIGN.LEFT,
+            )
 
         if not any_data:
             s2 = _clone_membrete()
