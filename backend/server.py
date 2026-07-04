@@ -148,6 +148,7 @@ class ProjectIn(BaseModel):
     objeto_contrato: Optional[str] = None  # Descripción institucional del objeto del contrato
     cliente_principal: Optional[str] = None  # Cliente / dependencia que contrata (aparece en portada)
     color_tema: Optional[str] = None  # Color institucional del proyecto (#RRGGBB). Default #003366
+    report_text_color: Optional[str] = None  # Color del pie de foto en reportes ejecutivos (#RRGGBB). Default #0F172A
     start_date: Optional[str] = None  # ISO date "2026-01-15"
     end_date: Optional[str] = None
     description: Optional[str] = None
@@ -167,6 +168,7 @@ class ProjectPatch(BaseModel):
     objeto_contrato: Optional[str] = None
     cliente_principal: Optional[str] = None
     color_tema: Optional[str] = None
+    report_text_color: Optional[str] = None
     start_date: Optional[str] = None
     end_date: Optional[str] = None
     description: Optional[str] = None
@@ -186,6 +188,7 @@ class ProjectOut(BaseModel):
     objeto_contrato: Optional[str] = None
     cliente_principal: Optional[str] = None
     color_tema: Optional[str] = None
+    report_text_color: Optional[str] = None
     start_date: Optional[str] = None
     end_date: Optional[str] = None
     description: Optional[str] = None
@@ -851,6 +854,7 @@ async def create_project(body: ProjectIn, user: dict = Depends(require_role(ROLE
         "objeto_contrato": (body.objeto_contrato or "").strip() or None,
         "cliente_principal": (body.cliente_principal or "").strip() or None,
         "color_tema": _sanitize_color_hex(body.color_tema) or "#003366",
+        "report_text_color": _sanitize_color_hex(body.report_text_color) or "#0F172A",
         "start_date": body.start_date,
         "end_date": body.end_date,
         "description": (body.description or "").strip() or None,
@@ -880,6 +884,7 @@ async def get_project(pid: str, user: dict = Depends(current_user)):
     p.setdefault("objeto_contrato", None)
     p.setdefault("cliente_principal", None)
     p.setdefault("color_tema", "#003366")
+    p.setdefault("report_text_color", "#0F172A")
     return p
 
 
@@ -909,6 +914,8 @@ async def update_project(pid: str, body: ProjectPatch, user: dict = Depends(requ
         upd["cliente_principal"] = body.cliente_principal.strip() or None
     if body.color_tema is not None:
         upd["color_tema"] = _sanitize_color_hex(body.color_tema) or "#003366"
+    if body.report_text_color is not None:
+        upd["report_text_color"] = _sanitize_color_hex(body.report_text_color) or "#0F172A"
     if body.start_date is not None:
         upd["start_date"] = body.start_date
     if body.end_date is not None:
@@ -950,6 +957,7 @@ def _project_public(p: dict) -> dict:
     p.setdefault("objeto_contrato", None)
     p.setdefault("cliente_principal", None)
     p.setdefault("color_tema", "#003366")
+    p.setdefault("report_text_color", "#0F172A")
     p.setdefault("template_pdf", None)
     p.setdefault("template_docx", None)
     p.setdefault("template_pptx", None)
@@ -4204,6 +4212,7 @@ async def export_reports_pdf(
     end_dt = data["end_dt"]
     prev_reading_by_node = data["prev_reading_by_node"]
     cover_ancestor_by_node = data.get("cover_ancestor_by_node", {})
+    areas_by_id = data.get("areas_by_id", {})
 
     role = user["role"]
 
@@ -4214,6 +4223,9 @@ async def export_reports_pdf(
     project_objeto = proj.get("objeto_contrato") or None
     project_cliente = (proj.get("cliente_principal") or "").strip() or None
     project_color = _sanitize_color_hex(proj.get("color_tema")) or "#003366"
+    # Color configurable del pie de foto (texto de observaciones bajo la imagen).
+    # Fallback: negro. Usuario puede setear cualquier hex (#RRGGBB).
+    report_text_color = _sanitize_color_hex(proj.get("report_text_color")) or "#0F172A"
     constructora_logo_b64 = (proj.get("constructora_logo") or "").strip() or None
     user_name = user.get("name", "")
     user_email = user.get("email", "")
@@ -4314,12 +4326,41 @@ async def export_reports_pdf(
         total_reportes = sum(len(v) for v in reports_by_node.values())
 
         # --- PORTADA INSTITUCIONAL ----------------------------------------
-        # PURGA TOTAL: la portada se deja 100 % vacía. El overlay
-        # `_overlay_pdf_on_template` fusiona esta página vacía con la
-        # página 0 del template PDF (la portada institucional del usuario),
-        # que ya contiene todo el diseño, logos y textos. NO se inyecta
-        # nada por código para respetar la plantilla al 100 %.
+        # La página 0 del template PDF aporta el diseño y los logos. Aquí
+        # inyectamos SOLO los textos ejecutivos (tipo de reporte, período,
+        # proyecto), respetando la plantilla del cliente.
         page_num = 1
+        _period_titles = {
+            "diario": "REPORTE DIARIO",
+            "semanal": "REPORTE SEMANAL",
+            "mensual": "REPORTE MENSUAL",
+        }
+        _report_title = _period_titles.get((period_type or "").lower())
+        if _report_title:
+            _fmt = "%d/%m/%Y"
+            try:
+                _start_txt = data["start_dt"].strftime(_fmt)
+                _end_txt = data["end_dt"].strftime(_fmt)
+                _date_range_txt = f"{_start_txt} — {_end_txt}"
+            except Exception:
+                _date_range_txt = ""
+            _proj_upper = (project_name or "").upper()
+            # Colocado en la mitad inferior de la portada para no chocar con
+            # el logotipo/encabezado institucional del template.
+            _cover_center_y = PH * 0.32
+            c.setFillColor(WHITE)
+            c.setFont("Helvetica-Bold", 34)
+            c.drawCentredString(PW / 2, _cover_center_y + 1.6 * cm, _report_title)
+            if _date_range_txt:
+                c.setFont("Helvetica", 16)
+                c.drawCentredString(PW / 2, _cover_center_y + 0.4 * cm, _date_range_txt)
+            if _proj_upper:
+                # Envolver nombre largo del proyecto en máx 2 líneas.
+                _proj_size = 18
+                while c.stringWidth(_proj_upper, "Helvetica-Bold", _proj_size) > PW - 3 * cm and _proj_size > 12:
+                    _proj_size -= 1
+                c.setFont("Helvetica-Bold", _proj_size)
+                c.drawCentredString(PW / 2, _cover_center_y - 1.2 * cm, _proj_upper)
         c.showPage()
         page_num += 1
 
@@ -4359,35 +4400,63 @@ async def export_reports_pdf(
             c.drawCentredString(PW / 2, PH / 2, "No hay reportes para el período seleccionado.")
             c.showPage()
             c.save()
-            return buf.getvalue(), section_page_indices
+            return buf.getvalue(), section_page_indices, []
 
-        # --- CUERPO ---------------------------------------------------------
-        PHOTO_W = 10.0 * cm
-        PHOTO_H = 13.37 * cm
+        # =====================================================================
+        # LAYOUT EJECUTIVO (P0 REFACTOR 2026-07):
+        #   1. Portadilla de Nodo (ya renderizada arriba en el bucle).
+        #   2. Portadilla de Área (NUEVA) - clonada del fondo de portada.
+        #   3. Slides de reporte: 2 fotos apaisadas (13.37 × 10 cm) lado a
+        #      lado, con caption (máx 4 líneas) DEBAJO de cada foto.
+        #   · Eliminado: tablas de campos, banner de severidad, "Notas y
+        #     noticias". La densidad se movió al PDF ejecutivo.
+        # =====================================================================
+        area_page_indices: List[int] = []
 
-        def render_text_block(x, y, max_w, lines, font="Helvetica", size=9, leading=12):
-            c.setFont(font, size)
-            c.setFillColor(TEXT)
-            cy = y
-            for ln in lines:
-                if cy < 1.5 * cm:
-                    break
-                words = (ln or "").split(" ")
-                current = ""
-                for w in words:
-                    test = (current + " " + w).strip()
-                    if c.stringWidth(test, font, size) > max_w:
-                        c.drawString(x, cy, current)
-                        cy -= leading
+        # Dimensiones del layout ejecutivo (2 fotos por página)
+        EXEC_PHOTO_W = 13.37 * cm
+        EXEC_PHOTO_H = 10.0 * cm
+        EXEC_GAP_X   = 0.6 * cm       # separación horizontal entre fotos
+        EXEC_CAPTION_H = 3.2 * cm     # alto del cuadro de observaciones
+        EXEC_CAPTION_LEADING = 12
+        EXEC_CAPTION_SIZE = 9.5
+        CAPTION_COLOR = HexColor(report_text_color)
+
+        def _wrap_lines(txt: str, max_w: float, font: str, size: float, max_lines: int):
+            """Word-wrap simple truncado a `max_lines` líneas.
+            Devuelve lista de strings ya envueltos."""
+            out = []
+            words = (txt or "").strip().split()
+            current = ""
+            for w in words:
+                cand = (current + " " + w).strip() if current else w
+                if c.stringWidth(cand, font, size) <= max_w:
+                    current = cand
+                else:
+                    if current:
+                        out.append(current)
                         current = w
-                        if cy < 1.5 * cm:
-                            return cy
                     else:
-                        current = test
-                if current:
-                    c.drawString(x, cy, current)
-                    cy -= leading
-            return cy
+                        # palabra sola más ancha que la caja → truncar
+                        out.append(w)
+                        current = ""
+                    if len(out) >= max_lines:
+                        break
+            if current and len(out) < max_lines:
+                out.append(current)
+            # Última línea con elipsis si aún queda texto
+            if len(out) == max_lines:
+                cw = c.stringWidth(out[-1], font, size)
+                remaining_words = len(words) - sum(len(l.split()) for l in out)
+                if remaining_words > 0:
+                    ellipsis = "…"
+                    # recortar hasta que quepa
+                    while cw + c.stringWidth(ellipsis, font, size) > max_w and out[-1]:
+                        out[-1] = out[-1][:-1]
+                        cw = c.stringWidth(out[-1], font, size)
+                    out[-1] = out[-1] + ellipsis
+            return out
+
 
         def draw_dynamic_cover_page(cover_name: str, cover_b64: str, page_num_val: int) -> None:
             """Portadilla de Nodo — LIMPIA sobre el membrete del template PDF.
@@ -4405,7 +4474,6 @@ async def export_reports_pdf(
             avail_bot = BOTTOM_MARGIN_PDF
             avail_h = avail_top - avail_bot - title_h - title_gap
             avail_w = PW - 3.0 * cm
-            # Cover a máxima dimensión útil respetando aspect-ratio 4:3.
             target_ratio = 4.0 / 3.0
             w_from_h = avail_h * target_ratio
             if w_from_h <= avail_w:
@@ -4429,7 +4497,6 @@ async def export_reports_pdf(
                     drawn = True
             except Exception:
                 drawn = False
-            # Título del nodo (path institucional) debajo de la cover.
             _title = (cover_name or "SECCIÓN").upper()
             _size = 18
             while c.stringWidth(_title, "Helvetica-Bold", _size) > PW - 3 * cm and _size > 10:
@@ -4439,33 +4506,75 @@ async def export_reports_pdf(
             title_y = img_y - title_gap - title_h / 2 if drawn else avail_bot + avail_h / 2
             c.drawCentredString(PW / 2, title_y, _title)
 
-        # ==============================================================
-        # Loop de nodos hoja con agrupación por Portadilla dinámica.
+        def draw_area_cover_page(area_name: str) -> None:
+            title = (area_name or "SIN ÁREA").upper()
+            size = 44
+            while c.stringWidth(title, "Helvetica-Bold", size) > PW - 3.0 * cm and size > 18:
+                size -= 2
+            c.setFillColor(WHITE)
+            c.setFont("Helvetica-Bold", size)
+            c.drawCentredString(PW / 2, PH / 2 - size / 3, title)
+
+        def draw_photo_with_caption(x: float, y_photo: float,
+                                    b64_img: Optional[str],
+                                    caption: str) -> None:
+            """Dibuja UNA foto apaisada 13.37×10 cm en (x, y_photo) con su
+            caption (máx 4 líneas) DEBAJO. `y_photo` es la esquina inferior-
+            izquierda de la foto. El caption va inmediatamente debajo."""
+            drawn = False
+            if b64_img:
+                try:
+                    raw = base64.b64decode(_strip_b64_prefix(b64_img))
+                    img = ImageReader(io.BytesIO(raw))
+                    c.drawImage(
+                        img, x, y_photo,
+                        width=EXEC_PHOTO_W, height=EXEC_PHOTO_H,
+                        preserveAspectRatio=True, anchor='c', mask='auto',
+                    )
+                    drawn = True
+                except Exception:
+                    drawn = False
+            if not drawn:
+                # Rectángulo placeholder discreto (sin ghost images)
+                c.setStrokeColor(BORDER)
+                c.setLineWidth(0.5)
+                c.rect(x, y_photo, EXEC_PHOTO_W, EXEC_PHOTO_H, stroke=1, fill=0)
+                c.setFillColor(MUTED)
+                c.setFont("Helvetica-Oblique", 10)
+                c.drawCentredString(x + EXEC_PHOTO_W / 2,
+                                    y_photo + EXEC_PHOTO_H / 2,
+                                    "(sin imagen)")
+            # Caption debajo de la foto
+            caption_top = y_photo - 0.35 * cm
+            font = "Helvetica"
+            wrapped = _wrap_lines(caption or "—",
+                                  EXEC_PHOTO_W,
+                                  font, EXEC_CAPTION_SIZE, 4)
+            c.setFillColor(CAPTION_COLOR)
+            c.setFont(font, EXEC_CAPTION_SIZE)
+            cy = caption_top
+            for ln in wrapped:
+                c.drawString(x, cy, ln)
+                cy -= EXEC_CAPTION_LEADING
+
+        # =====================================================================
+        # Agrupación jerárquica: Nodo (con cover) → Área → Reportes.
         # [FILTRO ESTRICTO 2b] Solo procesamos nodos cuyo árbol (nodo o
-        # ancestro) tenga cover_image. Nodos sin cover_image en toda la
-        # rama se OMITEN completamente (sin portadilla genérica).
-        # ==============================================================
+        # ancestro) tenga cover_image. Sin cover_image en toda la rama → OMITIR.
+        # =====================================================================
         current_cover_group_id = None
         for n in leaf_nodes:
             node_reps = reports_by_node.get(n["id"]) or []
             if not node_reps:
                 continue
-            # === FILTRO ESTRICTO por cover_image (con herencia) ===========
             cover_meta = cover_ancestor_by_node.get(n["id"])
             if not cover_meta:
-                # Nodo (y ancestros) sin cover_image → omitir por completo.
                 continue
             node_path = path_cache.get(n["id"]) or n.get("name", "")
-            # Acumulado de "Primera lectura" — arranca con el último valor previo
-            # al periodo (o 0 si es el primer reporte histórico del nodo).
-            primera_acc = prev_reading_by_node.get(n["id"])
-            if primera_acc is None:
-                primera_acc = 0.0
 
-            # === Portadilla DINÁMICA (con cover_image) ====================
+            # === Portadilla DINÁMICA de Nodo (agrupada por cover_image) ======
             cover_id = cover_meta["id"]
             if cover_id != current_cover_group_id:
-                # Nuevo grupo con cover_image → Portadilla DINÁMICA
                 draw_dynamic_cover_page(
                     cover_meta.get("name") or node_path,
                     cover_meta.get("cover_image"),
@@ -4474,209 +4583,73 @@ async def export_reports_pdf(
                 c.showPage()
                 page_num += 1
                 current_cover_group_id = cover_id
-            # Si es el mismo grupo, no dibujamos nueva portadilla (agrupado)
 
+            # === Sub-agrupación por Área dentro del nodo =====================
+            reports_by_area: Dict[str, list] = {}
             for r in node_reps:
-                # === Foto centrada 10 x 13.37 cm — respetando membrete ====
-                photo_x = (PW - PHOTO_W) / 2
-                photo_y = PH - TOP_MARGIN_PDF - PHOTO_H
-                img_b64 = None
-                # [FILTRO 3a] Máximo 2 fotos por reporte (1 principal + 1 extra)
-                imgs = (r.get("images") or [])[:2]
-                if imgs:
-                    img_b64 = _strip_b64_prefix(imgs[0])
-                if img_b64:
-                    try:
-                        raw = base64.b64decode(img_b64)
-                        img = ImageReader(io.BytesIO(raw))
-                        c.drawImage(img, photo_x, photo_y, width=PHOTO_W, height=PHOTO_H,
-                                    preserveAspectRatio=True, mask='auto')
-                    except Exception:
-                        # Silencio total: no se dibuja placeholder para evitar
-                        # cuadros de texto huérfanos.
-                        pass
+                aid = r.get("area_id") or "__no_area__"
+                reports_by_area.setdefault(aid, []).append(r)
 
-                # === Bloque de datos a la derecha de la foto ==============
-                data_x = photo_x + PHOTO_W + 0.8 * cm
-                data_w = PW - data_x - 1.2 * cm
-                cy = PH - TOP_MARGIN_PDF - 0.3 * cm
+            # Orden estable de áreas (alfabético por nombre)
+            def _area_name(aid: str) -> str:
+                if aid == "__no_area__":
+                    return "SIN ÁREA"
+                a = areas_by_id.get(aid) or {}
+                return (a.get("name") or "SIN ÁREA")
+            ordered_area_ids = sorted(reports_by_area.keys(), key=lambda a: _area_name(a))
 
-                # [P0 FIX] Lectura DIRECTA desde la BD — sin lógica condicional
-                # por measurement_type. Se eliminó la regla hardcodeada que
-                # secuestraba "Coordenadas" forzando ultima="X, Y" y avance="—".
-                # Ahora se imprime SIEMPRE lo que viene del documento.
-                def _raw_to_str(v):
-                    if v is None or v == "":
-                        return "—"
-                    try:
-                        return _fmt_reading(float(v))
-                    except Exception:
-                        return str(v).strip() or "—"
+            for aid in ordered_area_ids:
+                area_reps = reports_by_area[aid]
+                area_name = _area_name(aid)
 
-                primera_str = _raw_to_str(r.get("primera_lectura"))
-                ultima_str = _raw_to_str(r.get("ultima_lectura"))
-                _av = r.get("avance")
-                avance_str = str(_av).strip() if _av not in (None, "") else "—"
-
-                ts = r.get("created_at")
-                fecha_str = _fmt_fecha_dd_mm_yyyy(ts) if isinstance(ts, datetime) else "—"
-                nombre = r.get("captured_by_name") or "—"
-                # Constructora siempre desde el proyecto
-                contratista = (project_constructora or "").strip() or "N/A"
-                unidad_r = (r.get("unidad") or "m").strip() or "m"
-                personal_list = [p for p in (r.get("personnel") or []) if p]
-                equipo_list = [e for e in (r.get("equipment") or []) if e]
-                personal_str = ", ".join(personal_list) if personal_list else "N/A"
-                equipo_str = ", ".join(equipo_list) if equipo_list else "N/A"
-                obs_str = (r.get("observaciones") or r.get("notes") or "").strip() or "N/A"
-                incidencias_str = (r.get("incidencias") or "").strip() or None
-
-                def field(label: str, value, font="Helvetica", size=9.5, leading=12):
-                    nonlocal cy
-                    c.setFillColor(BRAND)
-                    c.setFont("Helvetica-Bold", 9)
-                    c.drawString(data_x, cy, label.upper())
-                    cy -= 0.42 * cm
-                    cy = render_text_block(data_x, cy, data_w, [str(value)],
-                                           font=font, size=size, leading=leading)
-                    cy -= 0.20 * cm
-
-                # ====== Orden institucional de campos ======
-                field("Fecha", fecha_str)
-                field("Especialista", nombre)
-                field("Constructora", contratista)
-                field("No. de Contrato", project_contract)
-                field("Nodo / Ubicación", node_path)
-                field("Reporte de avance",
-                      f"Primera lectura: {primera_str} {unidad_r}    |    Última lectura: {ultima_str} {unidad_r}    |    Avance: {avance_str}")
-                # SITUACIÓN SOCIAL: imprime incidencias o "Sin incidencias"
-                field("Situación social",
-                      incidencias_str if incidencias_str else "Sin incidencias.")
-                # ACTIVIDADES: imprime observaciones / avance descriptivo + métricas
-                actividades_lines = []
-                if obs_str and obs_str != "N/A":
-                    actividades_lines.append(obs_str)
-                actividades_lines.append(
-                    f"Métricas — Primera lectura: {primera_str} {unidad_r} · "
-                    f"Última lectura: {ultima_str} {unidad_r} · Avance: {avance_str}."
-                )
-                field("Actividades", " ".join(actividades_lines))
-                field("Personal", personal_str)
-                field("Equipo", equipo_str)
-
-                # Banner de severidad (semáforo) en esquina inferior derecha,
-                # dentro del área útil y por encima del BOTTOM_MARGIN_PDF.
-                sev = (r.get("severidad") or "informativo").lower()
-                sev_hex = _severidad_hex(sev)
-                _sev_y = BOTTOM_MARGIN_PDF + 0.4 * cm
-                c.setFillColor(HexColor(sev_hex))
-                c.roundRect(PW - 4.5 * cm, _sev_y, 3.3 * cm, 0.7 * cm,
-                            radius=4, stroke=0, fill=1)
-                c.setFillColor(HexColor("#FFFFFF"))
-                c.setFont("Helvetica-Bold", 10)
-                c.drawCentredString(PW - 4.5 * cm + 1.65 * cm,
-                                    _sev_y + 0.22 * cm,
-                                    _severidad_label(sev).upper())
-
+                # === Portadilla de Área (fondo magenta de la portada) ========
+                # Índice 0-based en el PDF actual = page_num - 1
+                area_page_indices.append(page_num - 1)
+                draw_area_cover_page(area_name)
                 c.showPage()
                 page_num += 1
 
-                # =====================================================
-                # GALERÍA: fotos adicionales del MISMO reporte (si > 1)
-                # Layout institucional: 2 fotos por página, lado a lado,
-                # con tamaño exacto 13.37 cm (ancho) × 10 cm (alto).
-                # =====================================================
-                extra_imgs = imgs[1:] if len(imgs) > 1 else []
-                if extra_imgs:
-                    GAL_W = 13.37 * cm
-                    GAL_H = 10.0 * cm
-                    PER_PAGE = 2
-                    n_extras = len(extra_imgs)
-                    for chunk_start in range(0, n_extras, PER_PAGE):
-                        chunk = extra_imgs[chunk_start:chunk_start + PER_PAGE]
-                        # Sin encabezado ni títulos programáticos: el membrete
-                        # del template PDF (página 1) ya identifica la sección.
-                        # Cálculo de posiciones: ambas fotos centradas verticalmente
-                        # 2 fotos lado a lado: ancho total = 2*13.37 + gap
-                        gap_x = 0.5 * cm
-                        total_w = PER_PAGE * GAL_W + (PER_PAGE - 1) * gap_x
-                        x0 = (PW - total_w) / 2
-                        # Centrado vertical dentro del área útil (respeta el membrete).
-                        avail_top = PH - TOP_MARGIN_PDF
-                        avail_bot = BOTTOM_MARGIN_PDF
-                        y_img = (avail_top + avail_bot - GAL_H) / 2
-                        for idx, b64 in enumerate(chunk):
-                            cx = x0 + idx * (GAL_W + gap_x)
-                            try:
-                                raw_g = base64.b64decode(_strip_b64_prefix(b64))
-                                imgg = ImageReader(io.BytesIO(raw_g))
-                                c.drawImage(
-                                    imgg, cx, y_img, width=GAL_W, height=GAL_H,
-                                    preserveAspectRatio=True, mask='auto',
-                                )
-                            except Exception:
-                                # Silencio total: sin placeholder textual.
-                                pass
-                        c.showPage()
-                        page_num += 1
+                # === Slides de reportes: 2 fotos apaisadas + captions ========
+                # Aplanamos todas las fotos de todos los reportes del área.
+                # Cada foto se acompaña de su caption (observaciones del
+                # reporte al que pertenece).
+                photo_items: List[tuple] = []
+                for r in area_reps:
+                    imgs = (r.get("images") or [])[:2]  # máx 2 fotos por reporte
+                    obs = (r.get("observaciones") or r.get("notes") or "").strip()
+                    if not obs:
+                        obs = (r.get("incidencias") or "").strip() or "—"
+                    if not imgs:
+                        # Reporte sin imágenes: placeholder + caption
+                        photo_items.append((None, obs))
+                    for b64 in imgs:
+                        photo_items.append((b64, obs))
 
-            # =================================================================
-            # NOTAS / NOTICIAS vinculadas al nodo (Importante + Urgente)
-            # Se imprimen al final del bloque del nodo si existen.
-            # =================================================================
-            node_announ = announcements_by_node.get(n["id"]) or []
-            if node_announ:
-                # Sin encabezado con logo · el membrete del template ya
-                # identifica la sección.
-                c.setFillColor(BRAND)
-                c.setFont("Helvetica-Bold", 16)
-                c.drawString(1.5 * cm, PH - TOP_MARGIN_PDF - 0.2 * cm,
-                             f"Notas y noticias · {node_path}")
-                c.setStrokeColor(BRAND)
-                c.setLineWidth(0.8)
-                c.line(1.5 * cm, PH - TOP_MARGIN_PDF - 0.5 * cm,
-                       PW - 1.5 * cm, PH - TOP_MARGIN_PDF - 0.5 * cm)
-                cy = PH - TOP_MARGIN_PDF - 1.2 * cm
-                for ann in node_announ:
-                    sev = (ann.get("jerarquia") or "informativo").lower()
-                    sev_color = HexColor(_severidad_hex(sev))
-                    if cy < BOTTOM_MARGIN_PDF + 1.0 * cm:
-                        c.showPage()
-                        page_num += 1
-                        cy = PH - TOP_MARGIN_PDF - 0.3 * cm
-                    # Etiqueta de severidad
-                    c.setFillColor(sev_color)
-                    c.roundRect(1.5 * cm, cy - 0.45 * cm, 2.8 * cm, 0.55 * cm,
-                                radius=4, stroke=0, fill=1)
-                    c.setFillColor(HexColor("#FFFFFF"))
-                    c.setFont("Helvetica-Bold", 8)
-                    c.drawCentredString(1.5 * cm + 1.4 * cm, cy - 0.28 * cm,
-                                        _severidad_label(sev).upper())
-                    # Título de la nota
-                    c.setFillColor(TEXT)
-                    c.setFont("Helvetica-Bold", 11)
-                    title_txt = (ann.get("title") or "").strip() or "—"
-                    c.drawString(4.6 * cm, cy - 0.25 * cm, title_txt[:140])
-                    # Fecha
-                    c.setFillColor(MUTED)
-                    c.setFont("Helvetica", 8)
-                    c.drawRightString(PW - 1.5 * cm, cy - 0.25 * cm,
-                                       _fmt_fecha_dd_mm_yyyy(ann.get("created_at")))
-                    cy -= 0.8 * cm
-                    # Cuerpo de la nota
-                    body_txt = (ann.get("body") or "").strip()
-                    if body_txt:
-                        cy = render_text_block(1.5 * cm, cy, PW - 3.0 * cm,
-                                               [body_txt], font="Helvetica", size=10, leading=13)
-                    cy -= 0.4 * cm
-                c.showPage()
-                page_num += 1
+                # Repartir en páginas de 2 fotos
+                PER_PAGE = 2
+                avail_top = PH - TOP_MARGIN_PDF
+                avail_bot = BOTTOM_MARGIN_PDF
+                avail_h = avail_top - avail_bot
+                block_h = EXEC_PHOTO_H + 0.35 * cm + EXEC_CAPTION_H
+                # Centrado vertical del bloque foto+caption
+                block_top_y = avail_top - max(0.0, (avail_h - block_h) / 2)
+                photo_bottom_y = block_top_y - EXEC_PHOTO_H
+                total_w = PER_PAGE * EXEC_PHOTO_W + (PER_PAGE - 1) * EXEC_GAP_X
+                x0 = (PW - total_w) / 2
+
+                for chunk_start in range(0, len(photo_items), PER_PAGE):
+                    chunk = photo_items[chunk_start: chunk_start + PER_PAGE]
+                    for idx, (b64, cap) in enumerate(chunk):
+                        px = x0 + idx * (EXEC_PHOTO_W + EXEC_GAP_X)
+                        draw_photo_with_caption(px, photo_bottom_y, b64, cap)
+                    c.showPage()
+                    page_num += 1
 
         c.save()
-        return buf.getvalue(), section_page_indices
+        return buf.getvalue(), section_page_indices, area_page_indices
 
     # Render bloqueante en thread aparte → libera event loop
-    pdf_bytes, section_page_indices = await asyncio.to_thread(_build_pdf_blocking)
+    pdf_bytes, section_page_indices, area_page_indices = await asyncio.to_thread(_build_pdf_blocking)
 
     # ── Fusión con plantilla PDF institucional (si existe) ────────────────
     # Modo Superposición:
@@ -4691,7 +4664,8 @@ async def export_reports_pdf(
     if tpl_pdf:
         try:
             pdf_bytes = await asyncio.to_thread(
-                _overlay_pdf_on_template, pdf_bytes, tpl_pdf, section_page_indices
+                _overlay_pdf_on_template, pdf_bytes, tpl_pdf,
+                section_page_indices, area_page_indices,
             )
         except Exception as e:
             log.warning("template pdf merge failed: %s", e)
@@ -4708,6 +4682,7 @@ def _overlay_pdf_on_template(
     content_pdf: bytes,
     template_path: str,
     section_page_indices: Optional[List[int]] = None,  # deprecated (no-op)
+    cover_bg_page_indices: Optional[List[int]] = None,  # portadillas de Área
 ) -> bytes:
     """Modo Superposición: fusiona el PDF generado por SynCo sobre la plantilla PDF.
 
@@ -4741,6 +4716,7 @@ def _overlay_pdf_on_template(
 
     writer = PdfWriter()
     content_cycle_idx = 0
+    _area_cover_set = set(cover_bg_page_indices or [])
     for i, cpage in enumerate(content_reader.pages):
         fresh = PdfReader(io.BytesIO(tpl_bytes))
         if i == 0:
@@ -4749,6 +4725,10 @@ def _overlay_pdf_on_template(
         elif i == 1:
             # Mapa del reporte → fondo = página 1 del template (si existe)
             base_idx = 1 if tpl_count >= 2 else 0
+        elif i in _area_cover_set:
+            # Portadilla de Área → fondo = página 0 del template (portada
+            # institucional magenta) para mantener la jerarquía visual.
+            base_idx = 0
         else:
             # Lienzo recurrente: cicla entre content_base_start..content_base_last
             span = content_base_last - content_base_start + 1
@@ -5608,7 +5588,10 @@ async def export_reports_pptx(
         COVER_TEXT_COLOR = (0xFF, 0xFF, 0xFF)     # Portada principal: blanco
         AREA_TEXT_COLOR = (0xFF, 0xFF, 0xFF)      # Portadillas de Área: blanco
         NODE_TITLE_COLOR = (0x0F, 0x17, 0x2A)     # Título de nodo: azul oscuro
-        PHOTO_CAPTION_COLOR = (0x0F, 0x17, 0x2A)  # Pie de foto: oscuro
+        PHOTO_CAPTION_COLOR = _sanitize_color_hex(proj.get("report_text_color")) or "#0F172A"
+        # Convertir a tupla RGB para python-pptx
+        _pcc = PHOTO_CAPTION_COLOR.lstrip("#")
+        PHOTO_CAPTION_COLOR = (int(_pcc[0:2], 16), int(_pcc[2:4], 16), int(_pcc[4:6], 16))
         TEXT_MUTED = (0x64, 0x75, 0x8B)
 
         # ===== PORTADA PRINCIPAL (Slide 0 de la plantilla) =============
@@ -5808,296 +5791,9 @@ async def export_reports_pptx(
                      size=20, italic=True, color=TEXT_MUTED,
                      align=PP_ALIGN.CENTER)
 
-        # ================================================================
-        # Eliminar la diapositiva de membrete original (índice 1) para que
-        # no quede vacía en el PPTX final.
-        # ================================================================
-        s_map = _clone_membrete()
-        _map_tpl_path_pptx = _get_project_template(proj, "map")
-        _map_drawn_pptx = False
-        if _map_tpl_path_pptx:
-            try:
-                _map_bytes_pptx = Path(_map_tpl_path_pptx).read_bytes()
-                # Área útil máxima dentro del membrete.
-                _map_x = Cm(1.0)
-                _map_y = TOP_MARGIN
-                _map_w = SW - Cm(2.0)
-                _map_h = SH - _map_y - BOTTOM_MARGIN
-                s_map.shapes.add_picture(
-                    io.BytesIO(_map_bytes_pptx),
-                    _map_x, _map_y, width=_map_w, height=_map_h,
-                )
-                _map_drawn_pptx = True
-            except Exception:
-                _map_drawn_pptx = False
-        if not _map_drawn_pptx:
-            add_text(s_map, Cm(1.0), SH / 2 - Cm(0.6), SW - Cm(2.0), Cm(1.2),
-                     "Sube una plantilla de MAPA para el proyecto para incrustarla aquí.",
-                     size=14, italic=True, color=TEXT_MUTED,
-                     align=PP_ALIGN.CENTER)
+        # === [BLOQUE LEGACY PURGADO 2026-07-04] Layout viejo con tablas y 
+        # 'Notas y noticias' eliminado tras refactor P0 → Layout Ejecutivo.
 
-        any_data = False
-        for n in leaf_nodes:
-            node_reps = reports_by_node.get(n["id"]) or []
-            if not node_reps:
-                continue
-            # === FILTRO ESTRICTO 2b: solo nodos con cover_image (con herencia)
-            cover_meta_pptx = cover_ancestor_by_node.get(n["id"])
-            if not cover_meta_pptx:
-                continue
-            any_data = True
-            node_path = path_cache.get(n["id"]) or n.get("name", "")
-
-            # === Separador de nodo: cover_image grande + TÍTULO del nodo.
-            # Sin adornos: solo la imagen y el path institucional del nodo.
-            s = _clone_membrete()
-            _title_h = Cm(1.8)
-            _title_gap = Cm(0.5)
-            _cov_b64_p = _strip_b64_prefix(cover_meta_pptx.get("cover_image") or "")
-            _cw = Cm(0)
-            _ch = Cm(0)
-            _cy = TOP_MARGIN
-            if _cov_b64_p:
-                try:
-                    # Cover a máxima dimensión útil respetando aspect 4:3,
-                    # reservando abajo espacio para el título del nodo.
-                    _avail_w = SW - Cm(2.0)
-                    _avail_h = SH - TOP_MARGIN - BOTTOM_MARGIN - _title_h - _title_gap
-                    _target_ratio = 4.0 / 3.0
-                    _w_from_h = _avail_h * _target_ratio
-                    if _w_from_h <= _avail_w:
-                        _cw = _w_from_h
-                        _ch = _avail_h
-                    else:
-                        _cw = _avail_w
-                        _ch = _avail_w / _target_ratio
-                    _cx = (SW - _cw) // 2
-                    _cy = TOP_MARGIN + (_avail_h - _ch) // 2
-                    s.shapes.add_picture(
-                        io.BytesIO(base64.b64decode(_cov_b64_p)),
-                        _cx, _cy, width=_cw, height=_ch,
-                    )
-                except Exception:
-                    _ch = Cm(0)
-            # Título del nodo debajo de la cover, centrado horizontalmente.
-            # Tipografía institucional: negritas 28pt, azul oscuro / negro.
-            _title_y = (
-                _cy + _ch + _title_gap
-                if _ch and _ch > Cm(0)
-                else TOP_MARGIN + (SH - TOP_MARGIN - BOTTOM_MARGIN) // 2 - _title_h // 2
-            )
-            add_text(
-                s, Cm(1.0), _title_y, SW - Cm(2.0), _title_h,
-                node_path,
-                size=28, bold=True, color=TEXT_BODY, align=PP_ALIGN.CENTER,
-            )
-
-            for r in node_reps:
-                slide = _clone_membrete()
-
-                # Foto principal con tamaño exacto 13.37 cm × 10 cm
-                photo_x = Cm(1.0)
-                photo_y = TOP_MARGIN
-                photo_w = Cm(13.37)
-                photo_h = Cm(10.0)
-                img_b64 = None
-                # [FILTRO 3a] Máximo 2 fotos por reporte (1 principal + 1 extra)
-                imgs = (r.get("images") or [])[:2]
-                if imgs:
-                    img_b64 = _strip_b64_prefix(imgs[0])
-                if img_b64:
-                    try:
-                        raw = base64.b64decode(img_b64)
-                        img_buf = io.BytesIO(raw)
-                        slide.shapes.add_picture(img_buf, photo_x, photo_y,
-                                                 width=photo_w, height=photo_h)
-                    except Exception:
-                        add_text(slide, photo_x, photo_y + Cm(4.5), photo_w, Cm(1.0),
-                                 "(imagen no legible)", size=11,
-                                 color=(0x64, 0x75, 0x8B), italic=True,
-                                 align=PP_ALIGN.CENTER)
-                else:
-                    add_text(slide, photo_x, photo_y + Cm(4.5), photo_w, Cm(1.0),
-                             "(sin fotografía)", size=11,
-                             color=(0x64, 0x75, 0x8B), italic=True,
-                             align=PP_ALIGN.CENTER)
-
-                # Pie de foto principal
-                add_text(
-                    slide, photo_x, photo_y + photo_h + Cm(0.15), photo_w, Cm(0.5),
-                    f"Foto 1 de {len(imgs)} · 13.37 × 10 cm" if len(imgs) > 1
-                    else "13.37 × 10 cm",
-                    size=9, italic=True, color=(0x64, 0x75, 0x8B),
-                    align=PP_ALIGN.CENTER,
-                )
-
-                # Datos derecha
-                def _raw_to_str(v):
-                    if v is None or v == "":
-                        return "—"
-                    try:
-                        return _fmt_reading(float(v))
-                    except Exception:
-                        return str(v).strip() or "—"
-
-                primera_str = _raw_to_str(r.get("primera_lectura"))
-                ultima_str = _raw_to_str(r.get("ultima_lectura"))
-                _av = r.get("avance")
-                avance_str = str(_av).strip() if _av not in (None, "") else "—"
-                ts = r.get("created_at")
-                fecha_str = _fmt_fecha_dd_mm_yyyy(ts) if isinstance(ts, datetime) else "—"
-                nombre = r.get("captured_by_name") or "—"
-                contratista_rep = (project_constructora or "—").strip()
-                unidad_r = (r.get("unidad") or "m").strip() or "m"
-                personal_list = [p for p in (r.get("personnel") or []) if p]
-                equipo_list = [e for e in (r.get("equipment") or []) if e]
-                personal_str = ", ".join(personal_list) if personal_list else "N/A"
-                equipo_str = ", ".join(equipo_list) if equipo_list else "N/A"
-                obs_str = (r.get("observaciones") or r.get("notes") or "").strip() or "N/A"
-                incidencias_str = (r.get("incidencias") or "").strip() or None
-                sev = (r.get("severidad") or "informativo").lower()
-                sev_label = _severidad_label(sev).upper()
-                hexc = _severidad_hex(sev).lstrip("#")
-                sev_color = (int(hexc[0:2], 16), int(hexc[2:4], 16), int(hexc[4:6], 16))
-
-                data_x = Cm(15.0)
-                data_y = TOP_MARGIN
-                data_w = SW - data_x - Cm(1.0)
-                _sev_h = Cm(0.7)
-                _sev_gap = Cm(0.3)
-
-                # Banner de severidad arriba de la tabla de datos
-                add_text(slide, data_x, data_y, data_w, _sev_h,
-                         f"[ {sev_label} ]", size=12, bold=True,
-                         color=sev_color, align=PP_ALIGN.LEFT)
-
-                # Y-cursor: la tabla arranca INMEDIATAMENTE debajo del banner,
-                # nunca en la misma coordenada Y.
-                _table_y = data_y + _sev_h + _sev_gap
-                _table_h = SH - _table_y - BOTTOM_MARGIN
-
-                # Filas institucionales (Situación social + Actividades)
-                _act_lines = []
-                if obs_str and obs_str != "N/A":
-                    _act_lines.append(obs_str)
-                _act_lines.append(
-                    f"Métricas — Primera: {primera_str} {unidad_r} · "
-                    f"Última: {ultima_str} {unidad_r} · Avance: {avance_str}."
-                )
-                _actividades = " ".join(_act_lines)
-                rows = [
-                    ("Fecha", fecha_str),
-                    ("Especialista", nombre),
-                    ("Constructora", contratista_rep),
-                    ("No. de Contrato", project_contract),
-                    ("Nodo / Ubicación", node_path),
-                    ("Reporte de avance",
-                     f"Primera: {primera_str} {unidad_r}  |  Última: {ultima_str} {unidad_r}  |  Avance: {avance_str}"),
-                    ("Situación social",
-                     incidencias_str if incidencias_str else "Sin incidencias."),
-                    ("Actividades",
-                     _actividades[:380] + ("…" if len(_actividades) > 380 else "")),
-                    ("Personal", personal_str),
-                    ("Equipo", equipo_str),
-                ]
-
-                tb = slide.shapes.add_textbox(data_x, _table_y, data_w, _table_h)
-                tf = tb.text_frame
-                tf.word_wrap = True
-                first = True
-                for lbl, val in rows:
-                    p_lbl = tf.paragraphs[0] if first else tf.add_paragraph()
-                    p_lbl.alignment = PP_ALIGN.LEFT
-                    r_lbl = p_lbl.add_run()
-                    r_lbl.text = lbl.upper()
-                    r_lbl.font.size = Pt(9)
-                    r_lbl.font.bold = True
-                    r_lbl.font.color.rgb = PRGBColor(*BRAND_RGB)
-                    p_val = tf.add_paragraph()
-                    p_val.alignment = PP_ALIGN.LEFT
-                    r_val = p_val.add_run()
-                    r_val.text = str(val)
-                    r_val.font.size = Pt(10)
-                    r_val.font.color.rgb = PRGBColor(0x0F, 0x17, 0x2A)
-                    first = False
-
-                # === Slides de "Fotografías adicionales" (2 por slide, 13.37×10) ===
-                if len(imgs) > 1:
-                    PER_PAGE = 2
-                    cell_w = Cm(13.37)
-                    cell_h = Cm(10.0)
-                    gap_x = Cm(0.6)
-                    total_w = PER_PAGE * cell_w + (PER_PAGE - 1) * gap_x
-                    margin_x = (SW - total_w) // 2
-                    # Centrado vertical entre header (1.5) y footer (0.8) ≈ área (1.8..20.2)
-                    margin_y = (SH - cell_h) // 2 + Cm(0.5)
-                    extras = imgs[1:]
-                    total_pages = (len(extras) + PER_PAGE - 1) // PER_PAGE
-                    for chunk_idx in range(total_pages):
-                        chunk = extras[chunk_idx * PER_PAGE:(chunk_idx + 1) * PER_PAGE]
-                        g_slide = _clone_membrete()
-                        # Sin título programático · el membrete institucional
-                        # ya identifica la sección.
-                        for idx, b64 in enumerate(chunk):
-                            cx = margin_x + idx * (cell_w + gap_x)
-                            cyy = margin_y
-                            try:
-                                raw_g = base64.b64decode(_strip_b64_prefix(b64))
-                                g_slide.shapes.add_picture(
-                                    io.BytesIO(raw_g), cx, cyy,
-                                    width=cell_w, height=cell_h,
-                                )
-                            except Exception:
-                                # Silencio total: sin texto de fallback para
-                                # no dejar cuadros de texto vacíos.
-                                pass
-
-            # === Slide(s) de Notas/Noticias vinculadas al nodo ===
-            node_announ = announcements_by_node.get(n["id"]) or []
-            if node_announ:
-                an_slide = _clone_membrete()
-                add_text(an_slide, Cm(1.0), TOP_MARGIN, SW - Cm(2.0), Cm(1.2),
-                         f"Notas y noticias · {node_path}",
-                         size=22, bold=True, color=BRAND_RGB,
-                         align=PP_ALIGN.LEFT)
-                cur_y = TOP_MARGIN + Cm(1.6)
-                _notes_bottom_limit = SH - BOTTOM_MARGIN - Cm(3.0)
-                for ann in node_announ:
-                    if cur_y > _notes_bottom_limit:
-                        # Nuevo slide si se llena el espacio
-                        an_slide = _clone_membrete()
-                        add_text(an_slide, Cm(1.0), TOP_MARGIN, SW - Cm(2.0), Cm(1.2),
-                                 f"Notas y noticias · {node_path} (cont.)",
-                                 size=22, bold=True, color=BRAND_RGB,
-                                 align=PP_ALIGN.LEFT)
-                        cur_y = TOP_MARGIN + Cm(1.6)
-                    sev_a = (ann.get("jerarquia") or "informativo").lower()
-                    hexa = _severidad_hex(sev_a).lstrip("#")
-                    sev_a_color = (int(hexa[0:2], 16), int(hexa[2:4], 16), int(hexa[4:6], 16))
-                    add_text(an_slide, Cm(1.0), cur_y, Cm(4.5), Cm(0.6),
-                             f"[ {_severidad_label(sev_a).upper()} ]",
-                             size=10, bold=True, color=sev_a_color)
-                    add_text(an_slide, Cm(5.5), cur_y, SW - Cm(7.0), Cm(0.6),
-                             (ann.get("title") or "—").strip(),
-                             size=12, bold=True, color=(0x0F, 0x17, 0x2A))
-                    add_text(an_slide, Cm(5.5), cur_y + Cm(0.6),
-                             SW - Cm(7.0), Cm(0.5),
-                             f"({_fmt_fecha_dd_mm_yyyy(ann.get('created_at'))})",
-                             size=9, italic=True, color=(0x64, 0x75, 0x8B))
-                    body_text = (ann.get("body") or "").strip()
-                    if body_text:
-                        add_text(an_slide, Cm(5.5), cur_y + Cm(1.1),
-                                 SW - Cm(7.0), Cm(1.2),
-                                 body_text[:220] + ("…" if len(body_text) > 220 else ""),
-                                 size=10, color=(0x0F, 0x17, 0x2A))
-                    cur_y += Cm(2.5)
-
-        if not any_data:
-            s2 = _clone_membrete()
-            add_text(s2, Cm(1.5), SH / 2 - Cm(1.0), SW - Cm(3.0), Cm(2.0),
-                     "Sin reportes en el período seleccionado.",
-                     size=20, italic=True, color=(0x64, 0x75, 0x8B),
-                     align=PP_ALIGN.CENTER)
 
         # ================================================================
         # Eliminar la diapositiva de membrete original (índice 1) para que

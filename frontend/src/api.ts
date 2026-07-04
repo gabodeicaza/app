@@ -189,6 +189,7 @@ export interface Project {
   objeto_contrato?: string | null;
   cliente_principal?: string | null;
   color_tema?: string | null;
+  report_text_color?: string | null;
   start_date?: string | null;
   end_date?: string | null;
   description?: string | null;
@@ -445,6 +446,7 @@ export const api = {
     objeto_contrato?: string | null;
     cliente_principal?: string | null;
     color_tema?: string | null;
+    report_text_color?: string | null;
     start_date?: string | null;
     end_date?: string | null;
     description?: string | null;

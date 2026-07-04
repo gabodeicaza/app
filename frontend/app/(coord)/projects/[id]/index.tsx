@@ -121,6 +121,8 @@ export default function ProjectDetailScreen() {
   const [objetoDraft, setObjetoDraft] = useState('');
   const [clienteDraft, setClienteDraft] = useState('');
   const [colorDraft, setColorDraft] = useState('#003366');
+  // Color del texto de observaciones (pie de foto) en reportes ejecutivos.
+  const [reportTextColorDraft, setReportTextColorDraft] = useState('#0F172A');
 
   const load = useCallback(async () => {
     try {
@@ -371,6 +373,7 @@ export default function ProjectDetailScreen() {
     setObjetoDraft((project as any).objeto_contrato || '');
     setClienteDraft((project as any).cliente_principal || '');
     setColorDraft((project as any).color_tema || '#003366');
+    setReportTextColorDraft((project as any).report_text_color || '#0F172A');
     setObjetoModalOpen(true);
   }
 
@@ -382,6 +385,7 @@ export default function ProjectDetailScreen() {
         objeto_contrato: objetoDraft.trim() || null,
         cliente_principal: clienteDraft.trim() || null,
         color_tema: colorDraft.trim() || null,
+        report_text_color: reportTextColorDraft.trim() || null,
       } as any);
       setProject((p) => ({ ...(p || ({} as any)), ...upd }));
       setObjetoModalOpen(false);
@@ -1480,6 +1484,35 @@ export default function ProjectDetailScreen() {
                       backgroundColor: /^#([0-9a-fA-F]{3}){1,2}$/.test((colorDraft || '').trim())
                         ? colorDraft.trim()
                         : '#003366',
+                    }}
+                  />
+                </View>
+              </View>
+
+              <View>
+                <Text style={styles.catLabel}>Color del texto de observaciones (#RRGGBB)</Text>
+                <Text style={styles.catHelper}>
+                  Color del pie de foto (observaciones) que acompaña cada imagen en los reportes ejecutivos PDF/PPTX.
+                </Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                  <TextInput
+                    value={reportTextColorDraft}
+                    onChangeText={setReportTextColorDraft}
+                    placeholder="#0F172A"
+                    placeholderTextColor={colors.textMuted}
+                    autoCapitalize="characters"
+                    style={[styles.catInput, { flex: 1 }]}
+                  />
+                  <View
+                    style={{
+                      width: 44,
+                      height: 44,
+                      borderRadius: radius.sm,
+                      borderWidth: 1,
+                      borderColor: colors.borderStrong,
+                      backgroundColor: /^#([0-9a-fA-F]{3}){1,2}$/.test((reportTextColorDraft || '').trim())
+                        ? reportTextColorDraft.trim()
+                        : '#0F172A',
                     }}
                   />
                 </View>
