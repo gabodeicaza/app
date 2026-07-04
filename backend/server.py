@@ -315,6 +315,9 @@ class ReportIn(BaseModel):
     personnel: List[str] = Field(default_factory=list)
     equipment: List[str] = Field(default_factory=list)
     images: List[str] = Field(default_factory=list)  # base64
+    # Descripciones individuales por foto (foto 1 → captions[0], foto 2 → captions[1]).
+    # Fallback al campo `observaciones` general si no se rellena.
+    photo_captions: List[str] = Field(default_factory=list)
     files: List[dict] = Field(default_factory=list)  # [{filename, mime, data_base64}]
     # Lecturas numéricas (P/U) – específicas del flujo Especialista v2.
     primera_lectura: Optional[float] = None
@@ -342,6 +345,7 @@ class ReportOut(BaseModel):
     personnel: List[str] = Field(default_factory=list)
     equipment: List[str] = Field(default_factory=list)
     images: List[str] = Field(default_factory=list)
+    photo_captions: List[str] = Field(default_factory=list)
     files: List[dict] = Field(default_factory=list)
     primera_lectura: Optional[float] = None
     ultima_lectura: Optional[float] = None
@@ -2170,6 +2174,7 @@ async def create_report(body: ReportIn, user: dict = Depends(current_user)):
         "personnel": body.personnel,
         "equipment": body.equipment,
         "images": body.images,
+        "photo_captions": (body.photo_captions or [])[:len(body.images or [])],
         "files": body.files,
         "primera_lectura": body.primera_lectura,
         "ultima_lectura": body.ultima_lectura,
@@ -2559,6 +2564,44 @@ async def delete_report(rid: str, user: dict = Depends(current_user)):
         raise HTTPException(403, "Solo el autor o un Coordinador General puede borrar")
     await db.reports.delete_one({"id": rid})
     return {"ok": True}
+
+
+# --- Edición de descripciones individuales por foto ------------------------
+# Endpoint quirúrgico que sólo permite modificar `photo_captions` sin tocar
+# ningún otro dato del reporte. Cualquier miembro con acceso al proyecto y
+# que sea el autor (o Coordinador General / Jefe de Proyecto) puede editar.
+class ReportCaptionsPatch(BaseModel):
+    photo_captions: List[str] = Field(default_factory=list)
+
+
+@api.patch("/reports/{rid}/captions", response_model=ReportOut)
+async def patch_report_captions(
+    rid: str,
+    body: ReportCaptionsPatch,
+    user: dict = Depends(current_user),
+):
+    r = await db.reports.find_one({"id": rid})
+    if not r:
+        raise HTTPException(404, "Reporte no existe")
+    # Autorización: autor original o roles supervisores.
+    if user.get("role") not in (ROLE_COORD, ROLE_JEFE) and r.get("captured_by") != user["id"]:
+        raise HTTPException(403, "Solo el autor o un Coordinador puede editar descripciones")
+    # Sanitizamos: máximo 160 chars por caption y sólo se guardan hasta el
+    # número real de imágenes que tiene el reporte (tope duro = 2 en export).
+    raw_caps = body.photo_captions or []
+    total_imgs = len(r.get("images") or [])
+    cleaned = []
+    for i, c in enumerate(raw_caps[:total_imgs]):
+        s = (c or "").strip()
+        if len(s) > 160:
+            s = s[:160]
+        cleaned.append(s)
+    await db.reports.update_one(
+        {"id": rid},
+        {"$set": {"photo_captions": cleaned}},
+    )
+    updated = await db.reports.find_one({"id": rid}, {"_id": 0})
+    return updated
 
 
 # === USERS (admin) ==========================================================
@@ -4775,20 +4818,34 @@ async def export_reports_pdf(
                 page_num += 1
 
                 # === Slides de reportes: 2 fotos apaisadas + captions ========
-                # Aplanamos todas las fotos de todos los reportes del área.
-                # Cada foto se acompaña de su caption (observaciones del
-                # reporte al que pertenece).
+                # TOPE ESTRICTO: cada reporte emite UNA sola página con
+                # hasta 2 fotos (las 2 primeras). Cada foto usa su caption
+                # individual (`photo_captions[i]`) con fallback a la
+                # observación general del reporte.
                 photo_items: List[tuple] = []
                 for r in area_reps:
-                    imgs = (r.get("images") or [])  # TODAS las fotos del reporte
-                    obs = (r.get("observaciones") or r.get("notes") or "").strip()
-                    if not obs:
-                        obs = (r.get("incidencias") or "").strip() or "—"
+                    imgs = (r.get("images") or [])[:2]  # HARD-CAP 2 fotos
+                    general_obs = (r.get("observaciones") or r.get("notes") or "").strip()
+                    if not general_obs:
+                        general_obs = (r.get("incidencias") or "").strip() or "—"
+                    caps = r.get("photo_captions") or []
+
+                    def _cap_at_pdf(_idx: int) -> str:
+                        if _idx < len(caps):
+                            _c = (caps[_idx] or "").strip()
+                            if _c:
+                                return _c
+                        return general_obs
+
                     if not imgs:
-                        # Reporte sin imágenes: placeholder + caption
-                        photo_items.append((None, obs))
-                    for b64 in imgs:
-                        photo_items.append((b64, obs))
+                        photo_items.append((None, general_obs))
+                        photo_items.append(("__PAGEBREAK__", ""))
+                        continue
+                    for _i, b64 in enumerate(imgs):
+                        photo_items.append((b64, _cap_at_pdf(_i)))
+                    # Salto de página tras cada reporte para respetar el
+                    # tope estricto de 1 página por reporte.
+                    photo_items.append(("__PAGEBREAK__", ""))
 
                 # Repartir en páginas de 2 fotos
                 PER_PAGE = 2
@@ -4802,12 +4859,32 @@ async def export_reports_pdf(
                 total_w = PER_PAGE * EXEC_PHOTO_W + (PER_PAGE - 1) * EXEC_GAP_X
                 x0 = (PW - total_w) / 2
 
-                for chunk_start in range(0, len(photo_items), PER_PAGE):
-                    chunk = photo_items[chunk_start: chunk_start + PER_PAGE]
-                    for idx, (b64, cap) in enumerate(chunk):
+                # Iteración con sentinela __PAGEBREAK__: cada reporte añade
+                # un marcador tras sus 1-2 fotos, forzando 1 página por
+                # reporte (tope estricto). Los sentinels se filtran del
+                # dibujo pero disparan showPage.
+                _buffer: List[tuple] = []
+                def _flush_page():
+                    if not _buffer:
+                        return
+                    for idx, (b64, cap) in enumerate(_buffer[:PER_PAGE]):
                         px = x0 + idx * (EXEC_PHOTO_W + EXEC_GAP_X)
                         draw_photo_with_caption(px, photo_bottom_y, b64, cap)
                     c.showPage()
+                    _buffer.clear()
+
+                for _item in photo_items:
+                    if _item[0] == "__PAGEBREAK__":
+                        _flush_page()
+                        page_num += 1
+                        continue
+                    _buffer.append(_item)
+                    if len(_buffer) >= PER_PAGE:
+                        _flush_page()
+                        page_num += 1
+                # Flush residual (por si algún reporte quedó sin sentinela).
+                if _buffer:
+                    _flush_page()
                     page_num += 1
 
         c.save()
@@ -5941,23 +6018,33 @@ async def export_reports_pptx(
                 )
 
                 # --- Slides ejecutivas: 2 FOTOS por slide -----------------
-                # Iteramos TODAS las fotos de cada reporte (no solo la
-                # primera). Un reporte con 4 fotos → 2 slides.
-                photo_items: list = []
+                # TOPE ESTRICTO: cada reporte emite UNA sola slide con
+                # máximo 2 fotos (las 2 primeras). Con captions individuales
+                # por foto (`photo_captions[i]`), fallback a la observación
+                # general si el caption individual está vacío.
                 for _r in area_reps:
-                    _imgs = _r.get("images") or []
-                    _obs = (
+                    _all_imgs = _r.get("images") or []
+                    _imgs = _all_imgs[:2]  # HARD-CAP: máximo 2 fotos
+                    _general_obs = (
                         _r.get("observaciones") or _r.get("notes") or ""
                     ).strip() or (_r.get("incidencias") or "").strip() or "—"
+                    _caps = _r.get("photo_captions") or []
+                    def _cap_at(idx: int) -> str:
+                        if idx < len(_caps):
+                            _c = (_caps[idx] or "").strip()
+                            if _c:
+                                return _c
+                        return _general_obs
                     if not _imgs:
-                        photo_items.append((None, _obs))
-                    for _b64 in _imgs:
-                        photo_items.append((_b64, _obs))
-                for i in range(0, len(photo_items), 2):
-                    pair = photo_items[i:i + 2]
-                    if len(pair) < 2:
-                        pair.append(None)
-                    _pair_slide(pair)
+                        # Reporte sin fotos → 1 slide con placeholder + obs.
+                        _pair_slide([(None, _general_obs), None])
+                        continue
+                    _pair: list = []
+                    for _i, _b64 in enumerate(_imgs):
+                        _pair.append((_b64, _cap_at(_i)))
+                    while len(_pair) < 2:
+                        _pair.append(None)
+                    _pair_slide(_pair)
 
         # ==============================================================
         # TEXTOS DE PORTADA PRINCIPAL — se inyectan al FINAL para que las

@@ -280,6 +280,8 @@ export interface Report {
   personnel: string[];
   equipment: string[];
   images: string[];
+  /** Descripciones individuales por foto (foto 1 → [0], foto 2 → [1]). */
+  photo_captions?: string[];
   files: { filename: string; mime: string; data_base64: string }[];
   primera_lectura?: number | null;
   ultima_lectura?: number | null;
@@ -798,11 +800,23 @@ export const api = {
     personnel?: string[];
     equipment?: string[];
     images?: string[];
+    /**
+     * Descripciones individuales por foto (foto 1 → [0], foto 2 → [1]).
+     * Sólo las 2 primeras se exportan a PPTX/PDF (tope ejecutivo).
+     */
+    photo_captions?: string[];
     files?: { filename: string; mime: string; data_base64: string }[];
     primera_lectura?: number | null;
     ultima_lectura?: number | null;
     unidad?: string | null;
   }) => request<Report>('POST', '/reports', body),
+  /**
+   * Edita únicamente las descripciones individuales por foto de un reporte
+   * existente. Permitido para el autor original y para roles supervisores
+   * (Coordinador General / Jefe de Proyecto).
+   */
+  updateReportCaptions: (rid: string, photo_captions: string[]) =>
+    request<Report>('PATCH', `/reports/${rid}/captions`, { photo_captions }),
   nodeHistory: (pid: string, nid: string) =>
     request<{
       node_id: string;

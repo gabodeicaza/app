@@ -10,6 +10,7 @@
  */
 import React from 'react';
 import {
+  Alert,
   Modal,
   Pressable,
   ScrollView,
@@ -17,9 +18,12 @@ import {
   Text,
   Image,
   StyleSheet,
+  TextInput,
+  ActivityIndicator,
+  Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import type { FeedItem } from '@/src/api';
+import { api, type FeedItem, type Report } from '@/src/api';
 import { formatMeasurementValue } from '@/src/utils/whatsapp';
 
 interface ReportPreviewSheetProps {
@@ -38,6 +42,51 @@ export function ReportPreviewSheet({
 }: ReportPreviewSheetProps) {
   // Defensive: tolerate legacy/alt field names from the backend.
   const it = (item ?? {}) as Record<string, any>;
+
+  // --- Estado interno: edición de descripciones individuales por foto ------
+  const [editOpen, setEditOpen] = React.useState(false);
+  const [loadingFull, setLoadingFull] = React.useState(false);
+  const [savingCaps, setSavingCaps] = React.useState(false);
+  const [fullReport, setFullReport] = React.useState<Report | null>(null);
+  const [draftCaps, setDraftCaps] = React.useState<string[]>(['', '']);
+
+  const reportId: string | null = (it.id as string) || null;
+
+  const openEditCaptions = React.useCallback(async () => {
+    if (!reportId) return;
+    setEditOpen(true);
+    setLoadingFull(true);
+    try {
+      const full = await api.getReport(reportId);
+      setFullReport(full);
+      const caps = (full.photo_captions || []).slice(0, 2);
+      const seed = [caps[0] || '', caps[1] || ''];
+      setDraftCaps(seed);
+    } catch (e: any) {
+      Alert.alert('No se pudo cargar', e?.message || 'Intenta de nuevo.');
+      setEditOpen(false);
+    } finally {
+      setLoadingFull(false);
+    }
+  }, [reportId]);
+
+  const saveCaptions = React.useCallback(async () => {
+    if (!reportId || !fullReport) return;
+    setSavingCaps(true);
+    try {
+      const totalImgs = (fullReport.images || []).length;
+      // Enviamos sólo tantas captions como fotos hay realmente (max 2).
+      const send = draftCaps.slice(0, Math.min(2, totalImgs)).map((c) => (c || '').trim());
+      const updated = await api.updateReportCaptions(reportId, send);
+      setFullReport(updated);
+      Alert.alert('Descripciones guardadas', 'Se actualizaron las descripciones de las fotos.');
+      setEditOpen(false);
+    } catch (e: any) {
+      Alert.alert('Error al guardar', e?.message || 'No se pudo actualizar.');
+    } finally {
+      setSavingCaps(false);
+    }
+  }, [reportId, fullReport, draftCaps]);
 
   const title =
     (it.node_path_names && it.node_path_names.slice(-1)[0]) || 'Reporte';
@@ -66,6 +115,13 @@ export function ReportPreviewSheet({
     it.actividades || it.notes || it.observaciones || it.comment || '';
   const actividades = String(actividadesRaw || '').trim();
   const hasActividades = actividades.length > 0;
+
+  // Cuántas fotos reales tiene el reporte (para decidir si mostrar botón).
+  // FeedItem trae images_count. Si no está, deducimos de thumbnail.
+  const imagesCount: number =
+    typeof it.images_count === 'number'
+      ? it.images_count
+      : (it.thumbnail_base64 ? 1 : 0);
 
   return (
     <Modal
@@ -122,6 +178,22 @@ export function ReportPreviewSheet({
               body={hasActividades ? actividades : 'Sin actividades registradas'}
               muted={!hasActividades}
             />
+
+            {/* CTA para editar descripciones individuales por foto ---------- */}
+            {imagesCount > 0 && reportId ? (
+              <Pressable
+                onPress={openEditCaptions}
+                style={({ pressed }) => [
+                  styles.editCaptionsBtn,
+                  pressed && { opacity: 0.85 },
+                ]}
+              >
+                <Ionicons name="create-outline" size={16} color="#1E40AF" />
+                <Text style={styles.editCaptionsBtnTxt}>
+                  Editar descripciones de fotos
+                </Text>
+              </Pressable>
+            ) : null}
           </ScrollView>
 
           {/* Footer */}
@@ -151,6 +223,165 @@ export function ReportPreviewSheet({
               ]}
             >
               <Text style={styles.closeTxt}>Cerrar</Text>
+            </Pressable>
+          </View>
+        </Pressable>
+      </Pressable>
+
+      {/* Modal secundario: edición de descripciones individuales por foto */}
+      <EditCaptionsModal
+        visible={editOpen}
+        loading={loadingFull}
+        saving={savingCaps}
+        report={fullReport}
+        draft={draftCaps}
+        onChangeDraft={setDraftCaps}
+        onClose={() => setEditOpen(false)}
+        onSave={saveCaptions}
+      />
+    </Modal>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Modal secundario para editar `photo_captions` de un reporte existente.
+// Muestra las 2 primeras fotos (tope duro de exportación) con TextInput
+// limitados a 160 chars (~4 líneas en PPTX/PDF).
+// ---------------------------------------------------------------------------
+function EditCaptionsModal({
+  visible,
+  loading,
+  saving,
+  report,
+  draft,
+  onChangeDraft,
+  onClose,
+  onSave,
+}: {
+  visible: boolean;
+  loading: boolean;
+  saving: boolean;
+  report: Report | null;
+  draft: string[];
+  onChangeDraft: (next: string[]) => void;
+  onClose: () => void;
+  onSave: () => void;
+}) {
+  const images: string[] = (report?.images || []).slice(0, 2);
+  return (
+    <Modal
+      visible={visible}
+      transparent
+      animationType="slide"
+      onRequestClose={onClose}
+    >
+      <Pressable style={styles.editBackdrop} onPress={onClose}>
+        <Pressable style={styles.editCard} onPress={(e) => e.stopPropagation()}>
+          <View style={styles.header}>
+            <Text style={styles.title} numberOfLines={1}>
+              Descripciones de fotos
+            </Text>
+            <Pressable hitSlop={10} onPress={onClose}>
+              <Ionicons name="close" size={22} color="#0F172A" />
+            </Pressable>
+          </View>
+
+          {loading ? (
+            <View style={{ paddingVertical: 40, alignItems: 'center' }}>
+              <ActivityIndicator color="#1E40AF" />
+              <Text style={{ marginTop: 8, fontSize: 12, color: '#64748B' }}>
+                Cargando reporte…
+              </Text>
+            </View>
+          ) : !report || images.length === 0 ? (
+            <View style={{ paddingVertical: 40, alignItems: 'center', gap: 8 }}>
+              <Ionicons name="image-outline" size={32} color="#94A3B8" />
+              <Text style={{ fontSize: 13, color: '#64748B' }}>
+                Este reporte no tiene fotos.
+              </Text>
+            </View>
+          ) : (
+            <ScrollView
+              style={styles.scroll}
+              contentContainerStyle={styles.scrollContent}
+              keyboardShouldPersistTaps="handled"
+            >
+              <Text style={styles.editHint}>
+                Estas descripciones aparecen al pie de cada foto en el reporte
+                ejecutivo (PPTX/PDF). Máx. 160 caracteres para no rebasar 4
+                líneas.
+              </Text>
+
+              {images.map((b64, i) => (
+                <View key={`edit-${i}`} style={styles.editPhotoRow}>
+                  <View style={styles.editIndexBadge}>
+                    <Text style={styles.editIndexBadgeTxt}>{i + 1}</Text>
+                  </View>
+                  <Image
+                    source={{ uri: `data:image/jpeg;base64,${b64}` }}
+                    style={styles.editThumb}
+                    resizeMode="cover"
+                  />
+                  <View style={{ flex: 1, gap: 4 }}>
+                    <Text style={styles.editFieldLabel}>
+                      Descripción foto {i + 1}
+                    </Text>
+                    <TextInput
+                      placeholder={
+                        i === 0
+                          ? 'Descripción de la primera foto (máx. 4 líneas)'
+                          : 'Descripción de la segunda foto (máx. 4 líneas)'
+                      }
+                      placeholderTextColor="#94A3B8"
+                      style={styles.editInput}
+                      multiline
+                      numberOfLines={4}
+                      maxLength={160}
+                      value={draft[i] || ''}
+                      onChangeText={(t) => {
+                        const next = [...draft];
+                        while (next.length <= i) next.push('');
+                        next[i] = t;
+                        onChangeDraft(next);
+                      }}
+                    />
+                    <Text style={styles.editCounter}>
+                      {(draft[i] || '').length}/160
+                    </Text>
+                  </View>
+                </View>
+              ))}
+            </ScrollView>
+          )}
+
+          <View style={styles.footer}>
+            <Pressable
+              onPress={onClose}
+              disabled={saving}
+              style={({ pressed }) => [
+                styles.closeBtn,
+                { backgroundColor: '#E2E8F0' },
+                pressed && { opacity: 0.85 },
+              ]}
+            >
+              <Text style={[styles.closeTxt, { color: '#0F172A' }]}>
+                Cancelar
+              </Text>
+            </Pressable>
+            <Pressable
+              onPress={onSave}
+              disabled={saving || loading || !report}
+              style={({ pressed }) => [
+                styles.closeBtn,
+                (saving || loading || !report) && { opacity: 0.6 },
+                pressed && { opacity: 0.85 },
+              ]}
+            >
+              {saving ? (
+                <ActivityIndicator color="#FFFFFF" />
+              ) : (
+                <Text style={styles.closeTxt}>Guardar</Text>
+              )}
             </Pressable>
           </View>
         </Pressable>
@@ -331,6 +562,108 @@ const styles = StyleSheet.create({
     borderRadius: 10,
   },
   waTxt: { color: '#FFFFFF', fontSize: 14, fontWeight: '800' },
+
+  // ── CTA para abrir el modal de edición de captions ──
+  editCaptionsBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    minHeight: 44,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#1E40AF',
+    borderStyle: 'dashed',
+    backgroundColor: '#EFF6FF',
+    paddingHorizontal: 12,
+  },
+  editCaptionsBtnTxt: {
+    color: '#1E40AF',
+    fontWeight: '800',
+    fontSize: 13,
+  },
+
+  // ── Modal secundario para editar captions ──
+  editBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(15,23,42,0.55)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 16,
+  },
+  editCard: {
+    width: '100%',
+    maxWidth: 520,
+    maxHeight: '92%',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    overflow: 'hidden',
+    shadowColor: '#0F172A',
+    shadowOpacity: 0.2,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 10,
+  },
+  editHint: {
+    fontSize: 12,
+    color: '#64748B',
+    marginBottom: 4,
+    lineHeight: 16,
+  },
+  editPhotoRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+    backgroundColor: '#F8FAFC',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    padding: 10,
+  },
+  editIndexBadge: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: '#1E40AF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 22,
+  },
+  editIndexBadgeTxt: {
+    color: '#FFFFFF',
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  editThumb: {
+    width: 72,
+    height: 72,
+    borderRadius: 8,
+    backgroundColor: '#DBEAFE',
+  },
+  editFieldLabel: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#64748B',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  editInput: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+    paddingHorizontal: 10,
+    paddingVertical: Platform.OS === 'ios' ? 10 : 8,
+    fontSize: 14,
+    color: '#0F172A',
+    minHeight: 72,
+    textAlignVertical: 'top',
+  },
+  editCounter: {
+    fontSize: 10,
+    color: '#94A3B8',
+    textAlign: 'right',
+  },
 });
 
 export default ReportPreviewSheet;

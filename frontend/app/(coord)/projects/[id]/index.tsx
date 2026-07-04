@@ -1679,14 +1679,15 @@ export default function ProjectDetailScreen() {
               style={({ pressed }) => ({
                 marginHorizontal: 20,
                 marginBottom: 16,
-                paddingVertical: 14,
+                paddingVertical: 16,
                 borderRadius: radius.md,
-                backgroundColor: gdBusy === 'add' ? '#94A3B8' : colors.brand,
+                backgroundColor: gdBusy === 'add' ? '#94A3B8' : colors.primary,
                 alignItems: 'center',
                 justifyContent: 'center',
                 flexDirection: 'row',
                 gap: 8,
                 opacity: pressed ? 0.9 : 1,
+                ...shadow.card,
               })}
             >
               {gdBusy === 'add' ? (
@@ -1694,19 +1695,41 @@ export default function ProjectDetailScreen() {
               ) : (
                 <Ionicons name="add-circle" size={22} color="#fff" />
               )}
-              <Text style={{ color: '#fff', fontWeight: '700', fontSize: 15 }}>
-                {gdBusy === 'add' ? 'Subiendo…' : 'Agregar imagen(es)'}
+              <Text style={{ color: '#fff', fontWeight: '800', fontSize: 16 }}>
+                {gdBusy === 'add' ? 'Subiendo…' : '+ Agregar imagen(es)'}
               </Text>
             </Pressable>
             {gdImages.length === 0 ? (
               <View style={{ paddingHorizontal: 24, paddingVertical: 30, alignItems: 'center' }}>
                 <Ionicons name="images-outline" size={48} color={colors.textMuted} />
-                <Text style={{ color: colors.textMuted, textAlign: 'center', marginTop: 10 }}>
+                <Text style={{ color: colors.textMuted, textAlign: 'center', marginTop: 10, fontSize: 15 }}>
                   Aún no has subido imágenes.
                 </Text>
                 <Text style={{ color: colors.textMuted, textAlign: 'center', marginTop: 4, fontSize: 12 }}>
                   Máximo 5 MB por imagen · hasta 30 imágenes por proyecto.
                 </Text>
+                {/* Botón secundario redundante para no perder el CTA en el empty-state */}
+                <Pressable
+                  onPress={onAddGeneralDataImages}
+                  disabled={gdBusy !== null}
+                  style={({ pressed }) => ({
+                    marginTop: 22,
+                    paddingHorizontal: 22,
+                    paddingVertical: 12,
+                    borderRadius: radius.md,
+                    borderWidth: 1.5,
+                    borderColor: colors.primary,
+                    backgroundColor: pressed ? 'rgba(0,51,102,0.06)' : 'transparent',
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: 8,
+                  })}
+                >
+                  <Ionicons name="cloud-upload-outline" size={20} color={colors.primary} />
+                  <Text style={{ color: colors.primary, fontWeight: '700', fontSize: 15 }}>
+                    Elegir de galería
+                  </Text>
+                </Pressable>
               </View>
             ) : (
               <View style={{ paddingHorizontal: 16, flexDirection: 'row', flexWrap: 'wrap', gap: 12 }}>

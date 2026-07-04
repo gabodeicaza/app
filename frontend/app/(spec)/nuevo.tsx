@@ -110,6 +110,9 @@ export default function SpecCaptureScreen() {
   const [equipo, setEquipo] = useState<DynItem[]>([]);
   const [measurement, setMeasurement] = useState<MeasurementValue>({});
   const [images, setImages] = useState<string[]>([]);
+  // Descripciones individuales por foto (foto 1 → photoCaptions[0], foto 2 → [1]).
+  // Solo se muestran/consideran las 2 primeras fotos (tope estricto de export).
+  const [photoCaptions, setPhotoCaptions] = useState<string[]>([]);
   const [submitting, setSubmitting] = useState(false);
 
   // ----- Catálogos AsyncStorage --------------------------------------------
@@ -541,6 +544,10 @@ export default function SpecCaptureScreen() {
         personnel: personnelArr,
         equipment: equipmentArr,
         images: images,
+        // Solo se guardan los captions de las 2 primeras fotos (tope
+        // estricto del exportador ejecutivo). Se envían aunque `images`
+        // contenga más para preservar futuras extensiones sin romper compat.
+        photo_captions: photoCaptions.slice(0, 2),
         primera_lectura: primeraLecturaNum,
         ultima_lectura: ultimaLecturaNum,
         unidad: unidad,
@@ -587,6 +594,7 @@ export default function SpecCaptureScreen() {
     setEquipo([]);
     setMeasurement({});
     setImages([]);
+    setPhotoCaptions([]);
     resetCascade();
     setSuccessOpen(false);
   }
@@ -1056,22 +1064,111 @@ export default function SpecCaptureScreen() {
           />
         ) : null}
 
-        {/* Fotos */}
+        {/* Fotos + descripciones individuales por foto -------------------- */}
+        {/* Sólo las 2 primeras se exportan a PPTX/PDF (layout ejecutivo).   */}
         {leafNode ? (
           <SectionCard
             icon="camera-outline"
             title={`Fotos (${images.length})`}
-            subtitle="Cero Huella Local: las imágenes viven solo en RAM."
+            subtitle="Máximo 2 fotos se exportarán al reporte ejecutivo (PPTX/PDF)."
           >
-            <View style={{ flexDirection: 'row', gap: spacing.sm, flexWrap: 'wrap' }}>
-              {images.map((b64, i) => (
-                <View key={i} style={styles.photoTile}>
-                  <Image source={{ uri: `data:image/jpeg;base64,${b64}` }} style={styles.photoImg} />
-                  <Pressable onPress={() => removeImage(i)} style={styles.photoRemove} hitSlop={6}>
-                    <Ionicons name="close" size={14} color={colors.textInverse} />
-                  </Pressable>
+            {/* Fila 1: fotos 1 y 2 (las que sí van al export) — cada una con
+                su TextInput de descripción individual justo debajo. */}
+            <View style={{ gap: spacing.md }}>
+              {images.slice(0, 2).map((b64, i) => (
+                <View key={`photo-${i}`} style={styles.photoWithCaption}>
+                  <View style={styles.photoWithCaptionHead}>
+                    <View style={styles.photoIndexBadge}>
+                      <Text style={styles.photoIndexBadgeTxt}>{i + 1}</Text>
+                    </View>
+                    <View style={styles.photoTile}>
+                      <Image
+                        source={{ uri: `data:image/jpeg;base64,${b64}` }}
+                        style={styles.photoImg}
+                      />
+                      <Pressable
+                        onPress={() => {
+                          removeImage(i);
+                          // Colapsamos el caption removido, no dejamos huecos.
+                          setPhotoCaptions((prev) => prev.filter((_, idx) => idx !== i));
+                        }}
+                        style={styles.photoRemove}
+                        hitSlop={6}
+                      >
+                        <Ionicons name="close" size={14} color={colors.textInverse} />
+                      </Pressable>
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.photoCaptionLabel}>
+                        Descripción foto {i + 1}
+                      </Text>
+                      <Text style={styles.photoCaptionHint}>
+                        Aparecerá al pie de la foto en PPTX/PDF.
+                      </Text>
+                    </View>
+                  </View>
+                  <TextInput
+                    placeholder={
+                      i === 0
+                        ? 'Descripción de la primera foto (máx. 4 líneas)'
+                        : 'Descripción de la segunda foto (máx. 4 líneas)'
+                    }
+                    placeholderTextColor={colors.textMuted}
+                    style={[styles.input, styles.inputMulti]}
+                    multiline
+                    numberOfLines={4}
+                    maxLength={160}
+                    value={photoCaptions[i] || ''}
+                    onChangeText={(t) => {
+                      setPhotoCaptions((prev) => {
+                        const next = [...prev];
+                        while (next.length <= i) next.push('');
+                        next[i] = t;
+                        return next;
+                      });
+                    }}
+                  />
+                  <Text style={styles.photoCaptionCounter}>
+                    {(photoCaptions[i] || '').length}/160
+                  </Text>
                 </View>
               ))}
+            </View>
+
+            {/* Fotos extra (3+): informativas, no exportan. */}
+            {images.length > 2 ? (
+              <View style={styles.photoExtraBox}>
+                <Ionicons name="information-circle-outline" size={14} color={colors.textMuted} />
+                <Text style={styles.photoExtraTxt}>
+                  Adjuntaste {images.length} fotos, pero sólo las primeras 2 aparecerán en el reporte ejecutivo.
+                </Text>
+              </View>
+            ) : null}
+            {images.length > 2 ? (
+              <View style={{ flexDirection: 'row', gap: spacing.sm, flexWrap: 'wrap', marginTop: spacing.sm }}>
+                {images.slice(2).map((b64, offset) => {
+                  const realIdx = offset + 2;
+                  return (
+                    <View key={`extra-${realIdx}`} style={[styles.photoTile, { opacity: 0.65 }]}>
+                      <Image source={{ uri: `data:image/jpeg;base64,${b64}` }} style={styles.photoImg} />
+                      <Pressable
+                        onPress={() => {
+                          removeImage(realIdx);
+                          setPhotoCaptions((prev) => prev.filter((_, idx) => idx !== realIdx));
+                        }}
+                        style={styles.photoRemove}
+                        hitSlop={6}
+                      >
+                        <Ionicons name="close" size={14} color={colors.textInverse} />
+                      </Pressable>
+                    </View>
+                  );
+                })}
+              </View>
+            ) : null}
+
+            {/* Botones para agregar */}
+            <View style={{ flexDirection: 'row', gap: spacing.sm, flexWrap: 'wrap', marginTop: spacing.md }}>
               <Pressable onPress={takePhotoFromCamera} style={[styles.photoTile, styles.photoAdd]}>
                 <Ionicons name="camera" size={22} color={colors.primary} />
                 <Text style={styles.photoAddTxt}>Cámara</Text>
@@ -2091,6 +2188,48 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   photoAddTxt: { color: colors.primary, fontSize: 11, fontWeight: '700' },
+
+  // ── Fotos con caption individual (nuevo layout ejecutivo, tope 2) ──
+  photoWithCaption: {
+    backgroundColor: colors.bg,
+    borderRadius: radius.md,
+    borderWidth: 1, borderColor: colors.border,
+    padding: spacing.sm,
+    gap: spacing.xs,
+  },
+  photoWithCaptionHead: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm,
+  },
+  photoIndexBadge: {
+    width: 22, height: 22, borderRadius: 11,
+    backgroundColor: colors.primary,
+    alignItems: 'center', justifyContent: 'center',
+    marginTop: 4,
+  },
+  photoIndexBadgeTxt: {
+    color: colors.textInverse, fontSize: 11, fontWeight: '800',
+  },
+  photoCaptionLabel: {
+    fontSize: 12, fontWeight: '800', color: colors.text,
+    textTransform: 'uppercase', letterSpacing: 0.4,
+  },
+  photoCaptionHint: {
+    fontSize: 11, color: colors.textMuted, marginTop: 2,
+  },
+  photoCaptionCounter: {
+    fontSize: 10, color: colors.textMuted, textAlign: 'right',
+    marginTop: -2,
+  },
+  photoExtraBox: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: '#FEF3C7',
+    borderRadius: radius.sm, borderWidth: 1, borderColor: '#FDE68A',
+    padding: 8,
+    marginTop: spacing.sm,
+  },
+  photoExtraTxt: {
+    flex: 1, fontSize: 11, color: '#92400E', fontWeight: '600',
+  },
 
   helpHint: { marginTop: spacing.sm, color: colors.textMuted, fontSize: 12, textAlign: 'center' },
 
