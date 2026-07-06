@@ -2,67 +2,105 @@
 // Reads JWT from secure storage on every call.
 import { Platform } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
-import Constants from 'expo-constants';
 import { storage } from '@/src/utils/storage';
 
 /**
- * Resolve BASE URL para llamadas al backend.
+ * BASE URL del backend.
  *
- * Reglas (2026-07-06 · CDMX):
- *   1. Si `EXPO_PUBLIC_BACKEND_URL` está seteada (build o preview público) →
- *      se usa TAL CUAL. Es la ruta HTTPS del ingress de Emergent
- *      (ej. `https://<subdomain>.preview.emergentagent.com`).
- *   2. Si NO hay variable de entorno y estamos en `__DEV__` (Expo Go
- *      corriendo contra Metro en LAN) → derivamos la IP LAN de la
- *      máquina de desarrollo desde `Constants.expoConfig?.hostUri`
- *      (ej. `192.168.1.42:8081`) y apuntamos al backend en el puerto
- *      `8001`. Esto permite probar con dispositivos físicos en la
- *      misma red WiFi sin exponer túneles.
- *   3. JAMÁS caemos a `localhost` / `127.0.0.1` desde un dispositivo
- *      físico: eso resolvería el loopback del propio celular y la
- *      conexión moriría silenciosamente.
+ * HARD REVERT (2026-07-06): tras romper la comunicación en dispositivos
+ * físicos con lógica dinámica basada en `Constants.expoConfig.hostUri`,
+ * volvemos al comportamiento del día 1: leer TAL CUAL la variable
+ * `EXPO_PUBLIC_BACKEND_URL` inyectada por Expo desde `frontend/.env`.
  *
- * Si ninguna estrategia produce un host válido, `BASE` queda como
- * cadena vacía + `/api`. En ese caso los helpers de upload disparan
- * `ApiError` con instrucciones claras.
+ * Escape hatch de diagnóstico:
+ *   Si el usuario forzó una URL manual desde la pantalla de Login
+ *   (guardada en AsyncStorage bajo `debug_backend_url`), esa URL toma
+ *   prioridad ABSOLUTA. Se aplica en el arranque del `AuthProvider` vía
+ *   `applyStoredDebugBase()` — antes de que cualquier fetch corra.
+ *
+ * `export let` habilita "live bindings" ES modules: al mutar `BASE`
+ * desde este módulo, todos los importadores ven inmediatamente el valor
+ * actualizado.
  */
-function resolveBaseUrl(): string {
-  const env = (process.env.EXPO_PUBLIC_BACKEND_URL || '').trim();
-  if (env) {
-    return env.replace(/\/$/, '') + '/api';
-  }
+export let BASE: string =
+  (process.env.EXPO_PUBLIC_BACKEND_URL || '').replace(/\/$/, '') + '/api';
 
-  // Dev fallback: Expo Go con Metro en LAN. Constants.expoConfig?.hostUri
-  // suele ser `192.168.x.y:8081` o `10.0.x.y:8081`.
-  if (__DEV__) {
-    const hostUri: string | undefined =
-      // @ts-ignore — expoGoConfig existe en runtime pero no en tipos.
-      (Constants.expoConfig?.hostUri as string | undefined) ||
-      // @ts-ignore
-      (Constants.expoGoConfig?.hostUri as string | undefined) ||
-      // @ts-ignore — manifest legacy (SDK 49-)
-      (Constants.manifest?.debuggerHost as string | undefined);
-    if (hostUri) {
-      const host = hostUri.split(':')[0];
-      if (
-        host &&
-        host !== 'localhost' &&
-        host !== '127.0.0.1' &&
-        host !== '0.0.0.0' &&
-        !host.startsWith('exp+')
-      ) {
-        // Backend siempre corre en 8001 dentro del contenedor de dev.
-        return `http://${host}:8001/api`;
-      }
-    }
-  }
+/** Clave AsyncStorage donde persiste el override manual del usuario. */
+const DEBUG_BASE_KEY = 'debug_backend_url';
 
-  // Sin variable de entorno y sin hostUri LAN válido: devolvemos algo
-  // que fallará explícitamente al hacer la primera petición.
-  return '/api';
+/** Normaliza cualquier input del usuario a `http[s]://.../api`. */
+function normalizeDebugBase(raw: string): string {
+  let clean = (raw || '').trim();
+  if (!clean) return '';
+  // Prefijo protocolo obligatorio si falta.
+  if (!/^https?:\/\//i.test(clean)) clean = 'http://' + clean;
+  // Quita trailing slash.
+  clean = clean.replace(/\/+$/, '');
+  // Asegura sufijo /api exactamente una vez.
+  if (!/\/api$/i.test(clean)) clean += '/api';
+  return clean;
 }
 
-const BASE = resolveBaseUrl();
+/**
+ * Lee la URL manual guardada por el usuario en AsyncStorage y, si existe,
+ * la aplica a `BASE`. Debe llamarse en el bootstrap de la app (ej.
+ * `AuthProvider` o `RootLayout`) ANTES de disparar cualquier fetch.
+ * Devuelve la URL efectiva (o null si no había override).
+ */
+export async function applyStoredDebugBase(): Promise<string | null> {
+  try {
+    const stored = await storage.getItem<string | null>(DEBUG_BASE_KEY, null);
+    if (stored && typeof stored === 'string' && stored.trim()) {
+      const clean = normalizeDebugBase(stored);
+      if (clean) {
+        BASE = clean;
+        console.log('[api] DEBUG override BASE →', BASE);
+        return BASE;
+      }
+    }
+  } catch {
+    /* silencioso: fallback al valor de .env */
+  }
+  return null;
+}
+
+/**
+ * Persiste (o limpia si `url` es null/vacío) una URL manual del backend.
+ * Se llama desde el modal de "Debug de Red" en la pantalla de Login.
+ * Devuelve la nueva URL efectiva.
+ */
+export async function setDebugBase(url: string | null): Promise<string> {
+  if (url && url.trim()) {
+    const clean = normalizeDebugBase(url);
+    BASE = clean;
+    try {
+      await storage.setItem(DEBUG_BASE_KEY, url.trim());
+    } catch {}
+  } else {
+    BASE = (process.env.EXPO_PUBLIC_BACKEND_URL || '').replace(/\/$/, '') + '/api';
+    try {
+      await storage.removeItem(DEBUG_BASE_KEY);
+    } catch {}
+  }
+  return BASE;
+}
+
+/** Devuelve la BASE URL activa (útil para mostrarla en la UI de debug). */
+export function getCurrentBase(): string {
+  return BASE;
+}
+
+/**
+ * Devuelve el valor almacenado en AsyncStorage (o null si no hay
+ * override). No muta `BASE`. Útil para prellenar el modal de debug.
+ */
+export async function getStoredDebugBase(): Promise<string | null> {
+  try {
+    return await storage.getItem<string | null>(DEBUG_BASE_KEY, null);
+  } catch {
+    return null;
+  }
+}
 
 export class ApiError extends Error {
   status: number;
@@ -235,12 +273,13 @@ async function nativeMultipartUpload<T>(
     throw new ApiError(0, `Falló la preparación del archivo: ${err?.message || err}`);
   }
 
-  // Paso 2: verificar que la URL es un endpoint público (nunca localhost
-  // desde móvil físico). Si BASE no está configurado apuntará a "/api" y el
-  // fetch fallaría inmediatamente — mejor un mensaje explícito.
-  if (!url || url.startsWith('/api') || url.includes('localhost') || url.includes('127.0.0.1')) {
+  // Paso 2: verificar que la URL sea absoluta (nunca "/api" plano desde
+  // un dispositivo móvil físico). Si BASE terminó con "/api" solo, quiere
+  // decir que EXPO_PUBLIC_BACKEND_URL viene vacía y no hay override
+  // manual configurado.
+  if (!url || url === '/api' || url.startsWith('/api/')) {
     throw new ApiError(0,
-      `URL inválida para móvil: "${url}". Configura EXPO_PUBLIC_BACKEND_URL a un dominio HTTPS público.`);
+      `Backend no configurado. Ve al login → "Debug de red" y captura la URL manualmente. url="${url}"`);
   }
 
   const authHeaders = await authHeader();
@@ -1224,5 +1263,3 @@ export const api = {
   deleteDailyGoal: (pid: string, gid: string) =>
     request<{ ok: boolean }>('DELETE', `/projects/${pid}/daily_goals/${gid}`),
 };
-
-export { BASE };

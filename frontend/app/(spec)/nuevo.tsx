@@ -622,13 +622,22 @@ export default function SpecCaptureScreen() {
             if (data_url) dataUrls.push(data_url);
           }
         } catch (upErr: any) {
-          const details = upErr?.message || String(upErr);
+          // Volcado del error COMPLETO: incluye TypeError/NetworkError/AbortError
+          // más cualquier prop no-enumerable (message, stack, url, etc.).
+          const rawJson = (() => {
+            try {
+              return JSON.stringify(upErr, Object.getOwnPropertyNames(upErr), 2);
+            } catch {
+              return String(upErr);
+            }
+          })();
+          const short = upErr?.message || String(upErr);
           Alert.alert(
             'Error de subida (foto ' + (i + 1) + ')',
-            details,
+            `${short}\n\n----- DUMP -----\n${rawJson.slice(0, 900)}`,
             [{ text: 'OK' }],
           );
-          throw new Error(`Falló la subida de la foto ${i + 1}: ${details}`);
+          throw new Error(`Falló la subida de la foto ${i + 1}: ${short}`);
         }
       }
 

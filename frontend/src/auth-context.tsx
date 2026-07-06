@@ -1,6 +1,6 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { storage } from '@/src/utils/storage';
-import { api, User } from '@/src/api';
+import { api, applyStoredDebugBase, User } from '@/src/api';
 import {
   registerForPushNotificationsAsync,
   clearCachedPushToken,
@@ -39,6 +39,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     let mounted = true;
     (async () => {
+      // Escape hatch de red: aplica cualquier URL manual persistida ANTES
+      // de disparar el primer fetch (2026-07-06).
+      try { await applyStoredDebugBase(); } catch {}
       const cached = await storage.getItem<string>('synco_user', '');
       if (cached && mounted) {
         try { setUser(JSON.parse(cached)); } catch {}
