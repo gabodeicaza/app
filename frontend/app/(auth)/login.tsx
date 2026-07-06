@@ -131,16 +131,24 @@ export default function LoginScreen() {
           </View>
 
           {/* Escape hatch: debug de red (P0 2026-07-06) */}
-          <Pressable
-            onPress={() => setDebugOpen(true)}
-            style={({ pressed }) => [styles.debugLink, pressed && { opacity: 0.6 }]}
-            hitSlop={10}
-          >
-            <Ionicons name="bug-outline" size={14} color={colors.textMuted} />
-            <Text style={styles.debugLinkTxt}>¿Problemas de conexión? Debug de red</Text>
-          </Pressable>
         </View>
       </ScrollView>
+
+      {/* Botón FLOTANTE de Debug de Red — arriba-derecha, imposible de ocultar */}
+      <Pressable
+        onPress={() => setDebugOpen(true)}
+        style={({ pressed }) => [
+          styles.debugFab,
+          { top: (insets.top || 0) + 12 },
+          pressed && { opacity: 0.85 },
+        ]}
+        hitSlop={12}
+        accessibilityRole="button"
+        accessibilityLabel="Abrir debug de red"
+      >
+        <Ionicons name="bug" size={16} color="#0F172A" />
+        <Text style={styles.debugFabTxt}>Debug de red</Text>
+      </Pressable>
 
       <DebugNetworkModal visible={debugOpen} onClose={() => setDebugOpen(false)} />
     </KeyboardAvoidingView>
@@ -188,13 +196,24 @@ const styles = StyleSheet.create({
   inviteSubtitle: { fontSize: 11, color: colors.textBody, marginTop: 2 },
   infoBox: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, marginTop: spacing.md, padding: 10, backgroundColor: colors.primaryLight + '55', borderRadius: radius.md },
   infoText: { flex: 1, fontSize: 12, color: colors.textBody, lineHeight: 18 },
-  debugLink: {
+  debugFab: {
+    position: 'absolute',
+    right: 16,
+    zIndex: 9999,
+    elevation: 12,
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
     gap: 6,
-    marginTop: 14,
+    paddingHorizontal: 12,
     paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: '#FACC15', // amarillo llamativo
+    borderWidth: 2,
+    borderColor: '#0F172A',
+    shadowColor: '#000',
+    shadowOpacity: 0.25,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 3 },
   },
-  debugLinkTxt: { fontSize: 11, color: colors.textMuted, fontWeight: '600' },
+  debugFabTxt: { fontSize: 12, fontWeight: '900', color: '#0F172A', letterSpacing: 0.3 },
 });

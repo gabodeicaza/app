@@ -169,24 +169,44 @@ export function ReportPreviewSheet({
       animationType="fade"
       onRequestClose={onClose}
     >
-      <Pressable style={styles.backdrop} onPress={onClose}>
-        <Pressable style={styles.card} onPress={(e) => e.stopPropagation()}>
-          {/* Header */}
-          <View style={styles.header}>
-            <Text style={styles.title} numberOfLines={1}>
-              {title}
-            </Text>
-            <Pressable hitSlop={10} onPress={onClose}>
-              <Ionicons name="close" size={22} color="#0F172A" />
-            </Pressable>
-          </View>
+      {/*
+        Estructura anti-scroll-lock (2026-07-06):
+        El backdrop DEBE ser un componente hermano al card, no un padre
+        `Pressable` que envuelva todo. Cuando el backdrop envuelve la card,
+        el sistema de gestos del `Pressable` puede interceptar los pans
+        verticales del ScrollView y provocar que se "trabe" el scroll en
+        dispositivos físicos. Con esta separación, el backdrop sólo capta
+        taps en los bordes; el card es un `View` normal y su ScrollView
+        recibe todos los pans limpios.
+      */}
+      <View style={styles.root}>
+        <Pressable
+          style={StyleSheet.absoluteFill}
+          onPress={onClose}
+          accessibilityRole="button"
+          accessibilityLabel="Cerrar vista previa"
+        />
+        <View style={styles.card} pointerEvents="box-none">
+          <View style={styles.cardInner}>
+            {/* Header */}
+            <View style={styles.header}>
+              <Text style={styles.title} numberOfLines={1}>
+                {title}
+              </Text>
+              <Pressable hitSlop={10} onPress={onClose}>
+                <Ionicons name="close" size={22} color="#0F172A" />
+              </Pressable>
+            </View>
 
-          {/* Body */}
-          <ScrollView
-            style={styles.scroll}
-            contentContainerStyle={styles.scrollContent}
-            showsVerticalScrollIndicator={false}
-          >
+            {/* Body */}
+            <ScrollView
+              style={styles.scroll}
+              contentContainerStyle={styles.scrollContent}
+              showsVerticalScrollIndicator
+              nestedScrollEnabled
+              keyboardShouldPersistTaps="handled"
+              bounces
+            >
             {/* ===== Galería completa de fotos (2026-07-06) ===== */}
             {galleryLoading && galleryImages.length === 0 ? (
               <View style={[styles.image, styles.imagePlaceholder]}>
@@ -271,37 +291,38 @@ export function ReportPreviewSheet({
             ) : null}
           </ScrollView>
 
-          {/* Footer */}
-          <View style={styles.footer}>
-            {onShare ? (
+            {/* Footer */}
+            <View style={styles.footer}>
+              {onShare ? (
+                <Pressable
+                  onPress={() => {
+                    if (item && onShare) {
+                      onClose();
+                      setTimeout(() => onShare(item), 220);
+                    }
+                  }}
+                  style={({ pressed }) => [
+                    styles.waBtn,
+                    pressed && { opacity: 0.85 },
+                  ]}
+                >
+                  <Ionicons name="logo-whatsapp" size={18} color="#FFFFFF" />
+                  <Text style={styles.waTxt}>Compartir</Text>
+                </Pressable>
+              ) : null}
               <Pressable
-                onPress={() => {
-                  if (item && onShare) {
-                    onClose();
-                    setTimeout(() => onShare(item), 220);
-                  }
-                }}
+                onPress={onClose}
                 style={({ pressed }) => [
-                  styles.waBtn,
+                  styles.closeBtn,
                   pressed && { opacity: 0.85 },
                 ]}
               >
-                <Ionicons name="logo-whatsapp" size={18} color="#FFFFFF" />
-                <Text style={styles.waTxt}>Compartir</Text>
+                <Text style={styles.closeTxt}>Cerrar</Text>
               </Pressable>
-            ) : null}
-            <Pressable
-              onPress={onClose}
-              style={({ pressed }) => [
-                styles.closeBtn,
-                pressed && { opacity: 0.85 },
-              ]}
-            >
-              <Text style={styles.closeTxt}>Cerrar</Text>
-            </Pressable>
+            </View>
           </View>
-        </Pressable>
-      </Pressable>
+        </View>
+      </View>
 
       {/* Modal secundario: edición de descripciones individuales por foto */}
       <EditCaptionsModal
@@ -515,7 +536,7 @@ function Block({
 // Styles — inlined hex colors to avoid theme drift across roles.
 // ---------------------------------------------------------------------------
 const styles = StyleSheet.create({
-  backdrop: {
+  root: {
     flex: 1,
     backgroundColor: 'rgba(15,23,42,0.55)',
     alignItems: 'center',
@@ -526,6 +547,13 @@ const styles = StyleSheet.create({
     width: '100%',
     maxWidth: 480,
     maxHeight: '92%',
+    alignItems: 'stretch',
+    justifyContent: 'center',
+  },
+  cardInner: {
+    width: '100%',
+    maxHeight: '100%',
+    flexShrink: 1,
     backgroundColor: '#FFFFFF',
     borderRadius: 16,
     overflow: 'hidden',
@@ -554,9 +582,11 @@ const styles = StyleSheet.create({
   },
   scroll: {
     backgroundColor: '#FFFFFF',
+    flexShrink: 1,
   },
   scrollContent: {
     padding: 16,
+    paddingBottom: 48,
     gap: 12,
     backgroundColor: '#FFFFFF',
   },
