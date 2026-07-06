@@ -4776,7 +4776,10 @@ async def export_reports_pdf(
             _size = 18
             while c.stringWidth(_title, "Helvetica-Bold", _size) > PW - 3 * cm and _size > 10:
                 _size -= 1
-            c.setFillColor(BRAND)
+            # Paridad PPTX: NODE_TITLE_COLOR = azul-oscuro casi negro para
+            # que resalte sobre el fondo BLANCO del membrete (antes se usaba
+            # `BRAND` magenta claro que quedaba ilegible sobre blanco).
+            c.setFillColor(HexColor("#0F172A"))
             c.setFont("Helvetica-Bold", _size)
             title_y = img_y - title_gap - title_h / 2 if drawn else avail_bot + avail_h / 2
             c.drawCentredString(PW / 2, title_y, _title)
@@ -4898,8 +4901,17 @@ async def export_reports_pdf(
         # Agrupación jerárquica: Nodo (con cover) → Área → Reportes.
         # [FILTRO ESTRICTO 2b] Solo procesamos nodos cuyo árbol (nodo o
         # ancestro) tenga cover_image. Sin cover_image en toda la rama → OMITIR.
+        #
+        # FIX 2026-07-06 · UBICACIÓN COMPLETA EN PORTADILLA DE NODO
+        # ─────────────────────────────────────────────────────────
+        # Antes el PDF agrupaba las portadillas por `cover_id` (varios
+        # nodos hoja con el mismo ancestor de cover compartían UNA sola
+        # portadilla) y mostraba SÓLO `cover_meta.name` (p.ej. "SUBTRAMO
+        # E1-E2") en vez del `node_path` completo ("TRAMO 1 › Subtramo
+        # E1-E2 › C1"), lo cual perdía la ubicación institucional.
+        # Solución (paridad con PPTX): emitir 1 portadilla por cada nodo
+        # hoja y usar `node_path` como título.
         # =====================================================================
-        current_cover_group_id = None
         for n in leaf_nodes:
             node_reps = reports_by_node.get(n["id"]) or []
             if not node_reps:
@@ -4909,17 +4921,16 @@ async def export_reports_pdf(
                 continue
             node_path = path_cache.get(n["id"]) or n.get("name", "")
 
-            # === Portadilla DINÁMICA de Nodo (agrupada por cover_image) ======
-            cover_id = cover_meta["id"]
-            if cover_id != current_cover_group_id:
-                draw_dynamic_cover_page(
-                    cover_meta.get("name") or node_path,
-                    cover_meta.get("cover_image"),
-                    page_num,
-                )
-                c.showPage()
-                page_num += 1
-                current_cover_group_id = cover_id
+            # === Portadilla de Nodo (1 por nodo hoja) ========================
+            # Título: node_path COMPLETO (con separador ›), mismo formato
+            # que el PPTX (`TRAMO 1 › Subtramo E1-E2 › C1`).
+            draw_dynamic_cover_page(
+                node_path,  # ubicación institucional completa
+                cover_meta.get("cover_image"),
+                page_num,
+            )
+            c.showPage()
+            page_num += 1
 
             # === Sub-agrupación por Área dentro del nodo =====================
             # Bucket key = nombre normalizado del área (colapsa "Sub
