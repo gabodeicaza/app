@@ -29,6 +29,8 @@ import { confirm } from '@/src/utils/confirm';
 import { DailyGoalsPanel } from '@/src/components/DailyGoalsPanel';
 import { NodeProgressPanel } from '@/src/components/NodeProgressPanel';
 import { ReportPreviewSheet } from '@/src/components/ReportPreviewSheet';
+import { HistoryCalendarModal } from '@/src/components/HistoryCalendarModal';
+import { toISODateCDMX } from '@/src/utils/tz';
 
 type ProgressRow = {
   node: LocationNode;
@@ -68,6 +70,10 @@ export default function SubCoordDashboard() {
 
   // P4 - Filtro de tiempo (Hoy/Semana/Mes)
   const [period, setPeriod] = useState<'today' | 'week' | 'month'>('today');
+
+  // Calendario histórico — filtrar reportes por día calendario en CDMX.
+  const [calendarOpen, setCalendarOpen] = useState(false);
+  const [selectedDate, setSelectedDate] = useState<string | null>(null); // YYYY-MM-DD (CDMX)
 
   // P4 - Estado del modal de exportación avanzada
   const [expFormat, setExpFormat] = useState<'xlsx' | 'pdf' | 'docx' | 'pptx'>('xlsx');
@@ -135,9 +141,13 @@ export default function SubCoordDashboard() {
   }, [reports]);
 
   const filteredReports = useMemo(() => {
-    if (selectedAreas.size === 0) return reports;
-    return reports.filter((r) => r.area_name && selectedAreas.has(r.area_name));
-  }, [reports, selectedAreas]);
+    let base = reports;
+    if (selectedDate) {
+      base = base.filter((r) => toISODateCDMX(r.created_at) === selectedDate);
+    }
+    if (selectedAreas.size === 0) return base;
+    return base.filter((r) => r.area_name && selectedAreas.has(r.area_name));
+  }, [reports, selectedAreas, selectedDate]);
 
   // Nombre del nodo tramo (scope_node_id) para Hero Card (Task 2)
   const scopeNodeName = useMemo(() => {
@@ -568,18 +578,21 @@ export default function SubCoordDashboard() {
           <StatCard label="Alertas" value={alerts.length} icon="warning-outline" tint={colors.error} />
         </View>
 
-        {/* P4 - Chips de Tiempo (Hoy / Semana / Mes) */}
+        {/* P4 - Chips de Tiempo (Hoy / Semana / Mes / Día calendario) */}
         <View style={styles.timeChipsRow}>
           {([
             { k: 'today', label: 'Hoy', icon: 'today-outline' },
             { k: 'week', label: 'Semana', icon: 'calendar-outline' },
             { k: 'month', label: 'Mes', icon: 'calendar-clear-outline' },
           ] as const).map((t) => {
-            const sel = period === t.k;
+            const sel = period === t.k && !selectedDate;
             return (
               <Pressable
                 key={t.k}
-                onPress={() => setPeriod(t.k)}
+                onPress={() => {
+                  setPeriod(t.k);
+                  setSelectedDate(null);
+                }}
                 style={[styles.timeChip, sel && styles.timeChipActive]}
               >
                 <Ionicons
@@ -593,6 +606,34 @@ export default function SubCoordDashboard() {
               </Pressable>
             );
           })}
+          {/* Botón Día — abre calendario histórico */}
+          <Pressable
+            onPress={() => setCalendarOpen(true)}
+            style={[styles.timeChip, !!selectedDate && styles.timeChipActive]}
+          >
+            <Ionicons
+              name="calendar"
+              size={13}
+              color={selectedDate ? '#fff' : colors.primary}
+            />
+            <Text
+              style={[styles.timeChipTxt, !!selectedDate && styles.timeChipTxtActive]}
+              numberOfLines={1}
+            >
+              {selectedDate || 'Día'}
+            </Text>
+            {selectedDate && (
+              <Pressable
+                hitSlop={8}
+                onPress={(e) => {
+                  e.stopPropagation();
+                  setSelectedDate(null);
+                }}
+              >
+                <Ionicons name="close-circle" size={14} color="#fff" />
+              </Pressable>
+            )}
+          </Pressable>
         </View>
 
         {/* P5 - Chips de Áreas (filtros visuales) */}
@@ -1009,6 +1050,18 @@ export default function SubCoordDashboard() {
         item={previewItem}
         onClose={() => setPreviewItem(null)}
         onShare={shareReportWhatsApp}
+      />
+
+      {/* ===== Modal: Calendario histórico ===== */}
+      <HistoryCalendarModal
+        visible={calendarOpen}
+        reports={reports}
+        selectedDate={selectedDate}
+        onClose={() => setCalendarOpen(false)}
+        onPickDate={(d) => {
+          setSelectedDate(d);
+          setCalendarOpen(false);
+        }}
       />
 
       {/* ===== Modal: Exportación Avanzada ===== */}

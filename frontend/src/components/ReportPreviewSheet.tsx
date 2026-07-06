@@ -25,6 +25,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { api, type FeedItem, type Report } from '@/src/api';
 import { formatMeasurementValue } from '@/src/utils/whatsapp';
+import { fmtDateTimeCDMX } from '@/src/utils/tz';
 
 interface ReportPreviewSheetProps {
   visible: boolean;
@@ -50,15 +51,56 @@ export function ReportPreviewSheet({
   const [fullReport, setFullReport] = React.useState<Report | null>(null);
   const [draftCaps, setDraftCaps] = React.useState<string[]>(['', '']);
 
+  // === Galería completa de fotos (2026-07-06) =============================
+  // El FeedItem sólo trae `thumbnail_base64` (foto 0). Para mostrar TODAS
+  // las fotos del reporte hacemos un fetch perezoso del `Report` completo
+  // al abrir el modal.
+  const [galleryImages, setGalleryImages] = React.useState<string[]>([]);
+  const [galleryLoading, setGalleryLoading] = React.useState(false);
+  const [galleryCaptions, setGalleryCaptions] = React.useState<string[]>([]);
+
   const reportId: string | null = (it.id as string) || null;
+
+  React.useEffect(() => {
+    let alive = true;
+    if (!visible || !reportId) {
+      setGalleryImages([]);
+      setGalleryCaptions([]);
+      return;
+    }
+    // Kick-off: cargar reporte completo para tener images[] + captions.
+    setGalleryLoading(true);
+    api
+      .getReport(reportId)
+      .then((full) => {
+        if (!alive) return;
+        setGalleryImages((full.images || []).filter(Boolean));
+        setGalleryCaptions(full.photo_captions || []);
+      })
+      .catch(() => {
+        // Fallback silencioso: si falla, quedamos con el thumbnail.
+        if (!alive) return;
+        setGalleryImages([]);
+      })
+      .finally(() => {
+        if (alive) setGalleryLoading(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [visible, reportId]);
 
   const openEditCaptions = React.useCallback(async () => {
     if (!reportId) return;
     setEditOpen(true);
     setLoadingFull(true);
     try {
-      const full = await api.getReport(reportId);
-      setFullReport(full);
+      // Reutilizamos el reporte cargado por la galería si ya está en memoria.
+      let full = fullReport;
+      if (!full) {
+        full = await api.getReport(reportId);
+        setFullReport(full);
+      }
       const caps = (full.photo_captions || []).slice(0, 2);
       const seed = [caps[0] || '', caps[1] || ''];
       setDraftCaps(seed);
@@ -68,7 +110,7 @@ export function ReportPreviewSheet({
     } finally {
       setLoadingFull(false);
     }
-  }, [reportId]);
+  }, [reportId, fullReport]);
 
   const saveCaptions = React.useCallback(async () => {
     if (!reportId || !fullReport) return;
@@ -94,12 +136,7 @@ export function ReportPreviewSheet({
   const author =
     it.captured_by_name || it.user_name || it.author_name || 'Especialista';
   const area = it.area_name || 'Sin área asignada';
-  const created = it.created_at
-    ? new Date(it.created_at).toLocaleString('es-MX', {
-        dateStyle: 'medium',
-        timeStyle: 'short',
-      })
-    : '—';
+  const created = fmtDateTimeCDMX(it.created_at);
   const photoUri: string | null = it.thumbnail_base64
     ? `data:image/jpeg;base64,${it.thumbnail_base64}`
     : it.foto || it.photo_url || null;
@@ -117,9 +154,11 @@ export function ReportPreviewSheet({
   const hasActividades = actividades.length > 0;
 
   // Cuántas fotos reales tiene el reporte (para decidir si mostrar botón).
-  // FeedItem trae images_count. Si no está, deducimos de thumbnail.
+  // Priorizamos el conteo REAL (galleryImages) cargado del reporte completo.
   const imagesCount: number =
-    typeof it.images_count === 'number'
+    galleryImages.length > 0
+      ? galleryImages.length
+      : typeof it.images_count === 'number'
       ? it.images_count
       : (it.thumbnail_base64 ? 1 : 0);
 
@@ -148,7 +187,43 @@ export function ReportPreviewSheet({
             contentContainerStyle={styles.scrollContent}
             showsVerticalScrollIndicator={false}
           >
-            {photoUri ? (
+            {/* ===== Galería completa de fotos (2026-07-06) ===== */}
+            {galleryLoading && galleryImages.length === 0 ? (
+              <View style={[styles.image, styles.imagePlaceholder]}>
+                <ActivityIndicator color="#1E40AF" />
+                <Text style={styles.imagePlaceholderTxt}>Cargando fotos…</Text>
+              </View>
+            ) : galleryImages.length > 0 ? (
+              <View style={{ gap: 10 }}>
+                {galleryImages.map((b64, idx) => {
+                  const cap = (galleryCaptions[idx] || '').trim();
+                  const src = b64.startsWith('data:')
+                    ? b64
+                    : `data:image/jpeg;base64,${b64}`;
+                  return (
+                    <View key={`gal-${idx}`} style={styles.galleryItem}>
+                      <Image
+                        source={{ uri: src }}
+                        style={styles.image}
+                        resizeMode="cover"
+                      />
+                      <View style={styles.galleryBadge}>
+                        <Text style={styles.galleryBadgeTxt}>
+                          {idx + 1}/{galleryImages.length}
+                        </Text>
+                      </View>
+                      {cap ? (
+                        <Text style={styles.galleryCap} numberOfLines={4}>
+                          {cap}
+                        </Text>
+                      ) : null}
+                    </View>
+                  );
+                })}
+              </View>
+            ) : photoUri ? (
+              // Fallback: al menos la miniatura del feed si no se pudo
+              // cargar el reporte completo.
               <Image
                 source={{ uri: photoUri }}
                 style={styles.image}
@@ -490,6 +565,30 @@ const styles = StyleSheet.create({
     height: 250,
     borderRadius: 10,
     backgroundColor: '#DBEAFE',
+  },
+  galleryItem: {
+    position: 'relative',
+  },
+  galleryBadge: {
+    position: 'absolute',
+    top: 10,
+    right: 10,
+    backgroundColor: 'rgba(15,23,42,0.75)',
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  galleryBadgeTxt: {
+    color: '#FFFFFF',
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  galleryCap: {
+    marginTop: 4,
+    fontSize: 12,
+    color: '#334155',
+    lineHeight: 16,
+    paddingHorizontal: 4,
   },
   imagePlaceholder: {
     alignItems: 'center',

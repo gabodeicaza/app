@@ -5442,394 +5442,299 @@ async def export_reports_docx(
             area_label = f"Área: {area.get('name', '—')}"
 
     def _build_docx_blocking() -> bytes:
-        # Resuelve logo institucional UNA sola vez (proyecto → DIRAC fallback)
+        """Motor DOCX radicalmente limpio, enfocado a LECTURA (2026-07-06 · CDMX).
+
+        Diseño solicitado:
+          * Un solo reporte por página (page break forzoso al finalizar cada uno).
+          * SIN imágenes ni columnas: puro texto ordenado y legible.
+          * Encabezado repetido en cada página con logo de la empresa (o nombre
+            del proyecto si no hay logo) + fecha de exportación (CDMX).
+          * Cuerpo por reporte: Ubicación · Área/Disciplina · Fecha · Autor,
+            descripciones individuales por foto (`photo_captions[i]`) y la
+            observación general al final.
+        """
+        # Zona horaria institucional: America/Mexico_City.
+        try:
+            _CDMX = ZoneInfo("America/Mexico_City")  # type: ignore[name-defined]
+        except Exception:
+            _CDMX = timezone.utc  # type: ignore[assignment]
+
+        def _fmt_cdmx(dt) -> str:
+            if not dt:
+                return "—"
+            try:
+                if isinstance(dt, str):
+                    try:
+                        dt = datetime.fromisoformat(dt.replace("Z", "+00:00"))
+                    except Exception:
+                        return dt
+                if isinstance(dt, datetime):
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    dt = dt.astimezone(_CDMX)
+                    return dt.strftime("%d/%m/%Y %H:%M")
+            except Exception:
+                pass
+            return str(dt)
+
+        # Fecha de exportación (para el header institucional).
+        try:
+            exported_at = datetime.now(_CDMX).strftime("%d/%m/%Y %H:%M CDMX")
+        except Exception:
+            exported_at = datetime.now(timezone.utc).strftime("%d/%m/%Y %H:%M UTC")
+
+        # Logo (bytes) o None → nombre proyecto en su lugar.
         logo_bytes = _resolve_export_logo_bytes(constructora_logo_b64)
 
-        # Color institucional del proyecto (hex → RGB)
+        # Paleta institucional (RGB) — sobrio.
         _ch = (project_color or "#003366").lstrip("#")
         BRAND_RGB = RGBColor(int(_ch[0:2], 16), int(_ch[2:4], 16), int(_ch[4:6], 16))
         TEXT_RGB = RGBColor(0x0F, 0x17, 0x2A)
         MUTED_RGB = RGBColor(0x64, 0x75, 0x8B)
+        SUBTLE_RGB = RGBColor(0x94, 0xA3, 0xB8)
 
-        def _shade_cell(cell, hex_color: str):
-            """Pinta el fondo de una celda Word con el hex dado."""
-            try:
-                tc_pr = cell._tc.get_or_add_tcPr()
-                shd = OxmlElement('w:shd')
-                shd.set(qn('w:val'), 'clear')
-                shd.set(qn('w:color'), 'auto')
-                shd.set(qn('w:fill'), hex_color.lstrip('#'))
-                tc_pr.append(shd)
-            except Exception:
-                pass
+        doc = Document()
 
-        # Si el proyecto tiene una plantilla DOCX subida, la usamos como base
-        # (mantiene fondo, cabecera y estilos institucionales del template).
-        tpl_docx = _get_project_template(proj, "docx")
-        if tpl_docx:
-            try:
-                doc = Document(tpl_docx)
-            except Exception:
-                doc = Document()
-        else:
-            doc = Document()
+        # ---- Ajuste de márgenes cómodos para lectura ----
         for section in doc.sections:
-            section.left_margin = Cm(1.8)
-            section.right_margin = Cm(1.8)
-            section.top_margin = Cm(2.2)
+            section.top_margin = Cm(2.0)
             section.bottom_margin = Cm(2.0)
-            # Encabezado institucional
+            section.left_margin = Cm(2.2)
+            section.right_margin = Cm(2.2)
+
+            # === Header institucional (aparece en TODAS las páginas) ======
             header = section.header
-            hp = header.paragraphs[0]
-            hp.alignment = WD_ALIGN_PARAGRAPH.LEFT
+            # Limpiamos y añadimos una tabla 1×2: [logo/nombre] | [fecha export]
+            for old in list(header.paragraphs):
+                # python-docx no permite borrar el primer párrafo, lo reusamos.
+                pass
+            hdr_table = header.add_table(rows=1, cols=2, width=Cm(17))
+            hdr_table.autofit = True
+            left_cell = hdr_table.cell(0, 0)
+            right_cell = hdr_table.cell(0, 1)
+
+            # Celda izquierda: logo si hay bytes, si no el nombre del proyecto.
+            left_p = left_cell.paragraphs[0]
+            left_p.alignment = WD_ALIGN_PARAGRAPH.LEFT
             if logo_bytes:
                 try:
-                    hp.add_run().add_picture(io.BytesIO(logo_bytes), height=Cm(1.2))
+                    left_p.add_run().add_picture(io.BytesIO(logo_bytes), height=Cm(1.2))
                 except Exception:
-                    pass
-            hp.add_run(f"   {project_constructora}   ·   Contrato {project_contract}").font.size = Pt(9)
-            # Pie de página institucional
-            footer = section.footer
-            fp = footer.paragraphs[0]
-            fp.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            fr = fp.add_run(f"{project_name}   ·   Exportado {_fmt_fecha_dd_mm_yyyy_hhmm(datetime.now(timezone.utc))}")
-            fr.font.size = Pt(8)
-            fr.font.color.rgb = MUTED_RGB
+                    lr = left_p.add_run(project_name)
+                    lr.bold = True
+                    lr.font.size = Pt(11)
+                    lr.font.color.rgb = BRAND_RGB
+            else:
+                lr = left_p.add_run(project_name)
+                lr.bold = True
+                lr.font.size = Pt(11)
+                lr.font.color.rgb = BRAND_RGB
 
-        # === PORTADA INSTITUCIONAL ===
-        # Word no permite color de fondo en página directamente; usamos una tabla
-        # de 1x1 a ancho completo con shading en color_tema y texto blanco.
-        portada_tbl = doc.add_table(rows=1, cols=1)
-        portada_tbl.autofit = False
-        portada_cell = portada_tbl.rows[0].cells[0]
-        # Ancho ~ 17 cm (A4 - márgenes)
-        portada_cell.width = Cm(17)
-        _shade_cell(portada_cell, project_color)
-        # Limpiar primer párrafo (default) y construir contenido
-        portada_cell.paragraphs[0].clear() if False else None  # mantener referencia
-        # Logo + cliente
-        if logo_bytes:
-            try:
-                logo_p = portada_cell.paragraphs[0]
-                logo_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                logo_p.add_run().add_picture(io.BytesIO(logo_bytes), width=Cm(5.5))
-            except Exception:
-                pass
+            # Celda derecha: fecha de exportación.
+            right_p = right_cell.paragraphs[0]
+            right_p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+            rr = right_p.add_run(f"Exportado: {exported_at}")
+            rr.italic = True
+            rr.font.size = Pt(9)
+            rr.font.color.rgb = MUTED_RGB
+
+        # ---- Portada (1 página) --------------------------------------
+        cover_title = doc.add_paragraph()
+        cover_title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        # Aire vertical (~1/3 de página) usando párrafos vacíos.
+        for _ in range(6):
+            doc.add_paragraph()
+        ct = cover_title.add_run(project_name)
+        ct.bold = True
+        ct.font.size = Pt(28)
+        ct.font.color.rgb = BRAND_RGB
+
+        sub = doc.add_paragraph()
+        sub.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        sr = sub.add_run("Reporte de actividades")
+        sr.font.size = Pt(16)
+        sr.font.color.rgb = TEXT_RGB
+
+        # Datos del proyecto
+        meta_lines = [
+            ("Contrato", str(project_contract or "—")),
+            ("Constructora", str(project_constructora or "—")),
+        ]
         if project_cliente:
-            cli_p = portada_cell.add_paragraph()
-            cli_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            cli_r = cli_p.add_run(project_cliente)
-            cli_r.bold = True
-            cli_r.font.size = Pt(14)
-            cli_r.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
-        # Encabezado del informe
-        inf_p = portada_cell.add_paragraph()
-        inf_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        inf_r = inf_p.add_run("INFORME DE AVANCE Y SUPERVISIÓN")
-        inf_r.bold = True
-        inf_r.font.size = Pt(11)
-        inf_r.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
-        # Nombre del proyecto
-        np_p = portada_cell.add_paragraph()
-        np_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        np_r = np_p.add_run(project_name)
-        np_r.bold = True
-        np_r.font.size = Pt(26)
-        np_r.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
-        # Objeto del contrato (cursiva blanca)
+            meta_lines.append(("Cliente", project_cliente))
         if project_objeto:
-            obj_p = portada_cell.add_paragraph()
-            obj_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            obj_r = obj_p.add_run(project_objeto)
-            obj_r.italic = True
-            obj_r.font.size = Pt(12)
-            obj_r.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
-        # Separador
-        portada_cell.add_paragraph()
-        # Pie portada: contrato + período + área
-        info_p = portada_cell.add_paragraph()
-        info_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        info_r = info_p.add_run(
-            f"Contrato: {project_contract}   ·   Período: {fechas_label}\n{area_label}"
-        )
-        info_r.font.size = Pt(11)
-        info_r.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
+            meta_lines.append(("Objeto", project_objeto))
+        meta_lines.append(("Período", fechas_label))
+        meta_lines.append(("Filtro", area_label))
 
-        # === PÁGINA MAPA (después de la portada) ==========================
+        # Separador visual
+        doc.add_paragraph()
+        for k, v in meta_lines:
+            p = doc.add_paragraph()
+            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            k_r = p.add_run(f"{k}: ")
+            k_r.bold = True
+            k_r.font.size = Pt(11)
+            k_r.font.color.rgb = MUTED_RGB
+            v_r = p.add_run(v)
+            v_r.font.size = Pt(11)
+            v_r.font.color.rgb = TEXT_RGB
+
+        # Un solo reporte por página → salto de página tras portada.
         doc.add_page_break()
-        map_h = doc.add_paragraph()
-        map_h.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        map_h_r = map_h.add_run("MAPA DE UBICACIÓN")
-        map_h_r.bold = True
-        map_h_r.font.size = Pt(22)
-        map_h_r.font.color.rgb = BRAND_RGB
-        _map_tpl_path_docx = _get_project_template(proj, "map")
-        if _map_tpl_path_docx:
-            try:
-                map_p = doc.add_paragraph()
-                map_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                # Ancho institucional: 18 cm (aprox. A4 útil) manteniendo
-                # aspect ratio automáticamente.
-                map_p.add_run().add_picture(
-                    io.BytesIO(Path(_map_tpl_path_docx).read_bytes()),
-                    width=Cm(18.0),
-                )
-            except Exception:
-                _mp = doc.add_paragraph()
-                _mp.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                _mp_r = _mp.add_run("(Mapa del proyecto no disponible)")
-                _mp_r.italic = True
-                _mp_r.font.color.rgb = RGBColor(0x64, 0x75, 0x8B)
-        else:
-            _mp = doc.add_paragraph()
-            _mp.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            _mp_r = _mp.add_run("Sube una plantilla de MAPA para el proyecto para incrustarla aquí.")
-            _mp_r.italic = True
-            _mp_r.font.color.rgb = RGBColor(0x64, 0x75, 0x8B)
 
+        # ---- Iteración de reportes ------------------------------------
         any_data = False
-
+        reports_flat = []  # lista lineal en orden de árbol
         for n in leaf_nodes:
             node_reps = reports_by_node.get(n["id"]) or []
-            if not node_reps:
-                continue
-            # === FILTRO ESTRICTO 2b: solo nodos con cover_image (con herencia)
-            cover_meta_docx = cover_ancestor_by_node.get(n["id"])
-            if not cover_meta_docx:
-                continue
-            any_data = True
-            node_path = path_cache.get(n["id"]) or n.get("name", "")
-
-            # Separador por nodo: usa la cover_image (propia o heredada) como encabezado visual
-            doc.add_page_break()
-            _cov_b64 = _strip_b64_prefix(cover_meta_docx.get("cover_image") or "")
-            if _cov_b64:
-                try:
-                    _cov_p = doc.add_paragraph()
-                    _cov_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                    _cov_p.add_run().add_picture(
-                        io.BytesIO(base64.b64decode(_cov_b64)),
-                        width=Cm(13.37), height=Cm(10.0),
-                    )
-                except Exception:
-                    pass
-            np = doc.add_paragraph()
-            np.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            nr = np.add_run(node_path)
-            nr.bold = True
-            nr.font.size = Pt(18)
-            nr.font.color.rgb = BRAND_RGB
-
-            try:
-                coord_text = _format_measurement_for_display(node_reps[0]) or "—"
-            except Exception:
-                coord_text = "—"
-            cp = doc.add_paragraph()
-            cp.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            cr = cp.add_run(f"Coordenadas: {coord_text}")
-            cr.font.size = Pt(12)
-            cr.font.color.rgb = RGBColor(0x0F, 0x17, 0x2A)
-
-            cnt = doc.add_paragraph()
-            cnt.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            cntr = cnt.add_run(f"Reportes en este nodo: {len(node_reps)}")
-            cntr.font.size = Pt(10)
-            cntr.font.color.rgb = RGBColor(0x64, 0x75, 0x8B)
-
             for r in node_reps:
-                doc.add_page_break()
+                reports_flat.append((n, r))
 
-                # Recopilar imágenes para usarlas DESPUÉS del texto.
-                # [FILTRO 3a] Máximo 2 fotos por reporte (1 principal + 1 extra)
-                imgs = (r.get("images") or [])[:2]
-                img_b64 = _strip_b64_prefix(imgs[0]) if imgs else None
+        total_reports = len(reports_flat)
+        for idx, (node, r) in enumerate(reports_flat):
+            any_data = True
 
-                # Datos
-                def _raw_to_str(v):
-                    if v is None or v == "":
-                        return "—"
-                    try:
-                        return _fmt_reading(float(v))
-                    except Exception:
-                        return str(v).strip() or "—"
+            # ---- Encabezado del reporte ----
+            title_p = doc.add_paragraph()
+            title_p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+            title_r = title_p.add_run(f"Reporte {idx + 1} de {total_reports}")
+            title_r.bold = True
+            title_r.font.size = Pt(9)
+            title_r.font.color.rgb = SUBTLE_RGB
 
-                primera_str = _raw_to_str(r.get("primera_lectura"))
-                ultima_str = _raw_to_str(r.get("ultima_lectura"))
-                _av = r.get("avance")
-                avance_str = str(_av).strip() if _av not in (None, "") else "—"
-                ts = r.get("created_at")
-                fecha_str = _fmt_fecha_dd_mm_yyyy(ts) if isinstance(ts, datetime) else "—"
-                nombre = r.get("captured_by_name") or "—"
-                contratista_rep = (project_constructora or "—").strip()
-                unidad_r = (r.get("unidad") or "m").strip() or "m"
-                personal_list = [p for p in (r.get("personnel") or []) if p]
-                equipo_list = [e for e in (r.get("equipment") or []) if e]
-                personal_str = ", ".join(personal_list) if personal_list else "N/A"
-                equipo_str = ", ".join(equipo_list) if equipo_list else "N/A"
-                obs_str = (r.get("observaciones") or r.get("notes") or "").strip() or "N/A"
-                incidencias_str = (r.get("incidencias") or "").strip() or None
-                sev = (r.get("severidad") or "informativo").lower()
-                sev_label = _severidad_label(sev).upper()
+            # Ubicación (jerarquía completa del nodo)
+            path = path_cache.get(node["id"]) or [node.get("name", "—")]
+            path_txt = " › ".join([str(x) for x in path if x])
 
-                # Banner de severidad
-                sev_p = doc.add_paragraph()
-                sev_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                sev_r = sev_p.add_run(f"[ {sev_label} ]")
-                sev_r.bold = True
-                sev_r.font.size = Pt(11)
-                hexc = _severidad_hex(sev).lstrip("#")
-                sev_r.font.color.rgb = RGBColor(int(hexc[0:2], 16), int(hexc[2:4], 16), int(hexc[4:6], 16))
+            loc_p = doc.add_paragraph()
+            l_lbl = loc_p.add_run("Ubicación:  ")
+            l_lbl.bold = True
+            l_lbl.font.size = Pt(12)
+            l_lbl.font.color.rgb = BRAND_RGB
+            l_val = loc_p.add_run(path_txt)
+            l_val.font.size = Pt(12)
+            l_val.font.color.rgb = TEXT_RGB
 
-                table = doc.add_table(rows=0, cols=2)
-                table.autofit = True
+            # Área / Disciplina
+            area_p = doc.add_paragraph()
+            a_lbl = area_p.add_run("Área / Disciplina:  ")
+            a_lbl.bold = True
+            a_lbl.font.size = Pt(11)
+            a_lbl.font.color.rgb = BRAND_RGB
+            a_val = area_p.add_run(str(r.get("area_name") or "—"))
+            a_val.font.size = Pt(11)
+            a_val.font.color.rgb = TEXT_RGB
 
-                def _row(label: str, value: str):
-                    row = table.add_row().cells
-                    # Etiqueta: fondo color_tema, texto blanco
-                    _shade_cell(row[0], project_color)
-                    pl = row[0].paragraphs[0]
-                    plr = pl.add_run(label.upper())
-                    plr.bold = True
-                    plr.font.size = Pt(9)
-                    plr.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
-                    pv = row[1].paragraphs[0]
-                    pvr = pv.add_run(str(value))
-                    pvr.font.size = Pt(10)
-                    pvr.font.color.rgb = TEXT_RGB
+            # Fecha + Autor (misma línea)
+            fa_p = doc.add_paragraph()
+            f_lbl = fa_p.add_run("Fecha:  ")
+            f_lbl.bold = True
+            f_lbl.font.size = Pt(11)
+            f_lbl.font.color.rgb = BRAND_RGB
+            f_val = fa_p.add_run(_fmt_cdmx(r.get("created_at")))
+            f_val.font.size = Pt(11)
+            f_val.font.color.rgb = TEXT_RGB
+            sep_r = fa_p.add_run("        ")
+            sep_r.font.size = Pt(11)
+            au_lbl = fa_p.add_run("Autor:  ")
+            au_lbl.bold = True
+            au_lbl.font.size = Pt(11)
+            au_lbl.font.color.rgb = BRAND_RGB
+            au_val = fa_p.add_run(str(r.get("captured_by_name") or "—"))
+            au_val.font.size = Pt(11)
+            au_val.font.color.rgb = TEXT_RGB
 
-                # === Orden institucional ===
-                _row("Fecha", fecha_str)
-                _row("Especialista", nombre)
-                _row("Constructora", contratista_rep)
-                _row("No. de Contrato", project_contract)
-                _row("Nodo / Ubicación", node_path)
-                _row("Reporte de avance",
-                     f"Primera: {primera_str} {unidad_r}  |  Última: {ultima_str} {unidad_r}  |  Avance: {avance_str}")
-                # Situación social (incidencias o "Sin incidencias")
-                _row("Situación social",
-                     incidencias_str if incidencias_str else "Sin incidencias.")
-                # Actividades (observaciones + métricas)
-                _actividades = []
-                if obs_str and obs_str != "N/A":
-                    _actividades.append(obs_str)
-                _actividades.append(
-                    f"Métricas — Primera lectura: {primera_str} {unidad_r} · "
-                    f"Última lectura: {ultima_str} {unidad_r} · Avance: {avance_str}."
-                )
-                _row("Actividades", " ".join(_actividades))
-                _row("Personal", personal_str)
-                _row("Equipo", equipo_str)
+            # Contratista, si viene informado.
+            contratista_val = (r.get("contratista") or "").strip()
+            if contratista_val:
+                ct_p = doc.add_paragraph()
+                ct_lbl = ct_p.add_run("Contratista:  ")
+                ct_lbl.bold = True
+                ct_lbl.font.size = Pt(11)
+                ct_lbl.font.color.rgb = BRAND_RGB
+                ct_val = ct_p.add_run(contratista_val)
+                ct_val.font.size = Pt(11)
+                ct_val.font.color.rgb = TEXT_RGB
 
-                # === Foto principal — DESPUÉS del texto (institucional) ===
-                if img_b64:
-                    try:
-                        raw = base64.b64decode(img_b64)
-                        img_buf = io.BytesIO(raw)
-                        img_p = doc.add_paragraph()
-                        img_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                        # Tamaño institucional: 13.37 cm de ancho × 10 cm de alto
-                        img_p.add_run().add_picture(img_buf, width=Cm(13.37), height=Cm(10.0))
-                        cap = doc.add_paragraph()
-                        cap.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                        cap_r = cap.add_run(
-                            f"Foto 1 de {len(imgs)} · 13.37 × 10 cm"
-                            if len(imgs) > 1 else "13.37 × 10 cm"
-                        )
-                        cap_r.italic = True
-                        cap_r.font.size = Pt(8)
-                        cap_r.font.color.rgb = MUTED_RGB
-                    except Exception:
-                        p = doc.add_paragraph()
-                        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                        rr = p.add_run("(imagen no legible)")
-                        rr.italic = True
-                        rr.font.color.rgb = RGBColor(0x64, 0x75, 0x8B)
+            # Separador visual
+            doc.add_paragraph()
+
+            # ---- Descripciones por fotografía ----
+            captions = r.get("photo_captions") or []
+            images_count = len(r.get("images") or [])
+            # Usamos el máximo real detectado, con mínimo 2 (spec del usuario).
+            slots = max(2, images_count, len(captions))
+            has_any_caption = False
+            for i in range(slots):
+                cap = (captions[i] if i < len(captions) else "") or ""
+                cap = cap.strip()
+                if not cap:
+                    # Sólo omitimos los slots vacíos que excedan las 2 primeras
+                    # cuando NO hay imagen para ellos. Los dos primeros siempre
+                    # aparecen para dejar rastro documental.
+                    if i >= 2 and i >= images_count:
+                        continue
+
+                cap_p = doc.add_paragraph()
+                cap_lbl = cap_p.add_run(f"Fotografía {i + 1} — descripción:")
+                cap_lbl.bold = True
+                cap_lbl.font.size = Pt(11)
+                cap_lbl.font.color.rgb = BRAND_RGB
+
+                body_p = doc.add_paragraph()
+                if cap:
+                    body_r = body_p.add_run(cap)
+                    body_r.font.size = Pt(11)
+                    body_r.font.color.rgb = TEXT_RGB
+                    has_any_caption = True
                 else:
-                    p = doc.add_paragraph()
-                    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                    rr = p.add_run("(sin fotografía)")
-                    rr.italic = True
-                    rr.font.color.rgb = RGBColor(0x64, 0x75, 0x8B)
+                    body_r = body_p.add_run("(Sin descripción capturada)")
+                    body_r.italic = True
+                    body_r.font.size = Pt(11)
+                    body_r.font.color.rgb = MUTED_RGB
 
-                # === Galería de fotos adicionales — 2 por página, 13.37×10 cm ===
-                extra_imgs = imgs[1:] if len(imgs) > 1 else []
-                if extra_imgs:
-                    doc.add_page_break()
-                    gh = doc.add_paragraph()
-                    gh.alignment = WD_ALIGN_PARAGRAPH.LEFT
-                    gh_r = gh.add_run(f"Fotografías adicionales ({len(extra_imgs)})")
-                    gh_r.bold = True
-                    gh_r.font.size = Pt(13)
-                    gh_r.font.color.rgb = BRAND_RGB
-                    # 2 fotos por página → cada par en su propio bloque + page break
-                    for chunk_start in range(0, len(extra_imgs), 2):
-                        chunk = extra_imgs[chunk_start:chunk_start + 2]
-                        for off, b64 in enumerate(chunk):
-                            try:
-                                raw_ex = base64.b64decode(_strip_b64_prefix(b64))
-                                ip = doc.add_paragraph()
-                                ip.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                                ip.add_run().add_picture(
-                                    io.BytesIO(raw_ex),
-                                    width=Cm(13.37), height=Cm(10.0),
-                                )
-                                cap = doc.add_paragraph()
-                                cap.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                                cap_r = cap.add_run(
-                                    f"Foto {chunk_start + off + 2} de {len(imgs)} · 13.37 × 10 cm"
-                                )
-                                cap_r.italic = True
-                                cap_r.font.size = Pt(8)
-                                cap_r.font.color.rgb = MUTED_RGB
-                            except Exception:
-                                err = doc.add_paragraph()
-                                err.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                                er = err.add_run(f"(Foto {chunk_start + off + 2} no legible)")
-                                er.italic = True
-                                er.font.color.rgb = MUTED_RGB
-                        # Salto de página después de cada par (excepto el último)
-                        if chunk_start + 2 < len(extra_imgs):
-                            doc.add_page_break()
+            # ---- Observación general ----
+            obs = (r.get("observaciones") or "").strip()
+            obs_p = doc.add_paragraph()
+            obs_lbl = obs_p.add_run("Observación general:")
+            obs_lbl.bold = True
+            obs_lbl.font.size = Pt(11)
+            obs_lbl.font.color.rgb = BRAND_RGB
+            obs_body = doc.add_paragraph()
+            if obs:
+                obs_r = obs_body.add_run(obs)
+                obs_r.font.size = Pt(11)
+                obs_r.font.color.rgb = TEXT_RGB
+            else:
+                obs_r = obs_body.add_run("(Sin observaciones)")
+                obs_r.italic = True
+                obs_r.font.size = Pt(11)
+                obs_r.font.color.rgb = MUTED_RGB
 
-            # === Sección "Notas/Noticias" del nodo (Importante+Urgente) ===
-            node_announ = announcements_by_node.get(n["id"]) or []
-            if node_announ:
-                doc.add_page_break()
-                head = doc.add_paragraph()
-                head.alignment = WD_ALIGN_PARAGRAPH.LEFT
-                hr = head.add_run(f"Notas y noticias · {node_path}")
-                hr.bold = True
-                hr.font.size = Pt(16)
-                hr.font.color.rgb = BRAND_RGB
-                for ann in node_announ:
-                    sev_a = (ann.get("jerarquia") or "informativo").lower()
-                    hexa = _severidad_hex(sev_a).lstrip("#")
-                    note_p = doc.add_paragraph()
-                    note_p.alignment = WD_ALIGN_PARAGRAPH.LEFT
-                    note_label = note_p.add_run(f"[ {_severidad_label(sev_a).upper()} ]   ")
-                    note_label.bold = True
-                    note_label.font.size = Pt(10)
-                    note_label.font.color.rgb = RGBColor(int(hexa[0:2], 16), int(hexa[2:4], 16), int(hexa[4:6], 16))
-                    title_r = note_p.add_run((ann.get("title") or "—").strip())
-                    title_r.bold = True
-                    title_r.font.size = Pt(11)
-                    title_r.font.color.rgb = RGBColor(0x0F, 0x17, 0x2A)
-                    date_r = note_p.add_run(f"    ({_fmt_fecha_dd_mm_yyyy(ann.get('created_at'))})")
-                    date_r.italic = True
-                    date_r.font.size = Pt(9)
-                    date_r.font.color.rgb = RGBColor(0x64, 0x75, 0x8B)
-                    body_p = doc.add_paragraph()
-                    br = body_p.add_run((ann.get("body") or "").strip())
-                    br.font.size = Pt(10)
-                    br.font.color.rgb = RGBColor(0x0F, 0x17, 0x2A)
+            # Avance / medición, si aparece.
+            avance_val = (r.get("avance") or "").strip()
+            if avance_val:
+                av_p = doc.add_paragraph()
+                av_lbl = av_p.add_run("Avance / medición:  ")
+                av_lbl.bold = True
+                av_lbl.font.size = Pt(11)
+                av_lbl.font.color.rgb = BRAND_RGB
+                av_val = av_p.add_run(f"{avance_val} {r.get('unidad') or ''}".strip())
+                av_val.font.size = Pt(11)
+                av_val.font.color.rgb = TEXT_RGB
 
+            # Page break forzoso al finalizar cada reporte.
+            doc.add_page_break()
+
+        # ---- Empty state ---------------------------------------------
         if not any_data:
             empty = doc.add_paragraph()
             empty.alignment = WD_ALIGN_PARAGRAPH.CENTER
             er = empty.add_run("Sin reportes en el período seleccionado.")
             er.italic = True
             er.font.size = Pt(12)
-            er.font.color.rgb = RGBColor(0x64, 0x75, 0x8B)
+            er.font.color.rgb = MUTED_RGB
 
         buf = io.BytesIO()
         doc.save(buf)

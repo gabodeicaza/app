@@ -2,9 +2,67 @@
 // Reads JWT from secure storage on every call.
 import { Platform } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
+import Constants from 'expo-constants';
 import { storage } from '@/src/utils/storage';
 
-const BASE = (process.env.EXPO_PUBLIC_BACKEND_URL || '').replace(/\/$/, '') + '/api';
+/**
+ * Resolve BASE URL para llamadas al backend.
+ *
+ * Reglas (2026-07-06 · CDMX):
+ *   1. Si `EXPO_PUBLIC_BACKEND_URL` está seteada (build o preview público) →
+ *      se usa TAL CUAL. Es la ruta HTTPS del ingress de Emergent
+ *      (ej. `https://<subdomain>.preview.emergentagent.com`).
+ *   2. Si NO hay variable de entorno y estamos en `__DEV__` (Expo Go
+ *      corriendo contra Metro en LAN) → derivamos la IP LAN de la
+ *      máquina de desarrollo desde `Constants.expoConfig?.hostUri`
+ *      (ej. `192.168.1.42:8081`) y apuntamos al backend en el puerto
+ *      `8001`. Esto permite probar con dispositivos físicos en la
+ *      misma red WiFi sin exponer túneles.
+ *   3. JAMÁS caemos a `localhost` / `127.0.0.1` desde un dispositivo
+ *      físico: eso resolvería el loopback del propio celular y la
+ *      conexión moriría silenciosamente.
+ *
+ * Si ninguna estrategia produce un host válido, `BASE` queda como
+ * cadena vacía + `/api`. En ese caso los helpers de upload disparan
+ * `ApiError` con instrucciones claras.
+ */
+function resolveBaseUrl(): string {
+  const env = (process.env.EXPO_PUBLIC_BACKEND_URL || '').trim();
+  if (env) {
+    return env.replace(/\/$/, '') + '/api';
+  }
+
+  // Dev fallback: Expo Go con Metro en LAN. Constants.expoConfig?.hostUri
+  // suele ser `192.168.x.y:8081` o `10.0.x.y:8081`.
+  if (__DEV__) {
+    const hostUri: string | undefined =
+      // @ts-ignore — expoGoConfig existe en runtime pero no en tipos.
+      (Constants.expoConfig?.hostUri as string | undefined) ||
+      // @ts-ignore
+      (Constants.expoGoConfig?.hostUri as string | undefined) ||
+      // @ts-ignore — manifest legacy (SDK 49-)
+      (Constants.manifest?.debuggerHost as string | undefined);
+    if (hostUri) {
+      const host = hostUri.split(':')[0];
+      if (
+        host &&
+        host !== 'localhost' &&
+        host !== '127.0.0.1' &&
+        host !== '0.0.0.0' &&
+        !host.startsWith('exp+')
+      ) {
+        // Backend siempre corre en 8001 dentro del contenedor de dev.
+        return `http://${host}:8001/api`;
+      }
+    }
+  }
+
+  // Sin variable de entorno y sin hostUri LAN válido: devolvemos algo
+  // que fallará explícitamente al hacer la primera petición.
+  return '/api';
+}
+
+const BASE = resolveBaseUrl();
 
 export class ApiError extends Error {
   status: number;
