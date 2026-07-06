@@ -589,8 +589,13 @@ export default function SpecCaptureScreen() {
       // `{data_url}` y ese base64 es el que finalmente se persiste en el
       // reporte. Evita el JSON gigante que provocaba "Network request
       // failed" en Android y bloqueo del bridge en iPhone.
+      //
+      // [DEBUG UI] Si una foto falla, mostramos Alert.alert con el mensaje
+      // COMPLETO devuelto por api.ts (URL, tamaño, mime, error nativo) para
+      // que el usuario pueda leerlo en la pantalla del dispositivo físico.
       const dataUrls: string[] = [];
-      for (const asset of images) {
+      for (let i = 0; i < images.length; i++) {
+        const asset = images[i];
         try {
           const { data_url } = await api.uploadReportPhoto({
             uri: asset.uri,
@@ -599,7 +604,13 @@ export default function SpecCaptureScreen() {
           });
           if (data_url) dataUrls.push(data_url);
         } catch (upErr: any) {
-          throw new Error(`Falló la subida de una foto: ${upErr?.message || upErr}`);
+          const details = upErr?.message || String(upErr);
+          Alert.alert(
+            'Error de subida (foto ' + (i + 1) + ')',
+            details,
+            [{ text: 'OK' }],
+          );
+          throw new Error(`Falló la subida de la foto ${i + 1}: ${details}`);
         }
       }
 

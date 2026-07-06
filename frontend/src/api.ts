@@ -51,67 +51,110 @@ function safeJson(text: string): any {
  * sin `file://`) que `fetch`/`FormData` de React Native no sabe resolver como
  * archivo binario y provoca `Network Request Failed` al enviar.
  *
- * Solución (Android): copiamos la URI original al `cacheDirectory` con
- * `expo-file-system` para materializar un `file://…` estable. En iOS también
- * normalizamos `ph://` y `assets-library://` por seguridad.
+ * FIX BULLETPROOF (2026-07-06):
+ * - En NATIVO copiamos SIEMPRE a `cacheDirectory` (o `documentDirectory` como
+ *   fallback), no sólo cuando el esquema no es `file://`. Motivo: algunas
+ *   URIs `file://` que devuelve `expo-image-picker` en iOS/Android apuntan
+ *   a rutas temporales que el SO libera antes de que `uploadAsync` termine
+ *   de streamear el archivo → "Network request failed" o "file not found".
+ *   Copiando primero al sandbox propio de la app garantizamos que el archivo
+ *   siga disponible durante toda la subida.
+ * - Verificamos con `getInfoAsync` que el archivo exista y tenga size > 0
+ *   ANTES de intentar subirlo. Si no existe → error explícito.
+ * - En web devolvemos la URI tal cual (blob:/data:).
  *
  * El objeto retornado incluye ESTRICTAMENTE las tres llaves requeridas por
- * el runtime de RN: `{ uri, name, type }`.
+ * el runtime de RN: `{ uri, name, type }` + `size` para diagnóstico.
  */
 async function normalizeFileForFormData(
   file: { uri: string; name?: string | null; mimeType?: string | null },
   fallbackName: string,
   fallbackMime: string,
   cachePrefix: string = 'upload',
-): Promise<{ uri: string; name: string; type: string }> {
+): Promise<{ uri: string; name: string; type: string; size: number }> {
   const rawName = (file.name && file.name.trim()) || fallbackName;
   const safeName = rawName.replace(/[^A-Za-z0-9._-]/g, '_') || fallbackName;
   const type = (file.mimeType && file.mimeType.trim()) || fallbackMime;
-  let uri = file.uri || '';
+  const originalUri = file.uri || '';
+  if (!originalUri) {
+    throw new ApiError(0, 'URI de archivo vacía');
+  }
 
-  // ¿Necesitamos copiar la URI a un file:// del cache?
-  const needsCopy =
-    Platform.OS === 'android'
-      ? // Android: cualquier cosa que NO sea file:// (content://, ph://,
-        // /storage/..., asset://) debe materializarse para poder subirse.
-        !uri.startsWith('file://')
-      : // iOS: los picker suelen devolver file:// tras copyToCacheDirectory,
-        // pero ph:// y assets-library:// también deben materializarse.
-        uri.startsWith('ph://') || uri.startsWith('assets-library://');
+  if (Platform.OS === 'web') {
+    return { uri: originalUri, name: safeName, type, size: 0 };
+  }
 
-  if (needsCopy) {
-    try {
-      const dest = `${FileSystem.cacheDirectory}${cachePrefix}_${Date.now()}_${safeName}`;
-      await FileSystem.copyAsync({ from: uri, to: dest });
-      uri = dest;
-    } catch {
-      // Si la copia falla, seguimos con la URI original y aplicamos el fallback
-      // de prefijo file:// más abajo. Ante content:// no habrá modo de subirlo,
-      // pero el error de red que devolverá el fetch será claro para el usuario.
+  // === COPY-TO-CACHE (SIEMPRE) ============================================
+  // Destino preferido: cacheDirectory. Si por alguna razón el cache es
+  // read-only, cae a documentDirectory (más persistente pero también válido).
+  const preferredRoot = FileSystem.cacheDirectory || FileSystem.documentDirectory || '';
+  if (!preferredRoot) {
+    throw new ApiError(0, 'No hay directorio local disponible en este dispositivo (cacheDirectory/documentDirectory vacío).');
+  }
+  const dest = `${preferredRoot}${cachePrefix}_${Date.now()}_${safeName}`;
+
+  let copiedUri = dest;
+  try {
+    await FileSystem.copyAsync({ from: originalUri, to: dest });
+  } catch (e1: any) {
+    // Fallback a documentDirectory si el cache falla
+    if (FileSystem.documentDirectory && preferredRoot !== FileSystem.documentDirectory) {
+      const dest2 = `${FileSystem.documentDirectory}${cachePrefix}_${Date.now()}_${safeName}`;
+      try {
+        await FileSystem.copyAsync({ from: originalUri, to: dest2 });
+        copiedUri = dest2;
+      } catch (e2: any) {
+        throw new ApiError(0,
+          `Copia a caché falló. from="${originalUri}" ` +
+          `err1="${e1?.message || e1}" err2="${e2?.message || e2}"`);
+      }
+    } else {
+      throw new ApiError(0,
+        `Copia a caché falló. from="${originalUri}" err="${e1?.message || e1}"`);
     }
   }
 
-  // Refuerzo defensivo Android: cualquier ruta absoluta que llegue sin esquema
-  // debe llevar file:// para que RN la interprete correctamente.
-  if (Platform.OS === 'android' && uri.startsWith('/')) {
-    uri = 'file://' + uri;
+  // Refuerzo defensivo Android: cualquier ruta absoluta sin esquema debe
+  // llevar file:// para que la stack nativa la abra correctamente.
+  if (Platform.OS === 'android' && copiedUri.startsWith('/')) {
+    copiedUri = 'file://' + copiedUri;
   }
 
-  return { uri, name: safeName, type };
+  // Verificar que la copia realmente existe y tiene tamaño > 0.
+  let size = 0;
+  try {
+    const info = await FileSystem.getInfoAsync(copiedUri, { size: true });
+    if (!info.exists) {
+      throw new ApiError(0, `Archivo no existe tras copia: ${copiedUri}`);
+    }
+    size = (info as any).size || 0;
+  } catch (e: any) {
+    if (e instanceof ApiError) throw e;
+    throw new ApiError(0, `No se pudo verificar el archivo copiado: ${e?.message || e}`);
+  }
+  if (size <= 0) {
+    throw new ApiError(0, `El archivo copiado está vacío (0 bytes) en ${copiedUri}`);
+  }
+
+  return { uri: copiedUri, name: safeName, type, size };
 }
 
 /**
  * Ejecuta una subida multipart en React Native usando
  * `FileSystem.uploadAsync` (NO `fetch`/`FormData`).
  *
- * Motivo del refactor: en Android, RN tiene un bug crónico donde `fetch` +
- * `FormData` con URIs devueltas por `expo-document-picker` /
- * `expo-image-picker` falla con `Network Request Failed`, incluso tras
- * normalizar la URI a `file://`. `FileSystem.uploadAsync` con
- * `FileSystemUploadType.MULTIPART` usa la stack nativa (OkHttp en Android,
- * NSURLSession en iOS) y es la única forma verdaderamente estable.
+ * BULLETPROOF (2026-07-06):
+ * 1. Copia SIEMPRE el archivo a `cacheDirectory` (paso realizado por
+ *    `normalizeFileForFormData`) — evita URIs efímeras de `expo-image-picker`
+ *    y `expo-document-picker` que el SO libera antes de terminar la subida.
+ * 2. Usa exclusivamente `FileSystem.uploadAsync` con `MULTIPART`, `fieldName`
+ *    y `mimeType` explícitos (paridad con lo que espera FastAPI + curl).
+ * 3. Errores enriquecidos: incluyen la URL, el tamaño del archivo copiado,
+ *    el error nativo original y el body del HTTP si hubo status !== 2xx.
+ *    Esto es CRÍTICO para diagnosticar en dispositivos físicos, donde el
+ *    consumidor de este helper mostrará el mensaje con `Alert.alert`.
  *
- * Devuelve el JSON parseado. Lanza `ApiError` si el status HTTP no es 2xx.
+ * Devuelve el JSON parseado. Lanza `ApiError` con detalles ricos si falla.
  */
 async function nativeMultipartUpload<T>(
   url: string,
@@ -120,16 +163,31 @@ async function nativeMultipartUpload<T>(
   mime: string,
   cachePrefix: string,
 ): Promise<T> {
-  // Aseguramos que la URI sea un file:// estable dentro del sandbox.
-  const normalized = await normalizeFileForFormData(
-    { uri: fileUri, name: fileName, mimeType: mime },
-    fileName,
-    mime,
-    cachePrefix,
-  );
+  // Paso 1: normalizar (copy-to-cache SIEMPRE en nativo + verificación size).
+  let normalized: { uri: string; name: string; type: string; size: number };
+  try {
+    normalized = await normalizeFileForFormData(
+      { uri: fileUri, name: fileName, mimeType: mime },
+      fileName,
+      mime,
+      cachePrefix,
+    );
+  } catch (err: any) {
+    if (err instanceof ApiError) throw err;
+    throw new ApiError(0, `Falló la preparación del archivo: ${err?.message || err}`);
+  }
+
+  // Paso 2: verificar que la URL es un endpoint público (nunca localhost
+  // desde móvil físico). Si BASE no está configurado apuntará a "/api" y el
+  // fetch fallaría inmediatamente — mejor un mensaje explícito.
+  if (!url || url.startsWith('/api') || url.includes('localhost') || url.includes('127.0.0.1')) {
+    throw new ApiError(0,
+      `URL inválida para móvil: "${url}". Configura EXPO_PUBLIC_BACKEND_URL a un dominio HTTPS público.`);
+  }
 
   const authHeaders = await authHeader();
 
+  // Paso 3: uploadAsync (stack nativa OkHttp / NSURLSession).
   let response: FileSystem.FileSystemUploadResult;
   try {
     response = await FileSystem.uploadAsync(url, normalized.uri, {
@@ -141,14 +199,20 @@ async function nativeMultipartUpload<T>(
       parameters: {},
     });
   } catch (err: any) {
-    throw new ApiError(0, err?.message || 'Network Request Failed');
+    // Error DURANTE la subida (red rota, cert inválido, uri no legible).
+    throw new ApiError(0,
+      `uploadAsync falló → ${err?.message || String(err)}. ` +
+      `url=${url} localUri=${normalized.uri} size=${normalized.size} mime=${normalized.type}`);
   }
 
   const { status, body } = response;
   const data = body ? safeJson(body) : null;
   if (status < 200 || status >= 300) {
-    const msg = (data && (data as any).detail) || `HTTP ${status}`;
-    throw new ApiError(status, typeof msg === 'string' ? msg : JSON.stringify(msg));
+    // HTTP no-2xx (413 = tamaño, 415 = mime, 401 = token, 500 = server).
+    const detail = (data && (data as any).detail) || body?.slice(0, 200) || 'sin cuerpo';
+    throw new ApiError(status,
+      `HTTP ${status} desde el servidor. detail="${typeof detail === 'string' ? detail : JSON.stringify(detail)}" ` +
+      `url=${url} size=${normalized.size} mime=${normalized.type}`);
   }
   return data as T;
 }

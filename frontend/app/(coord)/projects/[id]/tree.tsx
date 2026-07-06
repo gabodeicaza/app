@@ -215,7 +215,14 @@ export default function TreeBuilderScreen() {
       Alert.alert('Importación completada', lines.join('\n'));
       await load();
     } catch (e: any) {
-      Alert.alert('Error al importar', e?.message || 'No se pudo procesar el archivo');
+      // [DEBUG UI] Mostramos el mensaje ENRIQUECIDO desde api.ts que
+      // incluye URL, tamaño del archivo copiado, mime y error nativo.
+      // Fundamental para diagnosticar en Expo Go / device físico.
+      Alert.alert(
+        'Error al importar Excel',
+        String(e?.message || 'No se pudo procesar el archivo'),
+        [{ text: 'OK' }],
+      );
     } finally {
       setUploading(false);
     }
@@ -698,7 +705,12 @@ function NodeEditorModal({
         throw upErr;
       }
     } catch (e: any) {
-      setCoverErr(e?.message || 'No se pudo subir la portada');
+      // [DEBUG UI] Además de setear el error inline, mostramos Alert.alert
+      // con el mensaje COMPLETO (incluye URL, tamaño, mime, error nativo)
+      // para que el usuario pueda leerlo en su dispositivo físico.
+      const details = e?.message || 'No se pudo subir la portada';
+      setCoverErr(details);
+      Alert.alert('Error de subida (portada)', String(details), [{ text: 'OK' }]);
     } finally {
       setCoverBusy(false);
     }
@@ -719,7 +731,9 @@ function NodeEditorModal({
       setCoverUri(null);
       if (onCoverChanged) await onCoverChanged();
     } catch (e: any) {
-      setCoverErr(e?.message || 'No se pudo eliminar la portada');
+      const details = e?.message || 'No se pudo eliminar la portada';
+      setCoverErr(details);
+      Alert.alert('Error eliminando portada', String(details), [{ text: 'OK' }]);
     } finally {
       setCoverBusy(false);
     }

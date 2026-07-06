@@ -538,20 +538,27 @@ export default function ProjectDetailScreen() {
       }
       if (last) setProject((p) => ({ ...(p || ({} as any)), ...last }));
       if (uploaded === 0 && errors.length > 0) {
+        // [DEBUG UI] Detalle COMPLETO de los errores (incluye URL, tamaño y
+        // mime enriquecidos por api.ts) para que el usuario pueda leerlos
+        // en su dispositivo físico.
         Alert.alert(
-          'No se pudo subir la imagen',
-          `Detalle: ${errors.slice(0, 3).join(' · ')}`,
+          'Error de subida (Datos Generales)',
+          errors.slice(0, 3).map((e, i) => `#${i + 1}: ${e}`).join('\n\n'),
+          [{ text: 'OK' }],
         );
       } else if (errors.length > 0) {
         Alert.alert(
           'Imágenes subidas con avisos',
-          `Se subieron ${uploaded}, pero ${errors.length} fallaron: ${errors.slice(0, 3).join(' · ')}`,
+          `Se subieron ${uploaded}, pero ${errors.length} fallaron:\n\n` +
+            errors.slice(0, 3).map((e, i) => `#${i + 1}: ${e}`).join('\n\n'),
+          [{ text: 'OK' }],
         );
       }
     } catch (e: any) {
       Alert.alert(
-        'No se pudo subir la imagen',
-        e?.message || 'Verifica que el archivo pese menos de 5 MB e inténtalo nuevamente.',
+        'Error de subida (Datos Generales)',
+        String(e?.message || 'Verifica que el archivo pese menos de 5 MB e inténtalo nuevamente.'),
+        [{ text: 'OK' }],
       );
     } finally {
       setGdBusy(null);
