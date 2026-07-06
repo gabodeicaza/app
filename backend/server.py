@@ -4323,6 +4323,79 @@ async def add_general_data_image(
     return _project_public(updated)
 
 
+@api.post("/projects/{pid}/general-data-images/upload-file", response_model=ProjectOut)
+async def upload_general_data_image_file(
+    pid: str,
+    file: UploadFile = File(...),
+    user: dict = Depends(current_user),
+):
+    """Agrega UNA imagen a Datos Generales usando **multipart/form-data**
+    (en vez de JSON base64). Es el path recomendado para dispositivos
+    móviles: evita el bug "Network Request Failed" en Android por payloads
+    JSON gigantes y libera el hilo principal del iPhone.
+
+    - Acepta JPG/PNG/WebP hasta ~5 MB.
+    - El backend genera internamente el `data URL base64` y lo persiste.
+    - Devuelve el proyecto actualizado (mismo shape que el POST JSON).
+    """
+    if user.get("role") not in ("coordinador_general", "jefe_proyecto"):
+        raise HTTPException(403, "Solo Coordinador o Jefe de Proyecto")
+    proj = await db.projects.find_one({"id": pid})
+    if not proj:
+        raise HTTPException(404, "Proyecto no existe")
+    content_type = (file.content_type or "").lower() or "image/jpeg"
+    if content_type not in _NODE_COVER_MIME:  # reutilizamos JPG/PNG/WebP
+        raise HTTPException(415, f"Formato no soportado: {content_type}. Usa JPG/PNG/WebP.")
+    raw = await file.read(_GENERAL_DATA_MAX_BYTES + 1)
+    if len(raw) > _GENERAL_DATA_MAX_BYTES:
+        raise HTTPException(413, f"Imagen demasiado grande (máx {_GENERAL_DATA_MAX_BYTES // 1_000_000} MB)")
+    current = (proj.get("general_data_images") or [])
+    if len(current) >= _GENERAL_DATA_MAX:
+        raise HTTPException(400, f"Máximo {_GENERAL_DATA_MAX} imágenes por proyecto")
+    import base64 as _b64
+    b64_str = _b64.b64encode(raw).decode("ascii")
+    data_url = f"data:{content_type};base64,{b64_str}"
+    current = current + [data_url]
+    await db.projects.update_one({"id": pid}, {"$set": {"general_data_images": current}})
+    updated = await db.projects.find_one({"id": pid})
+    return _project_public(updated)
+
+
+# === UPLOAD GENÉRICO DE FOTO (para reportes) ===============================
+# Preferido en móvil sobre el JSON base64 dentro de `POST /reports`.
+# Devuelve un `data_url` que el frontend usa como identificador dentro del
+# array `images` del reporte al crearlo. El backend almacena finalmente ese
+# mismo data URL en Mongo (paridad con el flujo previo).
+_REPORT_PHOTO_MAX_BYTES = 6_000_000  # ~6 MB decoded (~8 MB JPEG comprimido)
+
+
+@api.post("/upload/photo")
+async def upload_photo_multipart(
+    file: UploadFile = File(...),
+    user: dict = Depends(current_user),
+):
+    """Sube UNA foto (JPG/PNG/WebP) y devuelve `{data_url: "data:image/..."}`
+    para que el cliente lo referencie en `POST /reports` u otros flujos.
+
+    Ventajas vs. base64 en JSON:
+      - Android: usa la stack nativa (OkHttp), sin el bug "Network Request
+        Failed" que sufre `fetch+FormData` con URIs de expo-image-picker.
+      - iOS: usa NSURLSession, no bloquea el hilo principal ni infla la
+        memoria del bridge con strings enormes.
+    """
+    content_type = (file.content_type or "").lower() or "image/jpeg"
+    if content_type not in _NODE_COVER_MIME:
+        raise HTTPException(415, f"Formato no soportado: {content_type}. Usa JPG/PNG/WebP.")
+    raw = await file.read(_REPORT_PHOTO_MAX_BYTES + 1)
+    if len(raw) > _REPORT_PHOTO_MAX_BYTES:
+        raise HTTPException(413, f"Foto demasiado grande (máx {_REPORT_PHOTO_MAX_BYTES // 1_000_000} MB)")
+    if not raw:
+        raise HTTPException(400, "Archivo vacío")
+    import base64 as _b64
+    b64_str = _b64.b64encode(raw).decode("ascii")
+    return {"data_url": f"data:{content_type};base64,{b64_str}"}
+
+
 @api.put("/projects/{pid}/general-data-images", response_model=ProjectOut)
 async def replace_general_data_images(
     pid: str,

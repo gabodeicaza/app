@@ -146,11 +146,21 @@ export default function TreeBuilderScreen() {
 
   async function onImportExcel() {
     try {
+      // [P0 FIX iOS] En iOS, expo-document-picker mapea los MIME types a UTIs
+      // internamente. Enviamos la lista COMPLETA (MIMEs oficiales + wildcard)
+      // para asegurar que archivos de iCloud/Files.app se puedan seleccionar,
+      // incluso los que llegan sin `content-type` detectado por el sistema.
       const result = await DocumentPicker.getDocumentAsync({
         type: [
+          // Excel moderno (.xlsx) — UTI iOS: org.openxmlformats.spreadsheetml.sheet
           'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          // Excel legacy (.xls) — UTI iOS: com.microsoft.excel.xls
           'application/vnd.ms-excel',
+          // CSV — UTI iOS: public.comma-separated-values-text
           'text/csv',
+          'text/comma-separated-values',
+          // Extensiones (útil como redundancia en Android; iOS ignora extensiones
+          // y usa UTIs, pero no daña):
           '.xlsx',
           '.xls',
           '.csv',
@@ -161,10 +171,30 @@ export default function TreeBuilderScreen() {
       if (result.canceled || !result.assets?.[0]) return;
       const asset = result.assets[0];
       setUploading(true);
+      // Fallback de MIME (iOS puede devolver mimeType null para archivos de
+      // iCloud). Inferimos del sufijo del nombre para que el multipart al
+      // backend no aborte con 415.
+      let mime = asset.mimeType || undefined;
+      if (!mime) {
+        const lname = (asset.name || '').toLowerCase();
+        if (lname.endsWith('.xlsx')) {
+          mime = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+        } else if (lname.endsWith('.xls')) {
+          mime = 'application/vnd.ms-excel';
+        } else if (lname.endsWith('.csv')) {
+          mime = 'text/csv';
+        }
+      }
+      // Android exige `file://` — el asset URI suele venir con ese prefijo
+      // desde el DocumentPicker, pero garantizamos por si acaso.
+      let uri = asset.uri;
+      if (Platform.OS === 'android' && uri && !uri.startsWith('file://') && !uri.startsWith('content://')) {
+        uri = `file://${uri.replace(/^\/+/, '')}`;
+      }
       const res = await api.bulkUploadNodes(pid, {
-        uri: asset.uri,
+        uri,
         name: asset.name || 'nodos.xlsx',
-        mimeType: asset.mimeType,
+        mimeType: mime,
       });
       const lines = [
         `Nuevos: ${res.created}`,
@@ -641,13 +671,32 @@ function NodeEditorModal({
         if (!/\.jpe?g$/i.test(name)) name = name.replace(/\.[^.]+$/, '') + '.jpg';
       } catch { /* si falla el manipulador, subimos el original */ }
 
+      // [P0 FIX] Android exige `file://` como prefijo — sin esto el multipart
+      // aborta con "Network request failed" antes de siquiera intentar.
+      if (Platform.OS === 'android' && !uri.startsWith('file://') && !uri.startsWith('content://')) {
+        uri = `file://${uri.replace(/^\/+/, '')}`;
+      }
+
+      // [P0 FIX iOS "invisible"] Mostramos el preview LOCAL de inmediato
+      // (URI del manipulator) para que el usuario vea la foto aunque el
+      // backend tarde. Si el POST falla, revertimos.
+      const previousCover = coverUri;
+      setCoverUri(uri);
       setCoverBusy(true);
-      const updated = await api.uploadNodeCover(pid, editor.node.id, {
-        uri, name, mimeType: mime,
-      });
-      setCoverUri(updated.cover_image || null);
-      // Reflejar el cambio en el árbol padre (recarga)
-      if (onCoverChanged) await onCoverChanged();
+      try {
+        const updated = await api.uploadNodeCover(pid, editor.node.id, {
+          uri, name, mimeType: mime,
+        });
+        // Cuando el backend responde, reemplazamos el preview local por el
+        // data URL persistido (mismo shape que en el resto de la app).
+        setCoverUri(updated.cover_image || uri);
+        // Reflejar el cambio en el árbol padre (recarga)
+        if (onCoverChanged) await onCoverChanged();
+      } catch (upErr) {
+        // Restauramos la portada previa si el upload falla.
+        setCoverUri(previousCover);
+        throw upErr;
+      }
     } catch (e: any) {
       setCoverErr(e?.message || 'No se pudo subir la portada');
     } finally {

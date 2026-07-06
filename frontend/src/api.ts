@@ -709,6 +709,85 @@ export const api = {
     request<Project>('POST', `/projects/${pid}/general-data-images`, {
       image: imageDataUrl,
     }),
+
+  /**
+   * Sube UNA imagen a Datos Generales usando **multipart/form-data** (path
+   * recomendado en móvil). Evita el bug "Network Request Failed" en Android
+   * y el bloqueo de memoria en iPhone al enviar strings base64 gigantes.
+   */
+  addGeneralDataImageFile: async (
+    pid: string,
+    file: { uri: string; name?: string; mimeType?: string | null },
+  ): Promise<Project> => {
+    const isWeb = typeof window !== 'undefined' && typeof (globalThis as any).Blob !== 'undefined';
+    const fileName = file.name || `gd_${Date.now()}.jpg`;
+    const mime = file.mimeType || 'image/jpeg';
+    const url = `${BASE}/projects/${pid}/general-data-images/upload-file`;
+    if (!isWeb) {
+      return nativeMultipartUpload<Project>(url, file.uri, fileName, mime, 'gd');
+    }
+    // Web: FormData directo con Blob.
+    const form = new FormData();
+    const resBlob = await fetch(file.uri);
+    const blob = await resBlob.blob();
+    try {
+      const f = new File([blob], fileName, { type: mime });
+      form.append('file', f);
+    } catch {
+      form.append('file', blob, fileName);
+    }
+    const headers = await authHeader();
+    const res = await fetch(url, { method: 'POST', headers, body: form as any });
+    const text = await res.text();
+    const data = text ? safeJson(text) : null;
+    if (!res.ok) {
+      const msg = (data && (data as any).detail) || `HTTP ${res.status}`;
+      throw new ApiError(res.status, typeof msg === 'string' ? msg : JSON.stringify(msg));
+    }
+    return data as Project;
+  },
+
+  /**
+   * Sube UNA foto de reporte vía **multipart/form-data** y devuelve el
+   * `data_url` base64 que se usa dentro del array `images` en `createReport`.
+   *
+   * ¿Por qué preferir esto sobre mandar el base64 dentro del JSON de
+   * `POST /reports`?
+   *   • Android RN sufre "Network Request Failed" con JSONs > ~5-10 MB.
+   *   • iOS congela la UI al serializar strings tan grandes en JS.
+   *   • Multipart usa la stack nativa (OkHttp/NSURLSession) y libera el bridge.
+   */
+  uploadReportPhoto: async (file: {
+    uri: string;
+    name?: string;
+    mimeType?: string | null;
+  }): Promise<{ data_url: string }> => {
+    const isWeb = typeof window !== 'undefined' && typeof (globalThis as any).Blob !== 'undefined';
+    const fileName = file.name || `photo_${Date.now()}.jpg`;
+    const mime = file.mimeType || 'image/jpeg';
+    const url = `${BASE}/upload/photo`;
+    if (!isWeb) {
+      return nativeMultipartUpload<{ data_url: string }>(url, file.uri, fileName, mime, 'photo');
+    }
+    const form = new FormData();
+    const resBlob = await fetch(file.uri);
+    const blob = await resBlob.blob();
+    try {
+      const f = new File([blob], fileName, { type: mime });
+      form.append('file', f);
+    } catch {
+      form.append('file', blob, fileName);
+    }
+    const headers = await authHeader();
+    const res = await fetch(url, { method: 'POST', headers, body: form as any });
+    const text = await res.text();
+    const data = text ? safeJson(text) : null;
+    if (!res.ok) {
+      const msg = (data && (data as any).detail) || `HTTP ${res.status}`;
+      throw new ApiError(res.status, typeof msg === 'string' ? msg : JSON.stringify(msg));
+    }
+    return data as { data_url: string };
+  },
   replaceGeneralDataImages: (pid: string, images: string[]) =>
     request<Project>('PUT', `/projects/${pid}/general-data-images`, {
       images,

@@ -16,9 +16,9 @@ import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Clipboard from 'expo-clipboard';
 import * as ImagePicker from 'expo-image-picker';
+import * as ImageManipulator from 'expo-image-manipulator';
 import * as Linking from 'expo-linking';
 import * as Sharing from 'expo-sharing';
-import * as FileSystem from 'expo-file-system/legacy';
 
 import { useAuth } from '@/src/auth-context';
 import { Button } from '@/src/components/Button';
@@ -109,7 +109,16 @@ export default function SpecCaptureScreen() {
   const [personal, setPersonal] = useState<DynItem[]>([]);
   const [equipo, setEquipo] = useState<DynItem[]>([]);
   const [measurement, setMeasurement] = useState<MeasurementValue>({});
-  const [images, setImages] = useState<string[]>([]);
+  // === Fotos del reporte =================================================
+  // A partir del fix P0 (Android "Network Request Failed" / iOS "invisible")
+  // ya NO acumulamos base64 en memoria. Guardamos objetos con la URI local
+  // (que expo-image-picker devuelve `file://...` en móvil), pre-comprimidos
+  // vía `expo-image-manipulator` para no llenar la RAM del iPhone. En el
+  // submit se sube cada URI vía multipart/form-data al backend, que responde
+  // con el `data_url` base64 y ese es el string que finalmente entra al
+  // reporte. Esto permite pipelines idempotentes y elimina JSONs gigantes.
+  type PhotoAsset = { uri: string; mime: string; name: string };
+  const [images, setImages] = useState<PhotoAsset[]>([]);
   // Descripciones individuales por foto (foto 1 → photoCaptions[0], foto 2 → [1]).
   // Solo se muestran/consideran las 2 primeras fotos (tope estricto de export).
   const [photoCaptions, setPhotoCaptions] = useState<string[]>([]);
@@ -361,7 +370,47 @@ export default function SpecCaptureScreen() {
   }
 
   // -------------------------------------------------------------------------
-  // Cámara/galería (RAM only).
+  // Cámara/galería (SÓLO URIs → sin base64 en JS).
+  //
+  // Flujo:
+  //   1. Picker → obtenemos `asset.uri` (`file://...` en móvil).
+  //   2. `expo-image-manipulator` re-encoda como JPEG max-width 1600 px con
+  //      compresión 0.7 → ≈ 250-450 KB por foto (vs 2-4 MB del asset raw).
+  //      Esto es CRÍTICO para que la subida no falle en Android ni congele
+  //      el iPhone al preparar el payload.
+  //   3. Guardamos la URI del manipulator (siempre `file://...cache/...jpg`).
+  //   4. En el submit, se sube vía multipart (ver `onSubmit`).
+  //
+  // Además garantizamos que la URI final tenga `file://` (Android exige el
+  // scheme explícito o rechaza el request con "Network request failed").
+  async function compressPickedAsset(rawUri: string): Promise<PhotoAsset | null> {
+    if (!rawUri) return null;
+    try {
+      // Sólo comprimimos en móvil. En web dejamos la URI tal cual (blob/data URL).
+      if (Platform.OS === 'web') {
+        return { uri: rawUri, mime: 'image/jpeg', name: `photo_${Date.now()}.jpg` };
+      }
+      const result = await ImageManipulator.manipulateAsync(
+        rawUri,
+        [{ resize: { width: 1600 } }],
+        { compress: 0.7, format: ImageManipulator.SaveFormat.JPEG },
+      );
+      let uri = result.uri || rawUri;
+      // Android exige `file://` como prefijo o falla el multipart upload.
+      if (Platform.OS === 'android' && !uri.startsWith('file://') && !uri.startsWith('content://')) {
+        uri = `file://${uri.replace(/^\/+/, '')}`;
+      }
+      return { uri, mime: 'image/jpeg', name: `photo_${Date.now()}.jpg` };
+    } catch {
+      // Si el manipulator falla, intentamos con la URI original.
+      let uri = rawUri;
+      if (Platform.OS === 'android' && !uri.startsWith('file://') && !uri.startsWith('content://')) {
+        uri = `file://${uri.replace(/^\/+/, '')}`;
+      }
+      return { uri, mime: 'image/jpeg', name: `photo_${Date.now()}.jpg` };
+    }
+  }
+
   async function takePhotoFromCamera() {
     try {
       let perm = await ImagePicker.getCameraPermissionsAsync();
@@ -375,12 +424,13 @@ export default function SpecCaptureScreen() {
       }
       const res = await ImagePicker.launchCameraAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        quality: 0.7,
-        base64: true,
+        quality: 0.9,      // el picker guarda al disco, la compresión real la hace el manipulator.
+        base64: false,     // ¡NO base64! Sólo URI (rendimiento móvil).
         exif: false,
       });
-      if (res.canceled || !res.assets?.[0]?.base64) return;
-      setImages((prev) => [...prev, res.assets[0].base64!]);
+      if (res.canceled || !res.assets?.[0]?.uri) return;
+      const asset = await compressPickedAsset(res.assets[0].uri);
+      if (asset) setImages((prev) => [...prev, asset]);
     } catch (e: any) {
       notify('Cámara', e?.message || 'No se pudo abrir la cámara.');
     }
@@ -399,17 +449,20 @@ export default function SpecCaptureScreen() {
       }
       const res = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        quality: 0.7,
-        base64: true,
+        quality: 0.9,      // real compression la hace el manipulator.
+        base64: false,     // ¡NO base64!
         exif: false,
         allowsMultipleSelection: Platform.OS !== 'ios',
       });
       if (res.canceled) return;
-      const newBase64s: string[] = [];
+      const newAssets: PhotoAsset[] = [];
       for (const a of res.assets || []) {
-        if (a.base64) newBase64s.push(a.base64);
+        if (a.uri) {
+          const compressed = await compressPickedAsset(a.uri);
+          if (compressed) newAssets.push(compressed);
+        }
       }
-      if (newBase64s.length) setImages((prev) => [...prev, ...newBase64s]);
+      if (newAssets.length) setImages((prev) => [...prev, ...newAssets]);
     } catch (e: any) {
       notify('Galería', e?.message || 'No se pudo abrir la galería.');
     }
@@ -530,6 +583,26 @@ export default function SpecCaptureScreen() {
       const personnelArr = serializeItems(personal);
       const equipmentArr = serializeItems(equipo);
 
+      // === Fotos: subida individual vía multipart/form-data ================
+      // Cada URI local se sube vía `api.uploadReportPhoto` (multipart nativo
+      // en móvil, FormData con Blob en web). El backend responde con
+      // `{data_url}` y ese base64 es el que finalmente se persiste en el
+      // reporte. Evita el JSON gigante que provocaba "Network request
+      // failed" en Android y bloqueo del bridge en iPhone.
+      const dataUrls: string[] = [];
+      for (const asset of images) {
+        try {
+          const { data_url } = await api.uploadReportPhoto({
+            uri: asset.uri,
+            name: asset.name,
+            mimeType: asset.mime,
+          });
+          if (data_url) dataUrls.push(data_url);
+        } catch (upErr: any) {
+          throw new Error(`Falló la subida de una foto: ${upErr?.message || upErr}`);
+        }
+      }
+
       await api.createReport({
         project_id: project.id,
         node_id: leafNode.id,
@@ -543,7 +616,10 @@ export default function SpecCaptureScreen() {
         contratista: null, // Deprecado: ahora se usa project.constructora global.
         personnel: personnelArr,
         equipment: equipmentArr,
-        images: images,
+        // El backend acepta data URLs completos (data:image/...) igual que
+        // los base64 crudos históricos: `_strip_b64_prefix` en `server.py`
+        // normaliza ambos formatos.
+        images: dataUrls,
         // Solo se guardan los captions de las 2 primeras fotos (tope
         // estricto del exportador ejecutivo). Se envían aunque `images`
         // contenga más para preservar futuras extensiones sin romper compat.
@@ -621,8 +697,10 @@ export default function SpecCaptureScreen() {
         if (Platform.OS === 'web') {
           // En web, Share API directo si está disponible; si no, abrir wa.me con texto.
           try {
-            const blob = await (await fetch(`data:image/jpeg;base64,${images[0]}`)).blob();
-            const file = new File([blob], `reporte_${Date.now()}.jpg`, { type: 'image/jpeg' });
+            const first = images[0];
+            const resp = await fetch(first.uri);
+            const blob = await resp.blob();
+            const file = new File([blob], first.name || `reporte_${Date.now()}.jpg`, { type: first.mime || 'image/jpeg' });
             // @ts-ignore navigator.share
             if (typeof navigator !== 'undefined' && navigator.share && navigator.canShare?.({ files: [file] })) {
               // @ts-ignore
@@ -646,19 +724,16 @@ export default function SpecCaptureScreen() {
           return;
         }
 
-        const safeName = `reporte_${Date.now()}.jpg`;
-        const fileUri = `${FileSystem.cacheDirectory}${safeName}`;
-        await FileSystem.writeAsStringAsync(fileUri, images[0], {
-          encoding: FileSystem.EncodingType.Base64,
-        });
-
+        // En móvil ahora tenemos la URI directa del archivo comprimido en
+        // caché (por el manipulator) → podemos compartirlo tal cual, sin
+        // pasar por base64 → no bloquea el hilo principal.
         notify(
           'Foto lista',
           'El texto del reporte fue copiado. Selecciona WhatsApp y pega el texto como pie de la foto.',
         );
 
-        await Sharing.shareAsync(fileUri, {
-          mimeType: 'image/jpeg',
+        await Sharing.shareAsync(images[0].uri, {
+          mimeType: images[0].mime || 'image/jpeg',
           dialogTitle: 'Compartir reporte',
           UTI: 'public.jpeg',
         });
@@ -1075,7 +1150,7 @@ export default function SpecCaptureScreen() {
             {/* Fila 1: fotos 1 y 2 (las que sí van al export) — cada una con
                 su TextInput de descripción individual justo debajo. */}
             <View style={{ gap: spacing.md }}>
-              {images.slice(0, 2).map((b64, i) => (
+              {images.slice(0, 2).map((asset, i) => (
                 <View key={`photo-${i}`} style={styles.photoWithCaption}>
                   <View style={styles.photoWithCaptionHead}>
                     <View style={styles.photoIndexBadge}>
@@ -1083,7 +1158,7 @@ export default function SpecCaptureScreen() {
                     </View>
                     <View style={styles.photoTile}>
                       <Image
-                        source={{ uri: `data:image/jpeg;base64,${b64}` }}
+                        source={{ uri: asset.uri }}
                         style={styles.photoImg}
                       />
                       <Pressable
@@ -1146,11 +1221,11 @@ export default function SpecCaptureScreen() {
             ) : null}
             {images.length > 2 ? (
               <View style={{ flexDirection: 'row', gap: spacing.sm, flexWrap: 'wrap', marginTop: spacing.sm }}>
-                {images.slice(2).map((b64, offset) => {
+                {images.slice(2).map((asset, offset) => {
                   const realIdx = offset + 2;
                   return (
                     <View key={`extra-${realIdx}`} style={[styles.photoTile, { opacity: 0.65 }]}>
-                      <Image source={{ uri: `data:image/jpeg;base64,${b64}` }} style={styles.photoImg} />
+                      <Image source={{ uri: asset.uri }} style={styles.photoImg} />
                       <Pressable
                         onPress={() => {
                           removeImage(realIdx);
