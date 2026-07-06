@@ -707,11 +707,11 @@ export const api = {
   // ==========================================================================
   addGeneralDataImage: (pid: string, imageDataUrl: string) =>
     request<Project>('POST', `/projects/${pid}/general-data-images`, {
-      body: { image: imageDataUrl },
+      image: imageDataUrl,
     }),
   replaceGeneralDataImages: (pid: string, images: string[]) =>
     request<Project>('PUT', `/projects/${pid}/general-data-images`, {
-      body: { images },
+      images,
     }),
   deleteGeneralDataImage: (pid: string, index: number) =>
     request<Project>('DELETE', `/projects/${pid}/general-data-images/${index}`),

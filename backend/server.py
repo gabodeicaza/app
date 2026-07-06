@@ -55,6 +55,36 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 log = logging.getLogger("synco")
 
 
+# Handler temporal para diagnosticar 422 (validation errors). Registra el
+# path y los errores exactos que Pydantic devuelve para que sea trivial
+# depurar payloads inválidos desde el frontend.
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+
+@app.exception_handler(RequestValidationError)
+async def _log_422(request, exc: RequestValidationError):
+    try:
+        body_len = 0
+        try:
+            _b = await request.body()
+            body_len = len(_b or b"")
+        except Exception:
+            body_len = -1
+        # Sólo registramos loc/msg/type (no el input crudo, que puede
+        # contener imágenes base64 gigantes). Suficiente para diagnóstico.
+        compact = [
+            {"loc": e.get("loc"), "msg": e.get("msg"), "type": e.get("type")}
+            for e in (exc.errors() or [])
+        ]
+        log.warning(
+            "[422] path=%s body_bytes=%d errors=%s",
+            request.url.path, body_len, compact,
+        )
+    except Exception as _e:
+        log.warning("[422 handler] logging failed: %s", _e)
+    return JSONResponse(status_code=422, content={"detail": exc.errors()})
+
+
 # === Constants =============================================================
 ROLE_COORD = "coordinador_general"
 ROLE_JEFE = "jefe_proyecto"  # Jefe de Proyecto: lectura global (read-only)
@@ -4371,6 +4401,15 @@ async def export_reports_pdf(
     except Exception as e:
         raise HTTPException(500, f"reportlab no instalado: {e}")
 
+    # Pillow: usado para crop-to-fill de fotos respetando EXIF-rotation.
+    # Si no está disponible se hace fallback a preserveAspectRatio letterbox.
+    try:
+        from PIL import Image as _PILImage
+        from PIL.ImageOps import exif_transpose as _pil_exif_transpose
+        _HAS_PIL = True
+    except Exception:
+        _HAS_PIL = False
+
     scope_mine_only = (scope or "").lower() == "mine"
     data = await _gather_export_data(
         pid, period, user,
@@ -4504,38 +4543,78 @@ async def export_reports_pdf(
         # La página 0 del template PDF aporta el diseño y los logos. Aquí
         # inyectamos SOLO los textos ejecutivos (tipo de reporte, período,
         # proyecto), respetando la plantilla del cliente.
+        #
+        # IMPORTANTE (paridad con PPTX):
+        #   • Fallback obligatorio de título → "REPORTE" si `period_type` viene vacío.
+        #   • Los textos se dibujan AL FINAL del canvas actual, DESPUÉS del
+        #     `setFillColor(WHITE)`, y con showPage al terminar. Como el
+        #     `merge_page` en la etapa de fusión pinta el contenido SynCo
+        #     ENCIMA del template (foreground), quedan visibles sobre el
+        #     fondo magenta.
         page_num = 1
         _period_titles = {
             "diario": "REPORTE DIARIO",
             "semanal": "REPORTE SEMANAL",
             "mensual": "REPORTE MENSUAL",
         }
-        _report_title = _period_titles.get((period_type or "").lower())
-        if _report_title:
-            _fmt = "%d/%m/%Y"
-            try:
-                _start_txt = data["start_dt"].strftime(_fmt)
-                _end_txt = data["end_dt"].strftime(_fmt)
-                _date_range_txt = f"{_start_txt} — {_end_txt}"
-            except Exception:
-                _date_range_txt = ""
-            _proj_upper = (project_name or "").upper()
-            # Colocado en la mitad inferior de la portada para no chocar con
-            # el logotipo/encabezado institucional del template.
-            _cover_center_y = PH * 0.32
-            c.setFillColor(WHITE)
-            c.setFont("Helvetica-Bold", 34)
-            c.drawCentredString(PW / 2, _cover_center_y + 1.6 * cm, _report_title)
-            if _date_range_txt:
-                c.setFont("Helvetica", 16)
-                c.drawCentredString(PW / 2, _cover_center_y + 0.4 * cm, _date_range_txt)
-            if _proj_upper:
-                # Envolver nombre largo del proyecto en máx 2 líneas.
-                _proj_size = 18
-                while c.stringWidth(_proj_upper, "Helvetica-Bold", _proj_size) > PW - 3 * cm and _proj_size > 12:
-                    _proj_size -= 1
-                c.setFont("Helvetica-Bold", _proj_size)
-                c.drawCentredString(PW / 2, _cover_center_y - 1.2 * cm, _proj_upper)
+        # Fallback institucional: "REPORTE" si no hay period_type.
+        _report_title = _period_titles.get((period_type or "").lower(), "REPORTE")
+        try:
+            _date_range_txt = f"{_fmt_fecha_dd_mm_yyyy(data['start_dt'])} a {_fmt_fecha_dd_mm_yyyy(data['end_dt'])}"
+        except Exception:
+            _date_range_txt = ""
+        _proj_upper = (project_name or "").upper()
+
+        # Layout de la portada (alineado a la izquierda como el PPTX).
+        # Coordenadas en el sistema de reportlab (Y=0 en la BASE).
+        _cover_x_left = 1.5 * cm
+        _cover_w_full = PW - 3.0 * cm
+        # Bloque de textos centrado verticalmente en el TERCIO INFERIOR
+        # de la portada (no invade el logo/encabezado del template).
+        _cover_block_top_y = PH * 0.55  # baseline superior del bloque
+        # Título "REPORTE" (grande, blanco, izquierda).
+        _title_size = 44
+        while c.stringWidth(_report_title, "Helvetica-Bold", _title_size) > _cover_w_full and _title_size > 20:
+            _title_size -= 2
+        c.setFillColor(WHITE)
+        c.setFont("Helvetica-Bold", _title_size)
+        c.drawString(_cover_x_left, _cover_block_top_y, _report_title)
+        # Rango de fechas (medio, blanco).
+        _dates_y = _cover_block_top_y - 1.6 * cm
+        if _date_range_txt:
+            c.setFont("Helvetica-Bold", 20)
+            c.drawString(_cover_x_left, _dates_y, _date_range_txt)
+        # Nombre del proyecto (grande, blanco, hasta 2 líneas si es muy largo).
+        _proj_y = _dates_y - 1.8 * cm
+        if _proj_upper:
+            _proj_size = 26
+            while c.stringWidth(_proj_upper, "Helvetica-Bold", _proj_size) > _cover_w_full and _proj_size > 14:
+                _proj_size -= 1
+            c.setFont("Helvetica-Bold", _proj_size)
+            # Si aún no cabe → envolver en máx 2 líneas por palabras (word-wrap inline).
+            if c.stringWidth(_proj_upper, "Helvetica-Bold", _proj_size) > _cover_w_full:
+                _words = _proj_upper.split()
+                _cover_lines: List[str] = []
+                _cur = ""
+                for _w in _words:
+                    _cand = (_cur + " " + _w).strip() if _cur else _w
+                    if c.stringWidth(_cand, "Helvetica-Bold", _proj_size) <= _cover_w_full:
+                        _cur = _cand
+                    else:
+                        if _cur:
+                            _cover_lines.append(_cur)
+                        _cur = _w
+                        if len(_cover_lines) >= 2:
+                            break
+                if _cur and len(_cover_lines) < 2:
+                    _cover_lines.append(_cur)
+                _lh = _proj_size * 1.15
+                _ly = _proj_y
+                for _ln in _cover_lines[:2]:
+                    c.drawString(_cover_x_left, _ly, _ln)
+                    _ly -= _lh
+            else:
+                c.drawString(_cover_x_left, _proj_y, _proj_upper)
         c.showPage()
         page_num += 1
 
@@ -4717,25 +4796,81 @@ async def export_reports_pdf(
             _y = PH * 0.32 + 1.6 * cm
             c.drawCentredString(PW / 2, _y, title)
 
+        def _crop_to_fill_bytes(b64_img: str, target_w: float, target_h: float) -> Optional[bytes]:
+            """Crop-to-fill: recorta la imagen conservando su aspect-ratio para
+            llenar EXACTAMENTE una caja de `target_w × target_h` (en pts).
+            - Respeta EXIF orientation (fotos móviles rotadas).
+            - Devuelve bytes JPEG listos para `drawImage(..., preserveAspectRatio=False)`.
+            - Si Pillow no está o la imagen es inválida → None.
+            """
+            if not _HAS_PIL or not b64_img:
+                return None
+            try:
+                raw = base64.b64decode(_strip_b64_prefix(b64_img))
+                pil = _PILImage.open(io.BytesIO(raw))
+                pil = _pil_exif_transpose(pil)  # respeta rotación EXIF
+                if pil.mode not in ("RGB", "L"):
+                    pil = pil.convert("RGB")
+                iw, ih = pil.size
+                if iw <= 0 or ih <= 0:
+                    return None
+                target_ratio = float(target_w) / float(target_h)
+                cur_ratio = iw / ih
+                if abs(cur_ratio - target_ratio) > 1e-3:
+                    if cur_ratio > target_ratio:
+                        # más ancha que la caja → recortar horizontal
+                        new_w = int(round(ih * target_ratio))
+                        x0 = max(0, (iw - new_w) // 2)
+                        pil = pil.crop((x0, 0, x0 + new_w, ih))
+                    else:
+                        # más alta que la caja → recortar vertical
+                        new_h = int(round(iw / target_ratio))
+                        y0 = max(0, (ih - new_h) // 2)
+                        pil = pil.crop((0, y0, iw, y0 + new_h))
+                out = io.BytesIO()
+                pil.save(out, format="JPEG", quality=88, optimize=True)
+                return out.getvalue()
+            except Exception:
+                return None
+
         def draw_photo_with_caption(x: float, y_photo: float,
                                     b64_img: Optional[str],
                                     caption: str) -> None:
             """Dibuja UNA foto apaisada 13.37×10 cm en (x, y_photo) con su
             caption (máx 4 líneas) DEBAJO. `y_photo` es la esquina inferior-
-            izquierda de la foto. El caption va inmediatamente debajo."""
+            izquierda de la foto. El caption va inmediatamente debajo.
+
+            La foto se pinta con estrategia CROP-TO-FILL: llena exactamente
+            la caja 13.37×10 cm conservando el aspect-ratio original y
+            recortando el excedente (centrado). Nunca se deforma."""
             drawn = False
             if b64_img:
-                try:
-                    raw = base64.b64decode(_strip_b64_prefix(b64_img))
-                    img = ImageReader(io.BytesIO(raw))
-                    c.drawImage(
-                        img, x, y_photo,
-                        width=EXEC_PHOTO_W, height=EXEC_PHOTO_H,
-                        preserveAspectRatio=True, anchor='c', mask='auto',
-                    )
-                    drawn = True
-                except Exception:
-                    drawn = False
+                # 1) Preferido: crop-to-fill con Pillow (llena la caja).
+                cropped = _crop_to_fill_bytes(b64_img, EXEC_PHOTO_W, EXEC_PHOTO_H)
+                if cropped is not None:
+                    try:
+                        img = ImageReader(io.BytesIO(cropped))
+                        c.drawImage(
+                            img, x, y_photo,
+                            width=EXEC_PHOTO_W, height=EXEC_PHOTO_H,
+                            preserveAspectRatio=False, anchor='c', mask='auto',
+                        )
+                        drawn = True
+                    except Exception:
+                        drawn = False
+                # 2) Fallback: sin Pillow / error → preservar aspect (letterbox).
+                if not drawn:
+                    try:
+                        raw = base64.b64decode(_strip_b64_prefix(b64_img))
+                        img = ImageReader(io.BytesIO(raw))
+                        c.drawImage(
+                            img, x, y_photo,
+                            width=EXEC_PHOTO_W, height=EXEC_PHOTO_H,
+                            preserveAspectRatio=True, anchor='c', mask='auto',
+                        )
+                        drawn = True
+                    except Exception:
+                        drawn = False
             if not drawn:
                 # Rectángulo placeholder discreto (sin ghost images)
                 c.setStrokeColor(BORDER)
@@ -4863,28 +4998,43 @@ async def export_reports_pdf(
                 # un marcador tras sus 1-2 fotos, forzando 1 página por
                 # reporte (tope estricto). Los sentinels se filtran del
                 # dibujo pero disparan showPage.
+                #
+                # FIX 2026-07-06 · DRIFT DE page_num
+                # ─────────────────────────────────────────────────────────
+                # Anteriormente `page_num += 1` se ejecutaba SIEMPRE en la
+                # rama __PAGEBREAK__, incluso cuando `_flush_page()` no
+                # generaba página (buffer vacío tras un flush por saturación).
+                # El drift acumulado provocaba que `area_page_indices` de
+                # nodos/áreas posteriores apuntaran a PDF indexes equivocados
+                # → el overlay marcaba páginas de FOTOS como "portadilla de
+                # área" (fondo magenta) y viceversa.
+                # Solución: `_flush_page()` devuelve True solo si se emitió
+                # una página real; page_num se incrementa acorde.
                 _buffer: List[tuple] = []
-                def _flush_page():
+                def _flush_page() -> bool:
+                    """Emite una página real con las fotos del buffer.
+                    Devuelve True si se llamó a c.showPage(), False si el
+                    buffer estaba vacío (no hay página que emitir)."""
                     if not _buffer:
-                        return
+                        return False
                     for idx, (b64, cap) in enumerate(_buffer[:PER_PAGE]):
                         px = x0 + idx * (EXEC_PHOTO_W + EXEC_GAP_X)
                         draw_photo_with_caption(px, photo_bottom_y, b64, cap)
                     c.showPage()
                     _buffer.clear()
+                    return True
 
                 for _item in photo_items:
                     if _item[0] == "__PAGEBREAK__":
-                        _flush_page()
-                        page_num += 1
+                        if _flush_page():
+                            page_num += 1
                         continue
                     _buffer.append(_item)
                     if len(_buffer) >= PER_PAGE:
-                        _flush_page()
-                        page_num += 1
+                        if _flush_page():
+                            page_num += 1
                 # Flush residual (por si algún reporte quedó sin sentinela).
-                if _buffer:
-                    _flush_page()
+                if _flush_page():
                     page_num += 1
 
         c.save()

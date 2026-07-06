@@ -514,13 +514,72 @@ export default function ProjectDetailScreen() {
       if (!assets.length) return;
       setGdBusy('add');
       let last: any = project;
+      let uploaded = 0;
+      const errors: string[] = [];
       for (const a of assets) {
-        if (!a.base64) continue;
-        const mime = a.mimeType || 'image/jpeg';
-        const dataUrl = `data:${mime};base64,${a.base64}`;
-        last = await api.addGeneralDataImage(pid, dataUrl);
+        // Construimos un data URL válido tolerando las 2 formas en que
+        // ImagePicker devuelve la imagen:
+        //   1) Nativo/típico:  a.base64 (sin prefijo) + a.mimeType
+        //   2) Web/algunos SDK: a.uri ya es un "data:image/...;base64,..."
+        let dataUrl: string | null = null;
+        const rawMime = (a as any).mimeType || (a as any).type || 'image/jpeg';
+        const mime =
+          typeof rawMime === 'string' && rawMime.includes('/') ? rawMime : 'image/jpeg';
+        if (a.base64 && typeof a.base64 === 'string' && a.base64.length > 32) {
+          dataUrl = `data:${mime};base64,${a.base64}`;
+        } else if (
+          typeof a.uri === 'string' &&
+          a.uri.startsWith('data:image/') &&
+          a.uri.includes(';base64,')
+        ) {
+          // Web: el picker ya nos entregó una data URL válida.
+          dataUrl = a.uri;
+        } else if (typeof a.uri === 'string' && a.uri.length > 0) {
+          // Último fallback: fetch + FileReader (funciona en web y en RN moderno).
+          try {
+            const resp = await fetch(a.uri);
+            const blob = await resp.blob();
+            dataUrl = await new Promise<string>((resolve, reject) => {
+              const reader = new FileReader();
+              reader.onerror = () => reject(new Error('read_error'));
+              reader.onload = () => resolve(String(reader.result || ''));
+              reader.readAsDataURL(blob);
+            });
+            if (!dataUrl || !dataUrl.startsWith('data:image/')) {
+              dataUrl = null;
+            }
+          } catch (_e) {
+            dataUrl = null;
+          }
+        }
+        if (!dataUrl) {
+          errors.push('formato no soportado');
+          continue;
+        }
+        // Validación de tamaño defensiva (~5MB en base64 = ~6.8MB texto).
+        if (dataUrl.length > 7_500_000) {
+          errors.push('imagen mayor a 5 MB');
+          continue;
+        }
+        try {
+          last = await api.addGeneralDataImage(pid, dataUrl);
+          uploaded += 1;
+        } catch (err: any) {
+          errors.push(err?.message || 'error de red');
+        }
       }
       if (last) setProject((p) => ({ ...(p || ({} as any)), ...last }));
+      if (uploaded === 0 && errors.length > 0) {
+        Alert.alert(
+          'No se pudo subir la imagen',
+          `Detalle: ${errors.slice(0, 3).join(' · ')}`,
+        );
+      } else if (errors.length > 0) {
+        Alert.alert(
+          'Imágenes subidas con avisos',
+          `Se subieron ${uploaded}, pero ${errors.length} fallaron: ${errors.slice(0, 3).join(' · ')}`,
+        );
+      }
     } catch (e: any) {
       Alert.alert(
         'No se pudo subir la imagen',
