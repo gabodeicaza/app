@@ -15,6 +15,7 @@ import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Clipboard from 'expo-clipboard';
+import * as FileSystem from 'expo-file-system/legacy';
 import * as ImagePicker from 'expo-image-picker';
 import * as ImageManipulator from 'expo-image-manipulator';
 import * as Linking from 'expo-linking';
@@ -583,26 +584,43 @@ export default function SpecCaptureScreen() {
       const personnelArr = serializeItems(personal);
       const equipmentArr = serializeItems(equipo);
 
-      // === Fotos: subida individual vía multipart/form-data ================
-      // Cada URI local se sube vía `api.uploadReportPhoto` (multipart nativo
-      // en móvil, FormData con Blob en web). El backend responde con
-      // `{data_url}` y ese base64 es el que finalmente se persiste en el
-      // reporte. Evita el JSON gigante que provocaba "Network request
-      // failed" en Android y bloqueo del bridge en iPhone.
+      // === Fotos: RUTA ORIGINAL PARA iOS (base64 en JSON) ==================
+      // ⚠️ ROLLBACK P0 (2026-07-06):
+      // El flujo "bulletproof" multipart introdujo una regresión en iOS que
+      // rompió la carga de fotos que funcionaba desde el día 1. En iPhone,
+      // el pipeline probado y estable es: leer la URI local con
+      // `FileSystem.readAsStringAsync(base64)` y mandar el string como
+      // `data:image/jpeg;base64,…` dentro del array `images` del JSON del
+      // POST /reports. `_strip_b64_prefix` en el backend ya lo normaliza.
       //
-      // [DEBUG UI] Si una foto falla, mostramos Alert.alert con el mensaje
-      // COMPLETO devuelto por api.ts (URL, tamaño, mime, error nativo) para
-      // que el usuario pueda leerlo en la pantalla del dispositivo físico.
+      // En Android SÍ mantenemos el multipart (`api.uploadReportPhoto`)
+      // porque los JSONs > 5-10 MB provocan "Network request failed"
+      // reproducible en el bridge nativo de RN Android.
+      //
+      // Web sigue por el mismo camino multipart (Blob → FormData).
       const dataUrls: string[] = [];
       for (let i = 0; i < images.length; i++) {
         const asset = images[i];
         try {
-          const { data_url } = await api.uploadReportPhoto({
-            uri: asset.uri,
-            name: asset.name,
-            mimeType: asset.mime,
-          });
-          if (data_url) dataUrls.push(data_url);
+          if (Platform.OS === 'ios') {
+            // --- Ruta legacy iOS: base64 directo en JSON --------------
+            const b64 = await FileSystem.readAsStringAsync(asset.uri, {
+              encoding: FileSystem.EncodingType.Base64,
+            });
+            if (b64 && b64.length > 0) {
+              dataUrls.push(`data:${asset.mime || 'image/jpeg'};base64,${b64}`);
+            } else {
+              throw new Error('Archivo vacío tras la lectura local.');
+            }
+          } else {
+            // --- Android + Web: multipart nativo (evita JSON gigante) ---
+            const { data_url } = await api.uploadReportPhoto({
+              uri: asset.uri,
+              name: asset.name,
+              mimeType: asset.mime,
+            });
+            if (data_url) dataUrls.push(data_url);
+          }
         } catch (upErr: any) {
           const details = upErr?.message || String(upErr);
           Alert.alert(
