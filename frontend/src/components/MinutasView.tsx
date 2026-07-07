@@ -481,6 +481,21 @@ function MinutaCard({
             </View>
           ))}
         </View>
+        {(minuta.involved_names && minuta.involved_names.length > 0) && (
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 4, marginTop: 6 }}>
+            <Ionicons name="people-outline" size={11} color={colors.primary} style={{ marginTop: 3 }} />
+            {minuta.involved_names.slice(0, 4).map((n, i) => (
+              <View key={i} style={styles.involvedCardChip}>
+                <Text style={styles.involvedCardChipTxt}>{n}</Text>
+              </View>
+            ))}
+            {minuta.involved_names.length > 4 && (
+              <Text style={{ fontSize: 10, color: colors.textMuted, marginTop: 3 }}>
+                +{minuta.involved_names.length - 4} más
+              </Text>
+            )}
+          </View>
+        )}
         <View style={styles.metaRow}>
           <View style={styles.metaCell}>
             <Ionicons name="person-circle-outline" size={13} color={colors.textMuted} />
@@ -621,6 +636,8 @@ function CreateMinutaModal({
   const [descripcion, setDescripcion] = useState('');
   const [fechaReunion, setFechaReunion] = useState(todayISO());
   const [selAreas, setSelAreas] = useState<string[]>([]);
+  const [involvedIds, setInvolvedIds] = useState<string[]>([]);
+  const [involvedPickerOpen, setInvolvedPickerOpen] = useState(false);
   const [acuerdos, setAcuerdos] = useState<DraftAcuerdo[]>([
     { descripcion: '', responsable_id: '', fecha_limite: todayISO() },
   ]);
@@ -629,6 +646,9 @@ function CreateMinutaModal({
 
   const toggleArea = (aid: string) =>
     setSelAreas((p) => (p.includes(aid) ? p.filter((x) => x !== aid) : [...p, aid]));
+
+  const toggleInvolved = (uid: string) =>
+    setInvolvedIds((p) => (p.includes(uid) ? p.filter((x) => x !== uid) : [...p, uid]));
 
   const setAcuerdoField = (i: number, patch: Partial<DraftAcuerdo>) =>
     setAcuerdos((prev) => prev.map((a, idx) => (idx === i ? { ...a, ...patch } : a)));
@@ -669,6 +689,7 @@ function CreateMinutaModal({
         titulo: titulo.trim(),
         descripcion: descripcion.trim(),
         area_ids: selAreas,
+        involved_ids: involvedIds,
         fecha_reunion: fechaReunion,
         acuerdos: acuerdos.map((a) => ({
           descripcion: a.descripcion.trim(),
@@ -759,6 +780,43 @@ function CreateMinutaModal({
                   );
                 })}
               </View>
+
+              <View style={styles.sepRow}>
+                <Text style={styles.label}>Involucrados</Text>
+                <Pressable
+                  onPress={() => setInvolvedPickerOpen(true)}
+                  style={styles.addRow}
+                >
+                  <Ionicons name="person-add-outline" size={16} color={colors.primary} />
+                  <Text style={styles.addRowTxt}>
+                    {involvedIds.length > 0 ? `Editar (${involvedIds.length})` : 'Añadir personas'}
+                  </Text>
+                </Pressable>
+              </View>
+              <Text style={{ color: colors.textMuted, fontSize: 11, marginTop: -2, marginBottom: 6 }}>
+                Verán esta minuta en su filtro “Mis Minutas”.
+              </Text>
+              {involvedIds.length === 0 ? (
+                <Text style={{ color: colors.textMuted, fontSize: 12, fontStyle: 'italic' }}>
+                  Sin involucrados adicionales.
+                </Text>
+              ) : (
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
+                  {involvedIds.map((uid) => {
+                    const u = members.find((m) => m.id === uid);
+                    if (!u) return null;
+                    return (
+                      <View key={uid} style={styles.involvedChip}>
+                        <Ionicons name="person" size={11} color={colors.primary} />
+                        <Text style={styles.involvedChipTxt}>{u.name}</Text>
+                        <Pressable onPress={() => toggleInvolved(uid)} hitSlop={8}>
+                          <Ionicons name="close" size={12} color={colors.textMuted} />
+                        </Pressable>
+                      </View>
+                    );
+                  })}
+                </View>
+              )}
 
               <View style={styles.sepRow}>
                 <Text style={styles.label}>Acuerdos *</Text>
@@ -871,6 +929,62 @@ function CreateMinutaModal({
                 </ScrollView>
               </View>
             </Pressable>
+          </Modal>
+        )}
+
+        {/* Picker de involucrados (multi-selección) */}
+        {involvedPickerOpen && (
+          <Modal
+            transparent
+            animationType="fade"
+            visible={involvedPickerOpen}
+            onRequestClose={() => setInvolvedPickerOpen(false)}
+          >
+            <View style={styles.pickerBackdrop}>
+              <View style={styles.pickerSheet}>
+                <View style={{
+                  flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+                  padding: 8, borderBottomWidth: 1, borderBottomColor: colors.border,
+                }}>
+                  <Text style={styles.pickerTitle}>Involucrados ({involvedIds.length})</Text>
+                  <Pressable onPress={() => setInvolvedPickerOpen(false)} hitSlop={8}>
+                    <Text style={{ color: colors.primary, fontWeight: '800' }}>Listo</Text>
+                  </Pressable>
+                </View>
+                <ScrollView style={{ maxHeight: 420 }}>
+                  {members.length === 0 ? (
+                    <Text style={{ padding: 16, color: colors.textMuted }}>
+                      No hay miembros en el proyecto.
+                    </Text>
+                  ) : (
+                    members.map((m) => {
+                      const on = involvedIds.includes(m.id);
+                      return (
+                        <Pressable
+                          key={m.id}
+                          onPress={() => toggleInvolved(m.id)}
+                          style={[styles.pickerRow, on && { backgroundColor: colors.bg }]}
+                        >
+                          <View style={[
+                            styles.check,
+                            { marginTop: 0 },
+                            on && { backgroundColor: colors.primary, borderColor: colors.primary },
+                          ]}>
+                            {on && <Ionicons name="checkmark" size={14} color="#fff" />}
+                          </View>
+                          <View style={{ flex: 1 }}>
+                            <Text style={{ fontWeight: '700', color: colors.text }}>{m.name}</Text>
+                            <Text style={{ color: colors.textMuted, fontSize: 12 }}>
+                              {m.role.replace('_', ' ')}
+                            </Text>
+                          </View>
+                        </Pressable>
+                      );
+                    })
+                  )}
+                </ScrollView>
+              </View>
+            </View>
           </Modal>
         )}
       </View>
@@ -1028,6 +1142,28 @@ const styles = StyleSheet.create({
     borderRadius: 6,
   },
   areaChipTxt: { fontSize: 10, color: colors.textMuted, fontWeight: '700' },
+  involvedChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: colors.primary,
+    backgroundColor: colors.bg,
+  },
+  involvedChipTxt: { fontSize: 11, color: colors.text, fontWeight: '700' },
+  involvedCardChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 999,
+    backgroundColor: '#EEF2FF',
+  },
+  involvedCardChipTxt: { fontSize: 10, color: colors.primary, fontWeight: '700' },
   metaRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 12, marginTop: 8 },
   metaCell: { flexDirection: 'row', alignItems: 'center', gap: 3 },
   metaTxt: { fontSize: 11, color: colors.textMuted, fontWeight: '600' },

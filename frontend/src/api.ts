@@ -435,6 +435,8 @@ export interface Minuta {
   descripcion: string;
   area_ids: string[];
   area_names: string[];
+  involved_ids?: string[];
+  involved_names?: string[];
   fecha_reunion: string;
   author_id: string;
   author_name: string;
@@ -1228,6 +1230,7 @@ export const api = {
       titulo: string;
       descripcion?: string;
       area_ids?: string[];
+      involved_ids?: string[];
       fecha_reunion?: string;
       acuerdos: { descripcion: string; responsable_id: string; fecha_limite: string }[];
     },

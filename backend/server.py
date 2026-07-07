@@ -510,6 +510,7 @@ async def startup_event():
     await db.announcements.create_index([("project_id", 1), ("pinned", -1), ("created_at", -1)])
     await db.minutas.create_index([("project_id", 1), ("created_at", -1)])
     await db.minutas.create_index([("project_id", 1), ("acuerdos.responsable_id", 1)])
+    await db.minutas.create_index([("project_id", 1), ("involved_ids", 1)])
     await db.messages.create_index([("project_id", 1), ("created_at", -1)])
     await db.messages.create_index([("channel_id", 1), ("created_at", -1)])
     await db.events.create_index([("project_id", 1), ("start_at", 1)])
@@ -6486,6 +6487,7 @@ class MinutaIn(BaseModel):
     titulo: str
     descripcion: Optional[str] = ""
     area_ids: List[str] = Field(default_factory=list)
+    involved_ids: List[str] = Field(default_factory=list)
     fecha_reunion: Optional[str] = None  # ISO date; default hoy CDMX
     acuerdos: List[AcuerdoIn] = Field(default_factory=list)
 
@@ -6531,6 +6533,20 @@ async def create_minuta(pid: str, body: MinutaIn, user: dict = Depends(current_u
         raise HTTPException(400, "Descripción máximo 4000 caracteres")
     area_ids, area_names = await _resolve_areas_for_minuta(pid, body.area_ids or [])
     fecha_reunion = (body.fecha_reunion or "").strip() or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    # Involucrados (opcional) — usuarios extra que ven la minuta en "Mis Minutas".
+    involved_ids: List[str] = []
+    involved_names: List[str] = []
+    involved_clean = list(dict.fromkeys([x.strip() for x in (body.involved_ids or []) if x and x.strip()]))
+    if involved_clean:
+        u_cursor = db.users.find({"id": {"$in": involved_clean}})
+        u_list = await u_cursor.to_list(length=len(involved_clean))
+        u_map = {u["id"]: u for u in u_list}
+        missing = [uid for uid in involved_clean if uid not in u_map]
+        if missing:
+            raise HTTPException(400, f"Involucrado(s) inválido(s): {', '.join(missing)}")
+        involved_ids = involved_clean
+        involved_names = [u_map[uid].get("name") or "Sin nombre" for uid in involved_clean]
 
     # Valida y normaliza acuerdos.
     if not body.acuerdos:
@@ -6588,6 +6604,8 @@ async def create_minuta(pid: str, body: MinutaIn, user: dict = Depends(current_u
         "descripcion": descripcion,
         "area_ids": area_ids,
         "area_names": area_names,
+        "involved_ids": involved_ids,
+        "involved_names": involved_names,
         "fecha_reunion": fecha_reunion,
         "author_id": user["id"],
         "author_name": user["name"],
@@ -6625,10 +6643,11 @@ async def list_minutas(
                 {"acuerdos.responsable_name": {"$regex": rx, "$options": "i"}},
             ]
     if mine:
-        # Autor o responsable en algún acuerdo
+        # Autor, responsable en algún acuerdo, o involucrado explícito.
         query["$or"] = (query.get("$or") or []) + [
             {"author_id": user["id"]},
             {"acuerdos.responsable_id": user["id"]},
+            {"involved_ids": user["id"]},
         ]
     cursor = db.minutas.find(query).sort("created_at", -1)
     items = await cursor.to_list(length=500)
