@@ -71,6 +71,9 @@ export default function ProjectDetailScreen() {
   const [reports, setReports] = useState<FeedItem[]>([]);
   const [calendarOpen, setCalendarOpen] = useState(false);
 
+  // Badge del Hub de Minutas (acuerdos asignados / urgentes al usuario).
+  const [minutasBadge, setMinutasBadge] = useState<{ assigned_pending: number; urgent: number } | null>(null);
+
   // Filtrado cruzado: Nodo (Tramo/Subtramo/Poste) × Área (Disciplina)
   const [selectedNodeFilter, setSelectedNodeFilter] = useState<string | null>(null);
   const [selectedAreaFilter, setSelectedAreaFilter] = useState<string | null>(null);
@@ -149,7 +152,18 @@ export default function ProjectDetailScreen() {
     }
   }, [pid]);
 
-  useFocusEffect(useCallback(() => { load(); }, [load]));
+  // Badge del Hub de Minutas (silencioso: si falla, no rompe el dashboard).
+  const loadMinutasBadge = useCallback(async () => {
+    if (!pid) return;
+    try {
+      const b = await api.minutasBadge(pid);
+      setMinutasBadge(b);
+    } catch {
+      // silencioso
+    }
+  }, [pid]);
+
+  useFocusEffect(useCallback(() => { load(); loadMinutasBadge(); }, [load, loadMinutasBadge]));
   useEffect(() => { loadFeed(); }, [loadFeed]);
 
   // === Nodos (Tramos) y Áreas (Disciplinas) únicos derivados de los reportes ====
@@ -855,6 +869,17 @@ export default function ProjectDetailScreen() {
               title="Eventos del proyecto"
               subtitle="Programa visitas, hitos y reuniones"
               onPress={() => router.push({ pathname: '/(coord)/projects/[id]/events' as any, params: { id: pid } })}
+            />
+            <ActionTile
+              icon="clipboard-outline"
+              title="Hub de Minutas"
+              subtitle={
+                minutasBadge && (minutasBadge.urgent || minutasBadge.assigned_pending)
+                  ? `${minutasBadge.assigned_pending} asignados · ${minutasBadge.urgent} urgentes`
+                  : 'Acuerdos y seguimiento de reuniones'
+              }
+              badge={minutasBadge?.urgent || 0}
+              onPress={() => router.push({ pathname: '/(coord)/projects/[id]/minutas' as any, params: { id: pid } })}
             />
               </>
             ) : (
@@ -1950,7 +1975,7 @@ function InfoRow({ icon, label, value }: { icon: any; label: string; value: stri
   );
 }
 
-function ActionTile({ icon, title, subtitle, disabled, comingSoon, onPress, busy }: any) {
+function ActionTile({ icon, title, subtitle, disabled, comingSoon, onPress, busy, badge }: any) {
   return (
     <Pressable
       onPress={onPress}
@@ -1959,6 +1984,20 @@ function ActionTile({ icon, title, subtitle, disabled, comingSoon, onPress, busy
     >
       <View style={styles.tileIcon}>
         {busy ? <ActivityIndicator color={colors.primary} /> : <Ionicons name={icon} size={20} color={colors.primary} />}
+        {!!badge && badge > 0 && (
+          <View style={{
+            position: 'absolute', top: -4, right: -4,
+            minWidth: 16, height: 16, borderRadius: 8,
+            backgroundColor: '#DC2626',
+            alignItems: 'center', justifyContent: 'center',
+            paddingHorizontal: 3,
+            borderWidth: 1.5, borderColor: colors.surface,
+          }}>
+            <Text style={{ color: '#fff', fontSize: 9, fontWeight: '800' }}>
+              {badge > 99 ? '99+' : String(badge)}
+            </Text>
+          </View>
+        )}
       </View>
       <View style={{ flex: 1 }}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>

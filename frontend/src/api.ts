@@ -414,6 +414,41 @@ export interface Announcement {
   updated_at: string;
 }
 
+// ---- Hub de Minutas ---------------------------------------------------------
+export interface Acuerdo {
+  id: string;
+  descripcion: string;
+  responsable_id: string;
+  responsable_name: string;
+  responsable_role?: string | null;
+  fecha_limite: string; // "YYYY-MM-DD"
+  estado: boolean;
+  completed_at?: string | null;
+  completed_by?: string | null;
+  completed_by_name?: string | null;
+}
+
+export interface Minuta {
+  id: string;
+  project_id: string;
+  titulo: string;
+  descripcion: string;
+  area_ids: string[];
+  area_names: string[];
+  fecha_reunion: string;
+  author_id: string;
+  author_name: string;
+  author_role?: string;
+  acuerdos: Acuerdo[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MinutaBadge {
+  assigned_pending: number;
+  urgent: number;
+}
+
 export interface Message {
   id: string;
   project_id: string;
@@ -1173,4 +1208,33 @@ export const api = {
     request<DailyGoal>('PATCH', `/projects/${pid}/daily_goals/${gid}`, payload),
   deleteDailyGoal: (pid: string, gid: string) =>
     request<{ ok: boolean }>('DELETE', `/projects/${pid}/daily_goals/${gid}`),
+
+  // ---- Minutas (Hub de acuerdos) -----------------------------------------
+  listMinutas: (
+    pid: string,
+    opts: { status?: 'all' | 'pending' | 'done'; mine?: boolean; q?: string; area_ids?: string[] } = {},
+  ) => {
+    const qs = new URLSearchParams();
+    if (opts.status) qs.set('status', opts.status);
+    if (opts.mine) qs.set('mine', '1');
+    if (opts.q && opts.q.trim()) qs.set('q', opts.q.trim());
+    if (opts.area_ids && opts.area_ids.length) qs.set('area_ids', opts.area_ids.join(','));
+    const suffix = qs.toString();
+    return request<Minuta[]>('GET', `/projects/${pid}/minutas${suffix ? `?${suffix}` : ''}`);
+  },
+  createMinuta: (
+    pid: string,
+    payload: {
+      titulo: string;
+      descripcion?: string;
+      area_ids?: string[];
+      fecha_reunion?: string;
+      acuerdos: { descripcion: string; responsable_id: string; fecha_limite: string }[];
+    },
+  ) => request<Minuta>('POST', `/projects/${pid}/minutas`, payload),
+  getMinuta: (mid: string) => request<Minuta>('GET', `/minutas/${mid}`),
+  toggleAcuerdo: (mid: string, aid: string, estado: boolean) =>
+    request<Minuta>('PATCH', `/minutas/${mid}/acuerdos/${aid}`, { estado }),
+  deleteMinuta: (mid: string) => request<{ ok: boolean }>('DELETE', `/minutas/${mid}`),
+  minutasBadge: (pid: string) => request<MinutaBadge>('GET', `/projects/${pid}/minutas/badge`),
 };

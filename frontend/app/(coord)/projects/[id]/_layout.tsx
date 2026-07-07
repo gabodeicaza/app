@@ -11,6 +11,7 @@ export default function ProjectLayout() {
       <Stack.Screen name="invitations" />
       <Stack.Screen name="announcements" />
       <Stack.Screen name="events" />
+      <Stack.Screen name="minutas" />
     </Stack>
   );
 }

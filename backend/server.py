@@ -508,6 +508,8 @@ async def startup_event():
     await db.location_nodes.create_index([("project_id", 1), ("parent_id", 1)])
     await db.reports.create_index([("project_id", 1), ("created_at", -1)])
     await db.announcements.create_index([("project_id", 1), ("pinned", -1), ("created_at", -1)])
+    await db.minutas.create_index([("project_id", 1), ("created_at", -1)])
+    await db.minutas.create_index([("project_id", 1), ("acuerdos.responsable_id", 1)])
     await db.messages.create_index([("project_id", 1), ("created_at", -1)])
     await db.messages.create_index([("channel_id", 1), ("created_at", -1)])
     await db.events.create_index([("project_id", 1), ("start_at", 1)])
@@ -6450,6 +6452,292 @@ async def project_ai_summary(pid: str, user: dict = Depends(current_user)):
         period_hours=24,
         generated_at=datetime.now(timezone.utc),
     )
+
+
+# =============================================================================
+# HUB DE MINUTAS (Batch V2 · Fase 1 · 2026-07)
+# -----------------------------------------------------------------------------
+# Módulo de seguimiento de acuerdos y minutas de obra.
+#
+# Modelo (colección `minutas`):
+#   { id, project_id, titulo, descripcion, area_ids[], area_names[],
+#     fecha_reunion (ISO date), author_id, author_name, author_role,
+#     acuerdos: [ { id, descripcion, responsable_id, responsable_name,
+#                   fecha_limite (ISO date), estado (bool),
+#                   completed_at, completed_by, completed_by_name } ],
+#     created_at, updated_at }
+#
+# Reglas de negocio:
+#   * Crear minutas: coord_general, jefe_proyecto, sub_coordinador.
+#   * Ver minutas: cualquier miembro del proyecto (RBAC vía ensure_project_access).
+#   * Marcar/desmarcar acuerdo como concluido: SOLO el autor de la minuta.
+#     Esta regla se refuerza server-side (401/403) sin depender del front.
+#   * Borrar minuta: SOLO el autor o un Coord General del proyecto.
+# =============================================================================
+
+
+class AcuerdoIn(BaseModel):
+    descripcion: str
+    responsable_id: str
+    fecha_limite: str  # ISO date "YYYY-MM-DD"
+
+
+class MinutaIn(BaseModel):
+    titulo: str
+    descripcion: Optional[str] = ""
+    area_ids: List[str] = Field(default_factory=list)
+    fecha_reunion: Optional[str] = None  # ISO date; default hoy CDMX
+    acuerdos: List[AcuerdoIn] = Field(default_factory=list)
+
+
+_MINUTA_CREATORS = {ROLE_COORD, ROLE_JEFE, ROLE_SUB}
+
+
+def _minuta_out(doc: dict) -> dict:
+    doc.pop("_id", None)
+    return doc
+
+
+async def _resolve_areas_for_minuta(pid: str, area_ids: List[str]) -> tuple[List[str], List[str]]:
+    """Valida las áreas contra el proyecto y devuelve (ids_norm, names)."""
+    if not area_ids:
+        return [], []
+    # Dedup + strip
+    clean = [a.strip() for a in area_ids if a and a.strip()]
+    clean = list(dict.fromkeys(clean))  # preserva orden, quita duplicados
+    if not clean:
+        return [], []
+    cursor = db.areas.find({"project_id": pid, "id": {"$in": clean}})
+    found = await cursor.to_list(length=len(clean))
+    found_map = {a["id"]: a for a in found}
+    missing = [aid for aid in clean if aid not in found_map]
+    if missing:
+        raise HTTPException(400, f"Áreas inválidas: {', '.join(missing)}")
+    return clean, [found_map[a]["name"] for a in clean]
+
+
+@api.post("/projects/{pid}/minutas")
+async def create_minuta(pid: str, body: MinutaIn, user: dict = Depends(current_user)):
+    await ensure_project_access(user, pid)
+    if user["role"] not in _MINUTA_CREATORS:
+        raise HTTPException(403, "Sólo Coordinación General, Jefes o Sub-Coordinadores pueden crear minutas")
+    titulo = (body.titulo or "").strip()
+    if not titulo:
+        raise HTTPException(400, "Título requerido")
+    if len(titulo) > 200:
+        raise HTTPException(400, "Título máximo 200 caracteres")
+    descripcion = (body.descripcion or "").strip()
+    if len(descripcion) > 4000:
+        raise HTTPException(400, "Descripción máximo 4000 caracteres")
+    area_ids, area_names = await _resolve_areas_for_minuta(pid, body.area_ids or [])
+    fecha_reunion = (body.fecha_reunion or "").strip() or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    # Valida y normaliza acuerdos.
+    if not body.acuerdos:
+        raise HTTPException(400, "Debes registrar al menos un acuerdo")
+    if len(body.acuerdos) > 50:
+        raise HTTPException(400, "Máximo 50 acuerdos por minuta")
+    # Precarga responsables en un solo query.
+    resp_ids = list({(a.responsable_id or "").strip() for a in body.acuerdos if (a.responsable_id or "").strip()})
+    users_map: dict = {}
+    if resp_ids:
+        u_cursor = db.users.find({"id": {"$in": resp_ids}})
+        u_list = await u_cursor.to_list(length=len(resp_ids))
+        users_map = {u["id"]: u for u in u_list}
+    acuerdos_out: List[dict] = []
+    for i, a in enumerate(body.acuerdos):
+        desc = (a.descripcion or "").strip()
+        if not desc:
+            raise HTTPException(400, f"Acuerdo #{i+1}: descripción requerida")
+        if len(desc) > 1200:
+            raise HTTPException(400, f"Acuerdo #{i+1}: máximo 1200 caracteres")
+        rid = (a.responsable_id or "").strip()
+        if not rid or rid not in users_map:
+            raise HTTPException(400, f"Acuerdo #{i+1}: responsable inválido")
+        u = users_map[rid]
+        # Nota: no forzamos que `project_ids` incluya `pid` porque los coords
+        # generales tienen acceso implícito global y algunos usuarios legacy
+        # pueden faltarlo. La verificación real de acceso al proyecto se hace
+        # arriba en `ensure_project_access`.
+        fl = (a.fecha_limite or "").strip()
+        if not fl:
+            raise HTTPException(400, f"Acuerdo #{i+1}: fecha límite requerida")
+        # valida formato ISO "YYYY-MM-DD" simple
+        try:
+            datetime.strptime(fl, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(400, f"Acuerdo #{i+1}: fecha límite debe ser YYYY-MM-DD")
+        acuerdos_out.append({
+            "id": str(uuid.uuid4()),
+            "descripcion": desc,
+            "responsable_id": rid,
+            "responsable_name": u.get("name") or "Sin nombre",
+            "responsable_role": u.get("role"),
+            "fecha_limite": fl,
+            "estado": False,
+            "completed_at": None,
+            "completed_by": None,
+            "completed_by_name": None,
+        })
+
+    now = datetime.now(timezone.utc)
+    doc = {
+        "id": str(uuid.uuid4()),
+        "project_id": pid,
+        "titulo": titulo,
+        "descripcion": descripcion,
+        "area_ids": area_ids,
+        "area_names": area_names,
+        "fecha_reunion": fecha_reunion,
+        "author_id": user["id"],
+        "author_name": user["name"],
+        "author_role": user["role"],
+        "acuerdos": acuerdos_out,
+        "created_at": now,
+        "updated_at": now,
+    }
+    await db.minutas.insert_one(doc)
+    return _minuta_out(doc)
+
+
+@api.get("/projects/{pid}/minutas")
+async def list_minutas(
+    pid: str,
+    status: str = "all",   # "pending" | "done" | "all"
+    mine: int = 0,
+    q: Optional[str] = None,
+    area_ids: Optional[str] = None,  # CSV
+    user: dict = Depends(current_user),
+):
+    await ensure_project_access(user, pid)
+    query: dict = {"project_id": pid}
+    if area_ids:
+        wanted = [a.strip() for a in area_ids.split(",") if a.strip()]
+        if wanted:
+            query["area_ids"] = {"$in": wanted}
+    if q:
+        rx = re.escape(q.strip())
+        if rx:
+            query["$or"] = [
+                {"titulo": {"$regex": rx, "$options": "i"}},
+                {"descripcion": {"$regex": rx, "$options": "i"}},
+                {"acuerdos.descripcion": {"$regex": rx, "$options": "i"}},
+                {"acuerdos.responsable_name": {"$regex": rx, "$options": "i"}},
+            ]
+    if mine:
+        # Autor o responsable en algún acuerdo
+        query["$or"] = (query.get("$or") or []) + [
+            {"author_id": user["id"]},
+            {"acuerdos.responsable_id": user["id"]},
+        ]
+    cursor = db.minutas.find(query).sort("created_at", -1)
+    items = await cursor.to_list(length=500)
+    # Filtro por estado en Python (barato — pocas minutas por proyecto).
+    def _minuta_status(m: dict) -> str:
+        acs = m.get("acuerdos") or []
+        if not acs:
+            return "done"
+        if all(bool(a.get("estado")) for a in acs):
+            return "done"
+        return "pending"
+    if status in ("pending", "done"):
+        items = [m for m in items if _minuta_status(m) == status]
+    return [_minuta_out(m) for m in items]
+
+
+@api.get("/minutas/{mid}")
+async def get_minuta(mid: str, user: dict = Depends(current_user)):
+    m = await db.minutas.find_one({"id": mid})
+    if not m:
+        raise HTTPException(404, "Minuta no existe")
+    await ensure_project_access(user, m["project_id"])
+    return _minuta_out(m)
+
+
+class AcuerdoPatch(BaseModel):
+    estado: bool
+
+
+@api.patch("/minutas/{mid}/acuerdos/{aid}")
+async def toggle_acuerdo(
+    mid: str,
+    aid: str,
+    body: AcuerdoPatch,
+    user: dict = Depends(current_user),
+):
+    """Marca/desmarca un acuerdo como concluido.
+
+    Regla estricta: SOLO el autor de la minuta puede cambiar el estado.
+    El servidor rechaza cualquier intento con 403 en caso contrario.
+    """
+    m = await db.minutas.find_one({"id": mid})
+    if not m:
+        raise HTTPException(404, "Minuta no existe")
+    await ensure_project_access(user, m["project_id"])
+    if m.get("author_id") != user["id"]:
+        raise HTTPException(403, "Solo el autor de la minuta puede marcar acuerdos como concluidos")
+    acs = list(m.get("acuerdos") or [])
+    idx = next((i for i, a in enumerate(acs) if a.get("id") == aid), -1)
+    if idx < 0:
+        raise HTTPException(404, "Acuerdo no existe en esta minuta")
+    now = datetime.now(timezone.utc)
+    if body.estado:
+        acs[idx]["estado"] = True
+        acs[idx]["completed_at"] = now
+        acs[idx]["completed_by"] = user["id"]
+        acs[idx]["completed_by_name"] = user["name"]
+    else:
+        acs[idx]["estado"] = False
+        acs[idx]["completed_at"] = None
+        acs[idx]["completed_by"] = None
+        acs[idx]["completed_by_name"] = None
+    await db.minutas.update_one(
+        {"id": mid},
+        {"$set": {"acuerdos": acs, "updated_at": now}},
+    )
+    updated = await db.minutas.find_one({"id": mid})
+    return _minuta_out(updated)
+
+
+@api.delete("/minutas/{mid}")
+async def delete_minuta(mid: str, user: dict = Depends(current_user)):
+    m = await db.minutas.find_one({"id": mid})
+    if not m:
+        raise HTTPException(404, "Minuta no existe")
+    await ensure_project_access(user, m["project_id"])
+    is_author = m.get("author_id") == user["id"]
+    is_coord = user.get("role") == ROLE_COORD
+    if not (is_author or is_coord):
+        raise HTTPException(403, "Solo el autor o Coordinación General puede eliminar la minuta")
+    await db.minutas.delete_one({"id": mid})
+    return {"ok": True}
+
+
+@api.get("/projects/{pid}/minutas/badge")
+async def minutas_badge(pid: str, user: dict = Depends(current_user)):
+    """Cuenta acuerdos pendientes asignados al usuario en el proyecto y los
+    'urgentes' (vencidos o que vencen HOY). Se usa para el badge del módulo.
+    """
+    await ensure_project_access(user, pid)
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    cursor = db.minutas.find({
+        "project_id": pid,
+        "acuerdos.responsable_id": user["id"],
+    })
+    minutas = await cursor.to_list(length=500)
+    assigned_pending = 0
+    urgent = 0
+    for m in minutas:
+        for a in (m.get("acuerdos") or []):
+            if a.get("responsable_id") != user["id"]:
+                continue
+            if a.get("estado"):
+                continue
+            assigned_pending += 1
+            fl = str(a.get("fecha_limite") or "")
+            if fl and fl <= today:
+                urgent += 1
+    return {"assigned_pending": assigned_pending, "urgent": urgent}
 
 
 # === MOUNT ==================================================================
