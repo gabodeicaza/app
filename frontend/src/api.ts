@@ -5,102 +5,15 @@ import * as FileSystem from 'expo-file-system/legacy';
 import { storage } from '@/src/utils/storage';
 
 /**
- * BASE URL del backend.
+ * BASE URL del backend (producción HTTPS).
  *
- * HARD REVERT (2026-07-06): tras romper la comunicación en dispositivos
- * físicos con lógica dinámica basada en `Constants.expoConfig.hostUri`,
- * volvemos al comportamiento del día 1: leer TAL CUAL la variable
- * `EXPO_PUBLIC_BACKEND_URL` inyectada por Expo desde `frontend/.env`.
- *
- * Escape hatch de diagnóstico:
- *   Si el usuario forzó una URL manual desde la pantalla de Login
- *   (guardada en AsyncStorage bajo `debug_backend_url`), esa URL toma
- *   prioridad ABSOLUTA. Se aplica en el arranque del `AuthProvider` vía
- *   `applyStoredDebugBase()` — antes de que cualquier fetch corra.
- *
- * `export let` habilita "live bindings" ES modules: al mutar `BASE`
- * desde este módulo, todos los importadores ven inmediatamente el valor
- * actualizado.
+ * Configuración estándar: lee directamente `EXPO_PUBLIC_BACKEND_URL`
+ * inyectada por Expo desde `frontend/.env`. Debe apuntar al dominio
+ * público con TLS (ej. `https://api.synco.mx`). Todas las peticiones
+ * usan HTTPS y multipart/form-data estándar.
  */
-export let BASE: string =
+export const BASE: string =
   (process.env.EXPO_PUBLIC_BACKEND_URL || '').replace(/\/$/, '') + '/api';
-
-/** Clave AsyncStorage donde persiste el override manual del usuario. */
-const DEBUG_BASE_KEY = 'debug_backend_url';
-
-/** Normaliza cualquier input del usuario a `http[s]://.../api`. */
-function normalizeDebugBase(raw: string): string {
-  let clean = (raw || '').trim();
-  if (!clean) return '';
-  // Prefijo protocolo obligatorio si falta.
-  if (!/^https?:\/\//i.test(clean)) clean = 'http://' + clean;
-  // Quita trailing slash.
-  clean = clean.replace(/\/+$/, '');
-  // Asegura sufijo /api exactamente una vez.
-  if (!/\/api$/i.test(clean)) clean += '/api';
-  return clean;
-}
-
-/**
- * Lee la URL manual guardada por el usuario en AsyncStorage y, si existe,
- * la aplica a `BASE`. Debe llamarse en el bootstrap de la app (ej.
- * `AuthProvider` o `RootLayout`) ANTES de disparar cualquier fetch.
- * Devuelve la URL efectiva (o null si no había override).
- */
-export async function applyStoredDebugBase(): Promise<string | null> {
-  try {
-    const stored = await storage.getItem<string | null>(DEBUG_BASE_KEY, null);
-    if (stored && typeof stored === 'string' && stored.trim()) {
-      const clean = normalizeDebugBase(stored);
-      if (clean) {
-        BASE = clean;
-        console.log('[api] DEBUG override BASE →', BASE);
-        return BASE;
-      }
-    }
-  } catch {
-    /* silencioso: fallback al valor de .env */
-  }
-  return null;
-}
-
-/**
- * Persiste (o limpia si `url` es null/vacío) una URL manual del backend.
- * Se llama desde el modal de "Debug de Red" en la pantalla de Login.
- * Devuelve la nueva URL efectiva.
- */
-export async function setDebugBase(url: string | null): Promise<string> {
-  if (url && url.trim()) {
-    const clean = normalizeDebugBase(url);
-    BASE = clean;
-    try {
-      await storage.setItem(DEBUG_BASE_KEY, url.trim());
-    } catch {}
-  } else {
-    BASE = (process.env.EXPO_PUBLIC_BACKEND_URL || '').replace(/\/$/, '') + '/api';
-    try {
-      await storage.removeItem(DEBUG_BASE_KEY);
-    } catch {}
-  }
-  return BASE;
-}
-
-/** Devuelve la BASE URL activa (útil para mostrarla en la UI de debug). */
-export function getCurrentBase(): string {
-  return BASE;
-}
-
-/**
- * Devuelve el valor almacenado en AsyncStorage (o null si no hay
- * override). No muta `BASE`. Útil para prellenar el modal de debug.
- */
-export async function getStoredDebugBase(): Promise<string | null> {
-  try {
-    return await storage.getItem<string | null>(DEBUG_BASE_KEY, null);
-  } catch {
-    return null;
-  }
-}
 
 export class ApiError extends Error {
   status: number;
@@ -273,13 +186,11 @@ async function nativeMultipartUpload<T>(
     throw new ApiError(0, `Falló la preparación del archivo: ${err?.message || err}`);
   }
 
-  // Paso 2: verificar que la URL sea absoluta (nunca "/api" plano desde
-  // un dispositivo móvil físico). Si BASE terminó con "/api" solo, quiere
-  // decir que EXPO_PUBLIC_BACKEND_URL viene vacía y no hay override
-  // manual configurado.
+  // Paso 2: verificar que la URL sea absoluta. Si BASE terminó con "/api"
+  // solo, significa que EXPO_PUBLIC_BACKEND_URL viene vacía en .env.
   if (!url || url === '/api' || url.startsWith('/api/')) {
     throw new ApiError(0,
-      `Backend no configurado. Ve al login → "Debug de red" y captura la URL manualmente. url="${url}"`);
+      `Backend no configurado. Define EXPO_PUBLIC_BACKEND_URL en frontend/.env (ej. https://api.synco.mx). url="${url}"`);
   }
 
   const authHeaders = await authHeader();

@@ -6,7 +6,6 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { Button } from '@/src/components/Button';
-import { DebugNetworkModal } from '@/src/components/DebugNetworkModal';
 import { useAuth } from '@/src/auth-context';
 import { homeRouteForRole, APP_BRAND, APP_TAGLINE } from '@/src/utils/roles';
 import { colors, radius, spacing } from '@/src/theme';
@@ -19,7 +18,6 @@ export default function LoginScreen() {
   const [showPwd, setShowPwd] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [debugOpen, setDebugOpen] = useState(false);
 
   async function onSubmit() {
     if (!email.trim() || !password) {
@@ -130,27 +128,8 @@ export default function LoginScreen() {
             </Text>
           </View>
 
-          {/* Escape hatch: debug de red (P0 2026-07-06) */}
         </View>
       </ScrollView>
-
-      {/* Botón FLOTANTE de Debug de Red — arriba-derecha, imposible de ocultar */}
-      <Pressable
-        onPress={() => setDebugOpen(true)}
-        style={({ pressed }) => [
-          styles.debugFab,
-          { top: (insets.top || 0) + 12 },
-          pressed && { opacity: 0.85 },
-        ]}
-        hitSlop={12}
-        accessibilityRole="button"
-        accessibilityLabel="Abrir debug de red"
-      >
-        <Ionicons name="bug" size={16} color="#0F172A" />
-        <Text style={styles.debugFabTxt}>Debug de red</Text>
-      </Pressable>
-
-      <DebugNetworkModal visible={debugOpen} onClose={() => setDebugOpen(false)} />
     </KeyboardAvoidingView>
   );
 }
@@ -196,24 +175,4 @@ const styles = StyleSheet.create({
   inviteSubtitle: { fontSize: 11, color: colors.textBody, marginTop: 2 },
   infoBox: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, marginTop: spacing.md, padding: 10, backgroundColor: colors.primaryLight + '55', borderRadius: radius.md },
   infoText: { flex: 1, fontSize: 12, color: colors.textBody, lineHeight: 18 },
-  debugFab: {
-    position: 'absolute',
-    right: 16,
-    zIndex: 9999,
-    elevation: 12,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 999,
-    backgroundColor: '#FACC15', // amarillo llamativo
-    borderWidth: 2,
-    borderColor: '#0F172A',
-    shadowColor: '#000',
-    shadowOpacity: 0.25,
-    shadowRadius: 6,
-    shadowOffset: { width: 0, height: 3 },
-  },
-  debugFabTxt: { fontSize: 12, fontWeight: '900', color: '#0F172A', letterSpacing: 0.3 },
 });

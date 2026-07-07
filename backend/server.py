@@ -5442,7 +5442,8 @@ async def export_reports_docx(
             area_label = f"Área: {area.get('name', '—')}"
 
     def _build_docx_blocking() -> bytes:
-        """Motor DOCX radicalmente limpio, enfocado a LECTURA (2026-07-06 · CDMX).
+        """Motor DOCX estrictamente MONOCROMÁTICO, enfocado a LECTURA
+        (2026-07-06 · CDMX · Batch de Producción V2).
 
         Diseño solicitado:
           * Un solo reporte por página (page break forzoso al finalizar cada uno).
@@ -5452,6 +5453,13 @@ async def export_reports_docx(
           * Cuerpo por reporte: Ubicación · Área/Disciplina · Fecha · Autor,
             descripciones individuales por foto (`photo_captions[i]`) y la
             observación general al final.
+          * PALETA ESTRICTAMENTE B/N (ahorro de tinta, impresión ejecutiva):
+              - Títulos/etiquetas fuertes → negro puro (0,0,0).
+              - Cuerpo de texto            → negro puro (0,0,0).
+              - Texto secundario/atenuado  → gris oscuro (0x59,0x59,0x59).
+              - Etiquetas muy sutiles      → gris medio (0x8C,0x8C,0x8C).
+            No se aplica `project_color` en ninguna parte del documento; el
+            color de marca del proyecto sólo se conserva para el PDF/PPTX.
         """
         # Zona horaria institucional: America/Mexico_City.
         try:
@@ -5486,12 +5494,25 @@ async def export_reports_docx(
         # Logo (bytes) o None → nombre proyecto en su lugar.
         logo_bytes = _resolve_export_logo_bytes(constructora_logo_b64)
 
-        # Paleta institucional (RGB) — sobrio.
-        _ch = (project_color or "#003366").lstrip("#")
-        BRAND_RGB = RGBColor(int(_ch[0:2], 16), int(_ch[2:4], 16), int(_ch[4:6], 16))
-        TEXT_RGB = RGBColor(0x0F, 0x17, 0x2A)
-        MUTED_RGB = RGBColor(0x64, 0x75, 0x8B)
-        SUBTLE_RGB = RGBColor(0x94, 0xA3, 0xB8)
+        # ============================================================
+        # PALETA ESTRICTAMENTE MONOCROMÁTICA (blanco y negro / gris)
+        # ------------------------------------------------------------
+        # Requerimiento ejecutivo (Batch Producción V2): la salida DOCX
+        # NO usa colores de marca — sólo negro y grises — para impresión
+        # profesional y lectura sin ruido visual. Todos los alias de
+        # colores que existían antes (BRAND_RGB, TEXT_RGB, MUTED_RGB,
+        # SUBTLE_RGB) se conservan pero apuntan a la misma escala de
+        # grises, para minimizar el diff y no romper el layout.
+        # ============================================================
+        _BLACK = RGBColor(0x00, 0x00, 0x00)
+        _DARK_GRAY = RGBColor(0x59, 0x59, 0x59)
+        _MID_GRAY = RGBColor(0x8C, 0x8C, 0x8C)
+
+        # Alias semánticos (todos ⊂ B/N — el color de proyecto NO se usa).
+        BRAND_RGB = _BLACK        # títulos/etiquetas fuertes
+        TEXT_RGB = _BLACK         # cuerpo del texto
+        MUTED_RGB = _DARK_GRAY    # texto atenuado (fecha export, "sin datos")
+        SUBTLE_RGB = _MID_GRAY    # etiquetas muy sutiles ("Reporte n de N")
 
         doc = Document()
 
