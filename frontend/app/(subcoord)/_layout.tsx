@@ -81,6 +81,15 @@ export default function SubCoordLayout() {
         }}
       />
       <Tabs.Screen
+        name="minutas"
+        options={{
+          title: 'Minutas',
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="clipboard-outline" size={size} color={color} />
+          ),
+        }}
+      />
+      <Tabs.Screen
         name="calendario"
         options={{
           title: 'Calendario',
